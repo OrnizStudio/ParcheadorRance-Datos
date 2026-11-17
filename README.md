@@ -99,7 +99,7 @@ los quita al cargar el catálogo. Solo los ve el equipo. Mientras el parcheador 
 el equipo lo abre con el argumento `--equipo`:
 
 ```
-ParcheadorRance.exe --equipo
+ParcheadorCentralRance.exe --equipo
 ```
 
 Ojo: `pruebas` solo **oculta**, no protege. Este repositorio es público y cualquiera puede leer el catálogo
