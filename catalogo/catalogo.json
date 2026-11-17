@@ -1,6 +1,15 @@
 {
   "esquema": 1,
-  "versionCatalogo": 3,
+  "versionCatalogo": 4,
+  "launcher": {
+    "ultimaVersion": "0.1.0",
+    "versionMinima": "",
+    "motivoUrgente": "",
+    "novedades": ["Primera versión pública del Parcheador Rance."],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.1.0/ParcheadorRance-0.1.0-win-x64.zip",
+    "tamano": 21401150,
+    "hash": "blake3:89e042a91815f537ca0a9a1d333178b540143b4b742883a74f4782118d4721c5"
+  },
   "juegos": [
     {
       "id": "prueba",
