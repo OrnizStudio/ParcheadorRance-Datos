@@ -1,0 +1,19 @@
+# Pasa las pruebas de las reglas del robot cada vez que cambia en `main`.
+name: Pruebas del robot
+
+on:
+  push:
+    branches: [main]
+    paths: ['robot/**', '.github/workflows/pruebas-robot.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s robot/pruebas -v

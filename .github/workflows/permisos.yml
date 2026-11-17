@@ -1,0 +1,64 @@
+# Robot de permisos: comprueba cada propuesta (pull request) contra `main` y, si quien la hace tiene
+# permiso para lo que cambia, la publica sola. Las reglas están en robot/permisos.py.
+#
+# Seguridad:
+# - `pull_request_target` ejecuta SIEMPRE el robot que hay en `main`, nunca el de la propuesta, y es lo
+#   que le da permiso para comentar y fusionar también cuando la propuesta viene de una copia (fork).
+# - Por eso mismo aquí no se descarga ni se ejecuta código de la propuesta: el robot solo lee sus archivos
+#   con git. No añadir pasos que hagan `checkout` de la propuesta ni que ejecuten nada suyo.
+# - El nombre del trabajo `permisos` es la comprobación obligatoria de `main`: no cambiarlo sin cambiar
+#   también la protección de la rama.
+name: Robot de permisos
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: permisos-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  permisos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Comprobar la propuesta
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+          PR_ACTOR: ${{ github.event.sender.login }}
+        run: python3 robot/permisos.py
+
+  fusionar:
+    needs: permisos
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      # Vuelve a comprobarla contra el `main` de este instante (por si otra propuesta se ha publicado
+      # mientras tanto) y, si sigue pasando, la fusiona.
+      - name: Volver a comprobar y publicar
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+          PR_ACTOR: ${{ github.event.sender.login }}
+        run: python3 robot/permisos.py --fusionar
