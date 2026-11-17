@@ -35,7 +35,7 @@
       "parche": {
         "version": "0.1.0",
         "fecha": "2026-11-17",
-        "notas": "Parche de prueba: traduce Datos/textos.dat y añade Fuentes/fuente-de-prueba.ttf.",
+        "notas": "Parche de prueba (robot): traduce Datos/textos.dat y añade Fuentes/fuente-de-prueba.ttf.",
         "paquetes": [
           {"edicion": "unica", "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/prueba-0.1.0/prueba-unica-0.1.0.zip", "tamano": 20931, "hash": "blake3:08ca910a35a60ef4d03a88794e0fdc3784ab4015a4942adbe09b6beac8c6bece"}
         ]
