@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 4,
+  "versionCatalogo": 5,
   "launcher": {
-    "ultimaVersion": "0.1.0",
+    "ultimaVersion": "0.1.2",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Primera versión pública del Parcheador Rance."],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.1.0/ParcheadorRance-0.1.0-win-x64.zip",
-    "tamano": 21401150,
-    "hash": "blake3:89e042a91815f537ca0a9a1d333178b540143b4b742883a74f4782118d4721c5"
+    "novedades": ["Nuevo nombre: Parcheador Ornizen", "Ya no se queda cargando para siempre cuando aún no hay juegos", "Aviso de juego nuevo y etiqueta «Nuevo» en la lista", "Botón «Buscar actualizaciones» en Ajustes → Acerca de", "Si cierras la ventana mientras se instala algo, sigue trabajando como icono junto al reloj", "Se quita la sección Descargas de Ajustes y los textos ya no salen cortados"],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.1.2/ParcheadorOrnizen-0.1.2-win-x64.zip",
+    "tamano": 21454433,
+    "hash": "blake3:b9d1a3d74b382bbe093675ed61f35dd033635ef424052c2f7172e4e83d980904"
   },
   "juegos": [
     {
