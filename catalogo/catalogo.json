@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 7,
+  "versionCatalogo": 8,
   "launcher": {
     "ultimaVersion": "0.1.2",
     "versionMinima": "",
@@ -57,7 +57,7 @@
     }
   ],
   "etiquetas": [
-    { "id": "18", "nombre": "+18", "color": "rojo", "icono": "aviso" },
+    { "id": "18", "nombre": "+18", "color": "ambar", "icono": "ia", "descripcion": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssstttttsssssssssssssssssssssssssssssssssssssssssss" },
     { "id": "test", "nombre": "test", "color": "gris", "icono": "aviso", "descripcion": "dsdadsdssad" }
   ]
 }
