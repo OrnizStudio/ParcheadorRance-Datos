@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 5,
+  "versionCatalogo": 6,
   "launcher": {
     "ultimaVersion": "0.1.2",
     "versionMinima": "",
@@ -21,23 +21,28 @@
       "estado": "completo",
       "progreso": { "traduccion": 100, "revision": 100, "imagenes": 0 },
       "sinopsis": "Un juego inventado para probar el parcheador de principio a fin: instalar, verificar y quitar un parche de verdad. No es un juego real y solo lo ve el equipo.",
-      "deteccion": { "ejecutables": ["JuegoDePrueba.exe"] },
+      "deteccion": {
+        "ejecutables": ["JuegoDePrueba.exe"]
+      },
       "ediciones": [
         {
           "id": "unica",
           "nombre": "Única",
           "contenido": { "texto": true, "imagenes": false, "testing": "hecho" },
           "huella": [
-            {"ruta": "Datos/graficos.dat", "tamano": 300000, "hashParcial": "blake3:7c8ab83cb16ab6efc1ced665d0c3083c4d6a27a46bac918e15cb4637685cb729", "hash": "blake3:84365b961bad7578f0ee1f8ff05489bebe5e79b047eca1e7ddfd1d6fa4db74d3"},
-            {"ruta": "Datos/textos.dat", "tamano": 316394, "hashParcial": "blake3:778a0528f64eae43a307a6db4784ceaa8498e9f0f5faf674b9ca13932b7f2713", "hash": "blake3:4dfe2eeb2073ba74db1b9d95c6bed3651874c7ebe9b374c4bba253f5246ba394"},
-            {"ruta": "JuegoDePrueba.exe", "tamano": 88, "hashParcial": "blake3:2a21fc2292c4cb500c285020865a7ba8b78000f0a713a4713d07454a6d921b44", "hash": "blake3:46ba8cded65642cb4c96c06245179fcfeb5e15ecdf114d669388a64715c076b9"},
-            {"ruta": "LEEME.txt", "tamano": 59, "hashParcial": "blake3:3cb51ba951782075e6538b2de80408185e9493e907af4146655902db3a9e8f01", "hash": "blake3:9d1c5f67410b7d29fc88ec2a98ed5daf15fd0f94efba2af02817a0df985e5a30"}
+            { "ruta": "Datos/graficos.dat", "tamano": 300000, "hashParcial": "blake3:7c8ab83cb16ab6efc1ced665d0c3083c4d6a27a46bac918e15cb4637685cb729", "hash": "blake3:84365b961bad7578f0ee1f8ff05489bebe5e79b047eca1e7ddfd1d6fa4db74d3" },
+            { "ruta": "Datos/textos.dat", "tamano": 316394, "hashParcial": "blake3:778a0528f64eae43a307a6db4784ceaa8498e9f0f5faf674b9ca13932b7f2713", "hash": "blake3:4dfe2eeb2073ba74db1b9d95c6bed3651874c7ebe9b374c4bba253f5246ba394" },
+            { "ruta": "JuegoDePrueba.exe", "tamano": 88, "hashParcial": "blake3:2a21fc2292c4cb500c285020865a7ba8b78000f0a713a4713d07454a6d921b44", "hash": "blake3:46ba8cded65642cb4c96c06245179fcfeb5e15ecdf114d669388a64715c076b9" },
+            { "ruta": "LEEME.txt", "tamano": 59, "hashParcial": "blake3:3cb51ba951782075e6538b2de80408185e9493e907af4146655902db3a9e8f01", "hash": "blake3:9d1c5f67410b7d29fc88ec2a98ed5daf15fd0f94efba2af02817a0df985e5a30" }
           ],
           "huellasParcheadas": [
-            { "version": "0.1.0", "archivos": [
-              {"ruta": "Datos/textos.dat", "tamano": 312656, "hashParcial": "blake3:479ab55536aeb04327b00decf4ed300112f9f8db716fc7745ccbf45b69d08f19", "hash": "blake3:d80cdd418fa7d162feff7a22b826ff23525958ccc95b2550ce4a678c68fb88e6"},
-              {"ruta": "Fuentes/fuente-de-prueba.ttf", "tamano": 20000, "hashParcial": "blake3:8e5de6195e118a0b597481721d8f47133696bd1097518038aa367d5b30a8f795", "hash": "blake3:84f2d3e039c7a48e00d24e8036a7519ff35f28a89401431ee6024fb091fce7b4"}
-            ] }
+            {
+              "version": "0.1.0",
+              "archivos": [
+                { "ruta": "Datos/textos.dat", "tamano": 312656, "hashParcial": "blake3:479ab55536aeb04327b00decf4ed300112f9f8db716fc7745ccbf45b69d08f19", "hash": "blake3:d80cdd418fa7d162feff7a22b826ff23525958ccc95b2550ce4a678c68fb88e6" },
+                { "ruta": "Fuentes/fuente-de-prueba.ttf", "tamano": 20000, "hashParcial": "blake3:8e5de6195e118a0b597481721d8f47133696bd1097518038aa367d5b30a8f795", "hash": "blake3:84f2d3e039c7a48e00d24e8036a7519ff35f28a89401431ee6024fb091fce7b4" }
+              ]
+            }
           ]
         }
       ],
@@ -46,9 +51,12 @@
         "fecha": "2026-11-17",
         "notas": "Parche de prueba: traduce Datos/textos.dat y añade Fuentes/fuente-de-prueba.ttf.",
         "paquetes": [
-          {"edicion": "unica", "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/prueba-0.1.0/prueba-unica-0.1.0.zip", "tamano": 20931, "hash": "blake3:08ca910a35a60ef4d03a88794e0fdc3784ab4015a4942adbe09b6beac8c6bece"}
+          { "edicion": "unica", "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/prueba-0.1.0/prueba-unica-0.1.0.zip", "tamano": 20931, "hash": "blake3:08ca910a35a60ef4d03a88794e0fdc3784ab4015a4942adbe09b6beac8c6bece" }
         ]
       }
     }
+  ],
+  "etiquetas": [
+    { "id": "18", "nombre": "+18", "color": "rojo", "icono": "aviso" }
   ]
 }
