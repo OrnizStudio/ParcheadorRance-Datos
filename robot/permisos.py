@@ -11,6 +11,10 @@ Mira qué cambia una propuesta (pull request) y decide si quien la hace tiene pe
                  publicar ni ocultar juegos, ni tocar el parcheador, el grupo o las etiquetas del catálogo.
   Colaborador    solo textos y notas, etiquetas y estado de la traducción de lo que ya existe.
 
+Los miembros del equipo (`equipo/miembros.json`, cuenta → rol) los gestionan el Propietario (a todos) y
+los Administradores (solo a Editores y Colaboradores). Ver «Miembros del equipo» más abajo; los cambios los
+aplica en la organización `robot/miembros.py`, después de fusionar.
+
 Y, para todos (también Administradores y Propietario): ningún parche puede tocar los archivos de la lista
 general (`normas/archivos-prohibidos.json`) ni de la del grupo (`grupo.archivosProhibidos` del catálogo):
 protección anticopia y cracks. Ver «Archivos prohibidos» más abajo.
@@ -490,6 +494,11 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
             continue
         if c.ruta == RUTA_CATALOGO:
             continue  # lo que se puede cambiar dentro del catálogo lo decide _comprobar_campos
+        if c.ruta == RUTA_MIEMBROS:
+            continue  # quién puede cambiar a quién lo decide comprobar_miembros
+        if c.ruta.lower().startswith(CARPETA_EQUIPO):
+            motivos.append(f"`{c.ruta}`: en `{CARPETA_EQUIPO}` solo va `{RUTA_MIEMBROS}`.")
+            continue
         carpeta = _carpeta_del_propietario(c.ruta)
         if carpeta is not None:
             if permisos.rol_global < Rol.PROPIETARIO:
@@ -602,6 +611,111 @@ def _parche_fuera(antes, despues) -> list:
     if not isinstance(antes, dict) or not isinstance(despues, dict):
         return ["(crear o quitar la versión)"]
     return [c for c in _claves_distintas(antes, despues) if c not in CAMPOS_COLABORADOR_PARCHE]
+
+
+# ────────────────────────────────────── Miembros del equipo ──────────────────────────────────────
+#
+# `equipo/miembros.json` dice quién es del equipo y con qué rol. Es la fuente de verdad: al fusionar un
+# cambio, `robot/miembros.py` deja la organización igual que el archivo (invita, mueve de equipo, quita o
+# expulsa), con el token de una GitHub App de la organización. El parcheador solo propone el cambio.
+#
+#     { "esquema": 1,
+#       "miembros":   [ { "cuenta": "usuario-de-github", "rol": "editor" } ],
+#       "bloqueados": [ "otra-cuenta" ] }
+#
+# Roles: `administrador`, `editor` y `colaborador`. El Propietario NO va en el archivo: sale de
+# `normas/propietario.json` y nadie lo toca desde aquí. Quien deja de estar en `miembros` sale del equipo
+# y de la organización.
+#
+# Quién puede cambiar a quién:
+#   Propietario    a todos, y es el único que bloquea o desbloquea cuentas.
+#   Administrador  solo a Editores y Colaboradores: no pone, quita ni cambia Administradores.
+#   Los demás      a nadie.
+#   Nadie se sube a sí mismo de rol.
+
+RUTA_MIEMBROS = "equipo/miembros.json"
+CARPETA_EQUIPO = "equipo/"
+ROLES_MIEMBRO = {"colaborador": Rol.COLABORADOR, "editor": Rol.EDITOR, "administrador": Rol.ADMINISTRADOR}
+CUENTA_VALIDA = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+
+
+def leer_miembros(texto):
+    """`equipo/miembros.json` → (miembros, bloqueados, errores).
+
+    `miembros` es `{cuenta en minúsculas: (cuenta tal como está escrita, rol)}` y `bloqueados`,
+    `{cuenta en minúsculas: cuenta}`. Sin archivo (`None`) no hay nadie.
+    """
+    if texto is None:
+        return {}, {}, []
+    try:
+        datos = json.loads(texto)
+    except json.JSONDecodeError as e:
+        return {}, {}, [f"`{RUTA_MIEMBROS}` no es un JSON válido (línea {e.lineno}, columna {e.colno}): {e.msg}."]
+    if not isinstance(datos, dict) or not isinstance(datos.get("miembros", []), list) \
+            or not isinstance(datos.get("bloqueados", []), list):
+        return {}, {}, [f"`{RUTA_MIEMBROS}` tiene que ser `{{ \"miembros\": [ … ], \"bloqueados\": [ … ] }}`."]
+
+    miembros, bloqueados, errores = {}, {}, []
+    for m in datos.get("miembros", []):
+        cuenta = m.get("cuenta") if isinstance(m, dict) else None
+        rol = m.get("rol") if isinstance(m, dict) else None
+        if not isinstance(cuenta, str) or not CUENTA_VALIDA.match(cuenta):
+            errores.append(f"`{RUTA_MIEMBROS}`: `{cuenta!r}` no es una cuenta de GitHub válida.")
+        elif rol not in ROLES_MIEMBRO:
+            errores.append(f"`{RUTA_MIEMBROS}`: `{cuenta}` tiene un rol que no existe ({rol!r}). "
+                           f"Valen: {', '.join(sorted(ROLES_MIEMBRO))}.")
+        elif cuenta.lower() in miembros:
+            errores.append(f"`{RUTA_MIEMBROS}`: `{cuenta}` está repetida.")
+        else:
+            miembros[cuenta.lower()] = (cuenta, rol)
+    for cuenta in datos.get("bloqueados", []):
+        if not isinstance(cuenta, str) or not CUENTA_VALIDA.match(cuenta):
+            errores.append(f"`{RUTA_MIEMBROS}`: en `bloqueados`, `{cuenta!r}` no es una cuenta de GitHub válida.")
+        elif cuenta.lower() in miembros:
+            errores.append(f"`{RUTA_MIEMBROS}`: `{cuenta}` no puede ser miembro y estar bloqueada a la vez.")
+        else:
+            bloqueados[cuenta.lower()] = cuenta
+    return miembros, bloqueados, errores
+
+
+def comprobar_miembros(antes, despues, quienes: dict, propietarios=frozenset()) -> list:
+    """Motivos por los que no se acepta un cambio de `equipo/miembros.json` (lista vacía = se acepta).
+
+    `antes` y `despues` son el texto del archivo en `main` y tras la propuesta (`None` si no existe).
+    `quienes` son las cuentas que hacen la propuesta (quien la abrió y quien subió el último cambio) con
+    su rol: `{cuenta: Rol}`. Cuenta el rol más bajo, y nadie de ellas puede subirse a sí misma.
+    """
+    if despues is None:
+        return [f"No se puede borrar `{RUTA_MIEMBROS}`: es la lista de quién es del equipo."]
+    m_antes, b_antes, _ = leer_miembros(antes)  # lo que ya está en `main` no se vuelve a juzgar
+    m_despues, b_despues, motivos = leer_miembros(despues)
+    if motivos:
+        return motivos
+
+    for cuenta in sorted((m_despues.keys() | b_despues.keys()) & set(propietarios)):
+        motivos.append(f"`{cuenta}` es el Propietario: no va en `{RUTA_MIEMBROS}` (sale de "
+                       f"`{RUTA_PROPIETARIO}`) y nadie lo cambia desde aquí.")
+
+    quienes = {c.lower(): r for c, r in quienes.items()}
+    rol = min(quienes.values(), default=Rol.NINGUNO)
+    if rol < Rol.ADMINISTRADOR:
+        return motivos + ["Los miembros del equipo los gestionan los Administradores y el Propietario "
+                          f"(tu rol: {rol.nombre})."]
+
+    for cuenta in sorted(m_antes.keys() | m_despues.keys()):
+        era = m_antes.get(cuenta, (cuenta, None))[1]
+        nombre, sera = m_despues.get(cuenta, (m_antes.get(cuenta, (cuenta,))[0], None))
+        if era == sera:
+            continue
+        if rol < Rol.PROPIETARIO and "administrador" in (era, sera):
+            motivos.append(f"`{nombre}`: poner, quitar o cambiar a un Administrador es solo del Propietario "
+                           "(un Administrador gestiona a Editores y Colaboradores).")
+        if cuenta in quienes and sera is not None and (era is None or ROLES_MIEMBRO[sera] > ROLES_MIEMBRO[era]):
+            motivos.append(f"`{nombre}`: nadie se sube a sí mismo de rol. Tiene que hacerlo otra persona.")
+
+    if b_antes.keys() != b_despues.keys() and rol < Rol.PROPIETARIO:
+        motivos.append("`bloqueados`: bloquear o desbloquear cuentas es solo del Propietario.")
+    return _sin_repetidos(motivos)
 
 
 # ─────────────────────────────────────────── Utilidades ───────────────────────────────────────────
@@ -743,7 +857,8 @@ def git(*argumentos, comprobar_salida=True) -> subprocess.CompletedProcess:
 def leer_propuesta(numero: int, cabeza: str):
     """Une la propuesta con el `main` de ahora mismo (sin ejecutar nada) y devuelve lo que cambia.
 
-    Devuelve (cambios, catálogo antes, catálogo después) o None si hay conflicto con `main`.
+    Devuelve (cambios, catálogo antes, catálogo después, miembros) o None si hay conflicto con `main`.
+    `miembros` es (`equipo/miembros.json` antes, después) si la propuesta lo toca; si no, None.
     """
     git("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main",
         f"+refs/pull/{numero}/head:refs/remotes/propuesta/cabeza")
@@ -765,11 +880,15 @@ def leer_propuesta(numero: int, cabeza: str):
             tamano = int(git("cat-file", "-s", f"{arbol}:{ruta}").stdout.decode().strip())
         cambios.append(Cambio(ruta, estado[0], modo_nuevo, tamano))
 
-    def texto(revision):
-        salida = git("show", f"{revision}:{RUTA_CATALOGO}", comprobar_salida=False)
+    def texto(revision, ruta=RUTA_CATALOGO):
+        salida = git("show", f"{revision}:{ruta}", comprobar_salida=False)
         return salida.stdout.decode("utf-8", errors="replace") if salida.returncode == 0 else None
 
-    return cambios, texto("origin/main"), texto(arbol)
+    # Los miembros solo se leen si la propuesta los toca.
+    miembros = None
+    if any(c.ruta == RUTA_MIEMBROS for c in cambios):
+        miembros = (texto("origin/main", RUTA_MIEMBROS), texto(arbol, RUTA_MIEMBROS))
+    return cambios, texto("origin/main"), texto(arbol), miembros
 
 
 def comentar(api, numero: int, texto: str, solo_si_existe=False) -> None:
@@ -833,8 +952,11 @@ def main() -> int:
     except (OSError, ValueError) as error:
         raise RuntimeError(f"No se puede leer `{RUTA_PROPIETARIO}` de `main`: {error}")
     permisos = permisos_de(autor, api, equipo, propietarios)
+    quienes = {autor: permisos.rol_global}
     if actor != autor:
-        permisos = permisos.el_menor(permisos_de(actor, api, equipo, propietarios))
+        del_actor = permisos_de(actor, api, equipo, propietarios)
+        quienes[actor] = del_actor.rol_global
+        permisos = permisos.el_menor(del_actor)
     quien = f"@{autor}" + (f" (último cambio de @{actor})" if actor != autor else "")
 
     # La lista de archivos prohibidos se lee de `main` (esta copia), nunca de la propuesta.
@@ -849,7 +971,10 @@ def main() -> int:
         motivos = ["La propuesta choca con cambios que ya están publicados en `main`. Actualízala con lo "
                    "último de `main` y vuelve a subirla."]
     else:
-        motivos = comprobar(*leido, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete)
+        cambios, cat_antes, cat_despues, miembros = leido
+        motivos = comprobar(cambios, cat_antes, cat_despues, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete)
+        if miembros is not None:
+            motivos += comprobar_miembros(*miembros, quienes, propietarios)
 
     if motivos:
         lista = "\n".join(f"- {m}" for m in motivos)

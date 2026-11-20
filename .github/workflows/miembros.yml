@@ -1,0 +1,52 @@
+# Aplica `equipo/miembros.json` de `main` en la organización, a mano: «Actions → Aplicar miembros → Run workflow».
+# Sirve para la primera vez, después de poner los secretos de la GitHub App, o para repetirlo si hizo falta.
+# Hace lo mismo que el trabajo `miembros` del robot de permisos y es idempotente: solo hace lo que falta.
+name: Aplicar miembros
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: miembros
+  cancel-in-progress: false
+
+jobs:
+  miembros:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      MIEMBROS_APP_ID: ${{ secrets.MIEMBROS_APP_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # El token sale de la GitHub App de la organización (permiso «Members»). La acción va fijada por hash.
+      # Sin los secretos no se pide token: el robot avisa y no rompe nada.
+      - name: Token de la GitHub App de miembros
+        id: app
+        if: env.MIEMBROS_APP_ID != ''
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ secrets.MIEMBROS_APP_ID }}
+          private-key: ${{ secrets.MIEMBROS_APP_CLAVE }}
+          owner: ${{ github.repository_owner }}
+      - name: Avisar de que no se ha podido crear el token
+        if: failure() && steps.app.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+        run: python robot/miembros.py --fallo-token
+      - name: Aplicar equipo/miembros.json en la organización
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MIEMBROS_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+        run: python robot/miembros.py

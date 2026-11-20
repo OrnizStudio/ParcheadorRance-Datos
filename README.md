@@ -15,6 +15,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo**: la lista de juegos, ediciones, versiones de parche, textos y etiquetas. Es lo que el parcheador descarga al abrirse. |
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
 | [Releases](../../releases) | Los **paquetes de parche** (`<juego>-<edición>-<versión>.zip`) y, más adelante, las versiones del propio parcheador. |
+| [`equipo/miembros.json`](equipo/miembros.json) | **Quién es del equipo y con qué rol** (cuenta → `administrador`, `editor` o `colaborador`) y las cuentas bloqueadas. Es la fuente de verdad: al publicarse un cambio, el robot lo aplica en la organización. Ver «Miembros del equipo». |
 | [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. Solo lo cambia el Propietario. |
 | [`normas/`](normas/) | Las normas generales, que solo cambia el Propietario: los archivos que **ningún parche puede tocar** (protección anticopia y cracks) y la cuenta del Propietario. |
 | [`pruebas/`](pruebas/) | El «Juego de prueba»: un juego inventado para probar el parcheador de principio a fin. |
@@ -143,6 +144,24 @@ Límites que conviene conocer:
   buena). El robot evita errores y excesos, pero **el rol de Editor es para gente de confianza**. Todo
   queda en el historial con su autor y se puede deshacer. Un Colaborador no tiene esa posibilidad.
 - Las reglas se prueban con `python -m unittest discover -s robot/pruebas`.
+
+### Miembros del equipo
+
+- [`equipo/miembros.json`](equipo/miembros.json) dice quién es del equipo y con qué rol. Se cambia desde el
+  parcheador (Equipo → Miembros), por propuesta como todo lo demás. El Propietario no va en el archivo: sale de
+  `normas/propietario.json`.
+- **Quién puede cambiar a quién** (lo comprueba `robot/permisos.py`): el Propietario, a todos; un
+  Administrador, solo a Editores y Colaboradores (no pone, quita ni cambia Administradores); los demás, a
+  nadie. Nadie se sube a sí mismo de rol. Bloquear y desbloquear cuentas es solo del Propietario.
+- **Aplicarlo**: después de publicar, el trabajo `miembros` ([`robot/miembros.py`](robot/miembros.py)) deja la
+  organización igual que el archivo: invita a quien entra, mueve de equipo a quien cambia de rol y saca del
+  equipo y de la organización a quien ya no está. No toca al Propietario ni a las cuentas que no están en
+  ninguno de los tres equipos. Es idempotente: se puede relanzar («Re-run failed jobs», o «Actions → Aplicar
+  miembros → Run workflow»).
+- Para eso usa el token de una **GitHub App de la organización** con permiso «Members» (y «Blocking users»
+  para bloquear), con los secretos `MIEMBROS_APP_ID` y `MIEMBROS_APP_CLAVE`. Sin ellos el robot avisa en la
+  propuesta de que el cambio está guardado pero sin aplicar, y no falla nada. Cómo crear la App:
+  `docs/miembros-github-app.md` en el repositorio del parcheador.
 - La protección de `main` no se aplica a los Administradores (*enforce admins* desactivado): un
   Administrador puede subir directamente a `main` o publicar una propuesta sin esperar al robot, y así se
   saltaría también la lista de archivos prohibidos. La regla es la misma para todos; el robot solo la hace
