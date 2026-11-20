@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 9,
+  "versionCatalogo": 10,
   "launcher": {
     "ultimaVersion": "0.1.3",
     "versionMinima": "",
@@ -58,6 +58,15 @@
   ],
   "etiquetas": [
     { "id": "18", "nombre": "+18", "color": "ambar", "icono": "ia", "descripcion": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssstttttsssssssssssssssssssssssssssssssssssssssssss" },
-    { "id": "test", "nombre": "test", "color": "gris", "icono": "aviso", "descripcion": "dsdadsdssad" }
+    { "id": "test", "nombre": "test", "color": "gris", "icono": "aviso", "descripcion": "dsdadsdssad" },
+    { "id": "traduccion", "nombre": "Traducción", "color": "azul", "descripcion": "Textos del juego en español." },
+    { "id": "doblaje", "nombre": "Doblaje", "color": "violeta", "descripcion": "Audio del juego en español." },
+    { "id": "mod", "nombre": "Mod", "color": "ambar", "descripcion": "Contenido nuevo o cambios en la jugabilidad." },
+    { "id": "arreglo", "nombre": "Arreglo", "color": "verde", "icono": "check", "descripcion": "Corrige errores que el estudio nunca arregló." },
+    { "id": "mejora-tecnica", "nombre": "Mejora técnica", "color": "gris", "descripcion": "Panorámico, más fps o más resolución." },
+    { "id": "accesibilidad", "nombre": "Accesibilidad", "color": "azul", "icono": "info", "descripcion": "Subtítulos, modos para daltonismo o letra más legible." },
+    { "id": "restauracion", "nombre": "Restauración", "color": "violeta", "descripcion": "Recupera contenido recortado del juego." },
+    { "id": "pack", "nombre": "Pack", "color": "gris", "icono": "ia", "descripcion": "Varios mods probados juntos." },
+    { "id": "en-pruebas", "nombre": "En pruebas", "color": "ambar", "icono": "aviso", "descripcion": "Versión que aún no es estable." }
   ]
 }
