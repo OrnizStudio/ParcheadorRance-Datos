@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 8,
+  "versionCatalogo": 9,
   "launcher": {
-    "ultimaVersion": "0.1.2",
+    "ultimaVersion": "0.1.3",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Nuevo nombre: Parcheador Ornizen", "Ya no se queda cargando para siempre cuando aún no hay juegos", "Aviso de juego nuevo y etiqueta «Nuevo» en la lista", "Botón «Buscar actualizaciones» en Ajustes → Acerca de", "Si cierras la ventana mientras se instala algo, sigue trabajando como icono junto al reloj", "Se quita la sección Descargas de Ajustes y los textos ya no salen cortados"],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.1.2/ParcheadorOrnizen-0.1.2-win-x64.zip",
-    "tamano": 21454433,
-    "hash": "blake3:b9d1a3d74b382bbe093675ed61f35dd033635ef424052c2f7172e4e83d980904"
+    "novedades": ["Ya se puede salir de Ajustes aunque no haya juegos: con la X, con Esc o pulsando otra vez Ajustes", "La ventana se puede agrandar y encoger sin que nada se corte; F11 para pantalla completa", "Textos más claros: «este PC» cuando se habla de tu ordenador", "Arreglado el ayudante de administrador en equipos con el control de cuentas (UAC) desactivado", "Equipo de traducción: nueva navegación por secciones y gestión de etiquetas"],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.1.3/ParcheadorOrnizen-0.1.3-win-x64.zip",
+    "tamano": 22101664,
+    "hash": "blake3:00885708eb53453fde724961ac28f7e2e44e6dab46ceb25ef8fb2b4c10080d39"
   },
   "juegos": [
     {
