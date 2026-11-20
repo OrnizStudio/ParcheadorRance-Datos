@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 18,
+  "versionCatalogo": 19,
   "launcher": {
     "ultimaVersion": "0.1.3",
     "versionMinima": "",
@@ -61,7 +61,7 @@
     { "id": "traduccion", "nombre": "Traducción", "color": "violeta", "descripcion": "Textos del juego en español." },
     { "id": "doblaje", "nombre": "Doblaje", "color": "violeta", "descripcion": "Audio del juego en español.", "icono": "aviso" },
     { "id": "mod", "nombre": "Mod", "color": "ambar", "descripcion": "Contenido nuevo o cambios en la jugabilidad." },
-    { "id": "arreglo", "nombre": "Arreglo", "color": "verde", "icono": "check", "descripcion": "Corrige errores que el estudio nunca arregló." },
+    { "id": "arreglo", "nombre": "Arreglo", "color": "rojo", "icono": "ia", "descripcion": "Corrige errores que el estudio nunca arregló." },
     { "id": "mejora-tecnica", "nombre": "Mejora técnica", "color": "gris", "descripcion": "Panorámico, más fps o más resolución." },
     { "id": "accesibilidad", "nombre": "Accesibilidad", "color": "azul", "icono": "info", "descripcion": "Subtítulos, modos para daltonismo o letra más legible." },
     { "id": "restauracion", "nombre": "Restauración", "color": "violeta", "descripcion": "Recupera contenido recortado del juego." },
