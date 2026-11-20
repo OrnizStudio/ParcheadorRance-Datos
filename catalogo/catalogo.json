@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 9,
+  "versionCatalogo": 10,
   "launcher": {
     "ultimaVersion": "0.1.3",
     "versionMinima": "",
@@ -27,6 +27,7 @@
       "ediciones": [
         {
           "id": "unica",
+          "versiones": [{ "version": "9.9.9", "estado": "pruebas", "paquetes": [{"edicion": "unica", "url": "https://raw.githubusercontent.com/OrnizStudio/ParcheadorRance-Datos/prueba-lista-negra/pruebas/prueba-lista-negra.zip", "tamano": 740, "hash": "blake3:68c3c2996a8522751f2c55890a8c2df6ac561a1d3863f00742fe6e5ca4b74953"}] }],
           "nombre": "Única",
           "contenido": { "texto": true, "imagenes": false, "testing": "hecho" },
           "huella": [
