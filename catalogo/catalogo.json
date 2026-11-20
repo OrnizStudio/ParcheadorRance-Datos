@@ -1,6 +1,7 @@
 {
   "esquema": 1,
-  "versionCatalogo": 9,
+  "versionCatalogo": 10,
+  "grupo": { "nombre": "Ornizen", "archivosProhibidos": [ { "patron": "*.sig", "motivo": "Prueba del robot." } ] },
   "launcher": {
     "ultimaVersion": "0.1.3",
     "versionMinima": "",
@@ -36,6 +37,7 @@
             { "ruta": "LEEME.txt", "tamano": 59, "hashParcial": "blake3:3cb51ba951782075e6538b2de80408185e9493e907af4146655902db3a9e8f01", "hash": "blake3:9d1c5f67410b7d29fc88ec2a98ed5daf15fd0f94efba2af02817a0df985e5a30" }
           ],
           "huellasParcheadas": [
+            { "version": "9.9.9", "archivos": [ { "ruta": "Datos/juego.sig", "tamano": 1, "hash": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, { "ruta": "Bin/STEAM_API64.dll", "tamano": 1, "hash": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" } ] },
             {
               "version": "0.1.0",
               "archivos": [
