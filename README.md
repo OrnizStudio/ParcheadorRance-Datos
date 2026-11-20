@@ -60,8 +60,8 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 
 | Rol | Equipo de GitHub | Nivel en este repositorio | Qué puede cambiar |
 |---|---|---|---|
-| Propietario | `administradores` (y *owner* de la organización) | Admin | Todo, también las normas generales (`normas/`), el robot (`robot/`) y la configuración de GitHub (`.github/`). |
-| Administrador | `administradores` | Admin | Todo menos `normas/`, `robot/` y `.github/`. |
+| Propietario | `administradores` (y *owner* de la organización) | Admin | Todo, también las normas generales (`normas/`), el robot (`robot/`), la configuración de GitHub (`.github/`) y las **etiquetas del catálogo** (crearlas, editarlas y borrarlas: son globales). |
+| Administrador | `administradores` | Admin | Todo menos `normas/`, `robot/` y `.github/`, y menos crear, editar o borrar etiquetas del catálogo (poner y quitar en un juego las que ya existen, sí). |
 | Editor | `editores` | Escritura (*write*) | El contenido de los juegos **que ya existen**: ediciones, versiones (crearlas, publicarlas, retirarlas), textos, imágenes, etiquetas puestas, créditos. No puede dar de alta, quitar, publicar ni ocultar un juego entero, ni tocar el parcheador (`launcher`), el grupo, las etiquetas del catálogo o cualquier archivo fuera de `catalogo/`. |
 | Colaborador | `colaboradores` | Clasificación (*triage*) | Solo, en juegos y versiones que ya existen: **textos y notas** (`sinopsis`, `notaEdicion`, `parche.notas`), **etiquetas** (poner y quitar las que existen) y **estado de la traducción** (`estado`, `progreso`, `contenido`). |
 

@@ -25,6 +25,7 @@ BASE = {
     }],
 }
 ADMIN, EDITOR, COLABORADOR, NADIE = (Permisos(r) for r in (Rol.ADMINISTRADOR, Rol.EDITOR, Rol.COLABORADOR, Rol.NINGUNO))
+PROPIETARIO = Permisos(Rol.PROPIETARIO)
 
 
 def catalogo(cambiar=None, subir_version=True):
@@ -88,11 +89,44 @@ class Administrador(unittest.TestCase):
         def cambiar(c):
             c["juegos"].append({"id": "juego2", "habilitado": True})
             c["launcher"]["versionMinima"] = "0.2.0"
-            c["etiquetas"].append({"id": "nueva"})
-            juego(c).update(pruebas=True, habilitado=False)
+            juego(c).update(pruebas=True, habilitado=False, etiquetas=["beta", "adultos"])
         archivos = [Cambio("README.md", "M"), Cambio("pruebas/crear-juego-prueba.py", "M"),
                     Cambio("catalogo/juegos/juego2/banner.jpg", "A", tamano=100)]
         self.assertEqual([], revisar(ADMIN, cambiar, archivos=archivos))
+
+    def test_no_crea_edita_ni_borra_etiquetas_del_catalogo(self):
+        cambios = {
+            "crear": lambda c: c["etiquetas"].append({"id": "nueva", "nombre": "Nueva"}),
+            "editar": lambda c: c["etiquetas"][0].update(nombre="Beta abierta", color="ambar"),
+            "borrar": lambda c: c["etiquetas"].pop(),
+        }
+        for que, cambiar in cambios.items():
+            with self.subTest(que):
+                motivos = revisar(ADMIN, cambiar)
+                self.assertEqual(1, len(motivos), motivos)
+                self.assertIn("solo las crea, edita o borra el Propietario", motivos[0])
+
+    def test_pone_y_quita_en_un_juego_etiquetas_que_ya_existen(self):
+        self.assertEqual([], revisar(ADMIN, lambda c: juego(c).update(etiquetas=["adultos"])))
+        self.assertEqual([], revisar(ADMIN, lambda c: juego(c)["ediciones"][0].update(etiquetas=["beta"])))
+
+
+class Propietario(unittest.TestCase):
+    def test_crea_edita_y_borra_etiquetas_del_catalogo(self):
+        self.assertEqual([], revisar(PROPIETARIO, lambda c: c["etiquetas"].append({"id": "nueva", "nombre": "Nueva"})))
+        self.assertEqual([], revisar(PROPIETARIO, lambda c: c["etiquetas"][0].update(nombre="Beta abierta")))
+        # «adultos» no la lleva ningún juego: se puede borrar. (Borrar una que se usa lo para la validación
+        # general: «la etiqueta no existe en el catálogo».)
+        self.assertEqual([], revisar(PROPIETARIO, lambda c: c["etiquetas"].pop()))
+        motivos = revisar(PROPIETARIO, lambda c: c["etiquetas"].pop(0))
+        self.assertTrue(any("la etiqueta `beta` no existe" in m for m in motivos), motivos)
+
+    def test_tambien_todo_lo_de_un_administrador(self):
+        def cambiar(c):
+            c["juegos"].append({"id": "juego2", "habilitado": True})
+            c["launcher"]["versionMinima"] = "0.2.0"
+            c["etiquetas"].append({"id": "nueva"})
+        self.assertEqual([], revisar(PROPIETARIO, cambiar))
 
 
 class Editor(unittest.TestCase):
@@ -128,7 +162,7 @@ class Editor(unittest.TestCase):
             with self.subTest(clave):
                 motivos = revisar(EDITOR, lambda c: c.update({clave: valor}))
                 self.assertEqual(1, len(motivos), motivos)
-                self.assertIn("solo la cambia un Administrador", motivos[0])
+                self.assertIn("el Propietario" if clave == "etiquetas" else "solo la cambia un Administrador", motivos[0])
 
     def test_no_toca_el_robot_ni_otros_archivos(self):
         for ruta in ("README.md", "equipo.json", "catalogo/otro.json"):

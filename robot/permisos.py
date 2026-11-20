@@ -3,8 +3,10 @@
 
 Mira qué cambia una propuesta (pull request) y decide si quien la hace tiene permiso, según su rol:
 
-  Propietario    todo, también las normas generales (`normas/`), el robot (`robot/`) y `.github/`.
-  Administrador  todo menos `normas/`, `robot/` y `.github/`.
+  Propietario    todo, también las normas generales (`normas/`), el robot (`robot/`), `.github/` y las
+                 etiquetas del catálogo.
+  Administrador  todo menos `normas/`, `robot/` y `.github/`, y menos crear, editar o borrar etiquetas del
+                 catálogo.
   Editor         el contenido de los juegos que ya existen (y sus imágenes). No puede añadir, quitar,
                  publicar ni ocultar juegos, ni tocar el parcheador, el grupo o las etiquetas del catálogo.
   Colaborador    solo textos y notas, etiquetas y estado de la traducción de lo que ya existe.
@@ -529,13 +531,17 @@ _SIN_ROL = ("Tu cuenta no tiene ningún rol en este repositorio (Administrador, 
 def _comprobar_campos(antes: dict, despues: dict, permisos: Permisos) -> list:
     motivos = []
 
-    # ── Raíz del catálogo: el parcheador (`launcher`), el grupo, las etiquetas… son de Administrador.
-    if permisos.rol_global < Rol.ADMINISTRADOR:
-        for clave in _claves_distintas(antes, despues):
-            if clave not in RAIZ_LIBRE:
-                motivos.append(f"`{clave}`: esta parte del catálogo solo la cambia un Administrador"
-                               + (" (los demás roles ponen y quitan etiquetas que ya existen, pero no las "
-                                  "crean ni las editan)." if clave == "etiquetas" else "."))
+    # ── Raíz del catálogo: el parcheador (`launcher`), el grupo… son de Administrador. Las etiquetas
+    #    (`etiquetas`) son globales, valen para todos los juegos: crearlas, editarlas o borrarlas es solo
+    #    del Propietario. Ponerlas o quitarlas en un juego (`juegos[].etiquetas`) no es esto: va con el juego.
+    for clave in _claves_distintas(antes, despues):
+        if clave == "etiquetas":
+            if permisos.rol_global < Rol.PROPIETARIO:
+                motivos.append("`etiquetas`: las etiquetas del catálogo son globales y solo las crea, edita o "
+                               "borra el Propietario (los demás roles ponen y quitan en sus juegos etiquetas "
+                               "que ya existen, pero no las crean ni las editan).")
+        elif clave not in RAIZ_LIBRE and permisos.rol_global < Rol.ADMINISTRADOR:
+            motivos.append(f"`{clave}`: esta parte del catálogo solo la cambia un Administrador.")
 
     # ── Juegos que aparecen o desaparecen.
     j_antes, j_despues = _juegos_por_id(antes), _juegos_por_id(despues)
