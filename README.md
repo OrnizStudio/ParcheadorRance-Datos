@@ -15,7 +15,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo**: la lista de juegos, ediciones, versiones de parche, textos y etiquetas. Es lo que el parcheador descarga al abrirse. |
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
 | [Releases](../../releases) | Los **paquetes de parche** (`<juego>-<edición>-<versión>.zip`) y, más adelante, las versiones del propio parcheador. |
-| [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. |
+| [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. Solo lo cambia el Propietario. |
 | [`normas/`](normas/) | Las normas generales, que solo cambia el Propietario: los archivos que **ningún parche puede tocar** (protección anticopia y cracks) y la cuenta del Propietario. |
 | [`pruebas/`](pruebas/) | El «Juego de prueba»: un juego inventado para probar el parcheador de principio a fin. |
 
@@ -60,8 +60,8 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 
 | Rol | Equipo de GitHub | Nivel en este repositorio | Qué puede cambiar |
 |---|---|---|---|
-| Propietario | `administradores` (y *owner* de la organización) | Admin | Todo, también las normas generales (`normas/`). |
-| Administrador | `administradores` | Admin | Todo menos las normas generales (`normas/`). |
+| Propietario | `administradores` (y *owner* de la organización) | Admin | Todo, también las normas generales (`normas/`), el robot (`robot/`) y la configuración de GitHub (`.github/`). |
+| Administrador | `administradores` | Admin | Todo menos `normas/`, `robot/` y `.github/`. |
 | Editor | `editores` | Escritura (*write*) | El contenido de los juegos **que ya existen**: ediciones, versiones (crearlas, publicarlas, retirarlas), textos, imágenes, etiquetas puestas, créditos. No puede dar de alta, quitar, publicar ni ocultar un juego entero, ni tocar el parcheador (`launcher`), el grupo, las etiquetas del catálogo o cualquier archivo fuera de `catalogo/`. |
 | Colaborador | `colaboradores` | Clasificación (*triage*) | Solo, en juegos y versiones que ya existen: **textos y notas** (`sinopsis`, `notaEdicion`, `parche.notas`), **etiquetas** (poner y quitar las que existen) y **estado de la traducción** (`estado`, `progreso`, `contenido`). |
 
@@ -79,6 +79,10 @@ Cómo funciona:
 - Los Colaboradores no pueden crear ramas aquí: proponen desde una copia propia del repositorio (*fork*).
   Los Editores sí pueden crear ramas (necesitan escritura para subir paquetes a las Releases).
 - Cuenta el rol más bajo entre quien abrió la propuesta y quien subió el último cambio.
+- `normas/`, `robot/` y `.github/` **solo los cambia el Propietario**, ni siquiera los Administradores: son
+  las normas generales y lo que las hace cumplir. Si un Administrador pudiera cambiar el robot o sus flujos
+  de trabajo, podría quitar cualquier regla. Quién es el Propietario lo dice
+  [`normas/propietario.json`](normas/propietario.json) (ver «Archivos prohibidos»).
 
 ### Archivos prohibidos (protección anticopia)
 

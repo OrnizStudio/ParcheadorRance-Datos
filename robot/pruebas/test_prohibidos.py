@@ -242,7 +242,7 @@ class ListaGeneralYPropietario(unittest.TestCase):
             with self.subTest(rol=rol):
                 motivos = self.proponer_cambio_de_normas(Permisos(rol))
                 self.assertEqual(1, len(motivos))
-                self.assertIn("solo las cambia el Propietario", motivos[0])
+                self.assertIn("solo lo cambia el Propietario", motivos[0])
 
     def test_el_propietario_tambien_queda_sujeto_a_la_lista(self):
         motivos = revisar(huella_que_toca("steam_api.dll"), permisos=Permisos(Rol.PROPIETARIO))
