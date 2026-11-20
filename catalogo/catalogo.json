@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 11,
+  "versionCatalogo": 12,
   "launcher": {
     "ultimaVersion": "0.1.3",
     "versionMinima": "",
@@ -57,7 +57,7 @@
     }
   ],
   "etiquetas": [
-    { "id": "18", "nombre": "+18", "color": "ambar", "icono": "ia", "descripcion": "Contenido para adultos. Solo mayores de 18 años." },
+    { "id": "adultos", "nombre": "+18", "color": "ambar", "icono": "ia", "descripcion": "Contenido para adultos. Solo mayores de 18 años." },
     { "id": "traduccion", "nombre": "Traducción", "color": "azul", "descripcion": "Textos del juego en español." },
     { "id": "doblaje", "nombre": "Doblaje", "color": "violeta", "descripcion": "Audio del juego en español." },
     { "id": "mod", "nombre": "Mod", "color": "ambar", "descripcion": "Contenido nuevo o cambios en la jugabilidad." },
