@@ -791,11 +791,34 @@ def resumen(texto: str) -> None:
             archivo.write(texto + "\n")
 
 
+def aviso_fallo_instalacion(fusionar: bool) -> str:
+    """El comentario cuando no se ha podido instalar BLAKE3 (robot/instalar.sh): un fallo de red pasajero.
+
+    Tiene que quedar claro que NO es un rechazo: la propuesta ni siquiera se ha llegado a mirar.
+    """
+    que = ("La propuesta ya estaba aceptada, pero no se ha podido publicar"
+           if fusionar else "La propuesta todavía no se ha comprobado")
+    return ("### ⏳ Fallo temporal del robot de permisos (no es un rechazo)\n\n"
+            f"{que}: el robot no ha podido instalar lo que necesita (BLAKE3, desde PyPI) por un corte de red, "
+            "ni siquiera tras varios intentos. **No hay nada mal en la propuesta.**\n\n"
+            "Para volver a intentarlo: en la pestaña «Checks», «Re-run failed jobs» (hace falta permiso de "
+            "escritura), o sube cualquier cambio a esta misma propuesta.")
+
+
 def main() -> int:
     fusionar = "--fusionar" in sys.argv[1:]
     repositorio = os.environ["GITHUB_REPOSITORY"]
     numero = int(os.environ["PR_NUMERO"])
     api = crear_api(repositorio, os.environ["GITHUB_TOKEN"])
+
+    if "--fallo-instalacion" in sys.argv[1:]:
+        # Lo lanza el flujo de trabajo cuando robot/instalar.sh falla. Sustituye el comentario del robot
+        # (si había un rechazo anterior, ya no vale: esta vez no se ha comprobado nada) y termina en error
+        # para que la comprobación no quede como aprobada.
+        texto = aviso_fallo_instalacion(fusionar)
+        comentar(api, numero, texto)
+        resumen(texto)
+        return 1
 
     propuesta = api("GET", f"/pulls/{numero}")
     cabeza = propuesta["head"]["sha"]

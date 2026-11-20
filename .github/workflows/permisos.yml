@@ -9,7 +9,8 @@
 # - El nombre del trabajo `permisos` es la comprobación obligatoria de `main`: no cambiarlo sin cambiar
 #   también la protección de la rama.
 # - Lo único que se instala de fuera es BLAKE3 (robot/requisitos.txt), con versión y hash fijados, para
-#   comprobar los paquetes de parche que se descargan (lista de archivos prohibidos, normas/).
+#   comprobar los paquetes de parche que se descargan (lista de archivos prohibidos, normas/). Se instala
+#   con reintentos (robot/instalar.sh); si aun así falla, el robot avisa de que es un fallo temporal.
 name: Robot de permisos
 
 on:
@@ -39,10 +40,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Instalar BLAKE3 (versión y hash fijados)
-        run: |
-          python -m venv "$RUNNER_TEMP/robot"
-          "$RUNNER_TEMP/robot/bin/pip" install --quiet --no-deps --only-binary :all: --require-hashes -r robot/requisitos.txt
+      - name: Instalar BLAKE3 (versión y hash fijados, con reintentos)
+        id: instalar
+        run: bash robot/instalar.sh "$RUNNER_TEMP/robot"
+      # Si la instalación falla tras los reintentos (corte de red con PyPI), avisa en la propuesta de que
+      # es un fallo temporal y no un rechazo. Usa el Python del sistema: esta parte no necesita BLAKE3.
+      - name: Avisar del fallo temporal de instalación
+        if: failure() && steps.instalar.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+        run: python robot/permisos.py --fallo-instalacion
       - name: Comprobar la propuesta
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -66,10 +74,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Instalar BLAKE3 (versión y hash fijados)
-        run: |
-          python -m venv "$RUNNER_TEMP/robot"
-          "$RUNNER_TEMP/robot/bin/pip" install --quiet --no-deps --only-binary :all: --require-hashes -r robot/requisitos.txt
+      - name: Instalar BLAKE3 (versión y hash fijados, con reintentos)
+        id: instalar
+        run: bash robot/instalar.sh "$RUNNER_TEMP/robot"
+      # Si la instalación falla tras los reintentos (corte de red con PyPI), avisa en la propuesta de que
+      # es un fallo temporal y no un rechazo. Usa el Python del sistema: esta parte no necesita BLAKE3.
+      - name: Avisar del fallo temporal de instalación
+        if: failure() && steps.instalar.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+        run: python robot/permisos.py --fallo-instalacion --fusionar
       # Vuelve a comprobarla contra el `main` de este instante (por si otra propuesta se ha publicado
       # mientras tanto) y, si sigue pasando, la fusiona.
       - name: Volver a comprobar y publicar
