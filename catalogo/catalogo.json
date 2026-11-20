@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 21,
+  "versionCatalogo": 22,
   "launcher": {
     "ultimaVersion": "0.1.3",
     "versionMinima": "",
@@ -16,7 +16,7 @@
       "habilitado": true,
       "pruebas": true,
       "orden": 9999,
-      "titulo": "Juego de prueba",
+      "titulo": "Juego de prueba2",
       "tituloCorto": "Prueba",
       "estado": "completo",
       "progreso": { "traduccion": 100, "revision": 100, "imagenes": 0 },
