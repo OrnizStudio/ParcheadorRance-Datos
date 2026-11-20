@@ -1,0 +1,5 @@
+{
+  "esquema": 1,
+  "descripcion": "Cuenta de GitHub del Propietario (owner de la organización). El robot no puede distinguirlo de un Administrador por sí solo: los dos tienen nivel admin. Solo el Propietario puede cambiar lo que hay en normas/, también este archivo. Si cambia la cuenta del Propietario, hay que cambiarla aquí.",
+  "propietario": ["0rnizL"]
+}

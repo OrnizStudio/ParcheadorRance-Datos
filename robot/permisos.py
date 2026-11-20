@@ -3,13 +3,15 @@
 
 Mira qué cambia una propuesta (pull request) y decide si quien la hace tiene permiso, según su rol:
 
-  Administrador  todo.
+  Propietario    todo, también las normas generales (`normas/`).
+  Administrador  todo menos las normas generales (`normas/`).
   Editor         el contenido de los juegos que ya existen (y sus imágenes). No puede añadir, quitar,
                  publicar ni ocultar juegos, ni tocar el parcheador, el grupo o las etiquetas del catálogo.
   Colaborador    solo textos y notas, etiquetas y estado de la traducción de lo que ya existe.
 
-Y, para todos (también Administradores y Propietario): ningún parche puede tocar los archivos de
-`normas/archivos-prohibidos.json` (protección anticopia y cracks). Ver «Archivos prohibidos» más abajo.
+Y, para todos (también Administradores y Propietario): ningún parche puede tocar los archivos de la lista
+general (`normas/archivos-prohibidos.json`) ni de la del grupo (`grupo.archivosProhibidos` del catálogo):
+protección anticopia y cracks. Ver «Archivos prohibidos» más abajo.
 
 Este archivo tiene dos partes:
 
@@ -52,10 +54,11 @@ class Rol(enum.IntEnum):
     COLABORADOR = 1
     EDITOR = 2
     ADMINISTRADOR = 3
+    PROPIETARIO = 4  # un Administrador que además figura en `normas/propietario.json`
 
     @property
     def nombre(self) -> str:
-        return {0: "sin rol", 1: "Colaborador", 2: "Editor", 3: "Administrador"}[int(self)]
+        return {0: "sin rol", 1: "Colaborador", 2: "Editor", 3: "Administrador", 4: "Propietario"}[int(self)]
 
 
 @dataclass(frozen=True)
@@ -224,7 +227,15 @@ def _validar_parche(donde, parche):
 # ───────────────────────────────────── Archivos prohibidos ─────────────────────────────────────
 #
 # Ningún parche puede modificar ni añadir archivos de protección anticopia (DRM) ni los típicos de los
-# cracks: la lista está en `normas/archivos-prohibidos.json` y se lee siempre de `main`.
+# cracks. Hay dos listas y cuentan las dos a la vez:
+#
+#   general    `normas/archivos-prohibidos.json`. Vale para todos los parches. Solo la cambia el
+#              Propietario (`normas/` es suyo, ver `_comprobar_archivos`). Se lee siempre de `main`.
+#   del grupo  `grupo.archivosProhibidos` en el catálogo (la ficha del grupo). Vale para los parches de este
+#              catálogo, que son los del grupo. La cambian quienes pueden cambiar `grupo`: Administradores y
+#              Propietario. Solo puede **añadir**: no hay forma de escribir excepciones, así que nunca quita
+#              nada de la general. Cuenta la de `main` y la de la propuesta a la vez: quitar una entrada
+#              surte efecto en la propuesta siguiente, no en la misma.
 #
 # De dónde sale qué archivos toca un parche: lo único fiable es el `manifiesto.json` de dentro del `.zip`
 # (es lo que ejecuta el parcheador). `huellasParcheadas` del catálogo se escribe a mano o con el publicador
@@ -233,6 +244,8 @@ def _validar_parche(donde, parche):
 # el parcheador antes de instalarlo) y lee las rutas de su manifiesto. Nunca ejecuta nada del paquete.
 
 RUTA_PROHIBIDOS = "normas/archivos-prohibidos.json"
+CARPETA_NORMAS = "normas/"
+CAMPO_PROHIBIDOS_GRUPO = "archivosProhibidos"
 TAMANO_MAXIMO_PAQUETE = 4 * 1024 * 1024 * 1024
 TAMANO_MAXIMO_MANIFIESTO = 16 * 1024 * 1024
 NOMBRE_MANIFIESTO = "manifiesto.json"
@@ -242,6 +255,7 @@ NOMBRE_MANIFIESTO = "manifiesto.json"
 class Prohibido:
     patron: str
     motivo: str = ""
+    lista: str = "general"  # «general» o «del grupo X»: sale en el aviso
 
     def coincide(self, ruta: str) -> bool:
         """Sin distinguir mayúsculas. `nombre*.dll` mira el nombre del archivo en cualquier carpeta;
@@ -258,19 +272,40 @@ class Prohibido:
         return fnmatch.fnmatchcase(partes[-1], patron)
 
 
+def _leer_patrones(patrones, donde: str, lista: str):
+    """Lista JSON de `{patron, motivo}` → (lista de `Prohibido`, errores)."""
+    if not isinstance(patrones, list):
+        return [], [f"{donde} tiene que ser una lista de `{{ \"patron\": …, \"motivo\": … }}`."]
+    resultado, errores = [], []
+    for p in patrones:
+        if not isinstance(p, dict) or not isinstance(p.get("patron"), str) or not p["patron"].strip("/ "):
+            errores.append(f"{donde}: hay un patrón vacío o mal escrito ({p!r}).")
+            continue
+        resultado.append(Prohibido(p["patron"].strip(), str(p.get("motivo") or ""), lista))
+    return resultado, errores
+
+
 def leer_prohibidos(texto: str) -> list:
-    """`normas/archivos-prohibidos.json` → lista de `Prohibido`. Si está mal, falla: mejor no aceptar nada
-    que aceptar sin comprobar."""
+    """La lista general (`normas/archivos-prohibidos.json`) → lista de `Prohibido`. Si está mal, falla:
+    mejor no aceptar nada que aceptar sin comprobar."""
     datos = json.loads(texto)
     patrones = datos.get("patrones") if isinstance(datos, dict) else None
     if not isinstance(patrones, list) or not patrones:
         raise ValueError(f"`{RUTA_PROHIBIDOS}` no tiene una lista `patrones`.")
-    resultado = []
-    for p in patrones:
-        if not isinstance(p, dict) or not isinstance(p.get("patron"), str) or not p["patron"].strip("/ "):
-            raise ValueError(f"`{RUTA_PROHIBIDOS}`: hay un patrón vacío o mal escrito ({p!r}).")
-        resultado.append(Prohibido(p["patron"].strip(), str(p.get("motivo") or "")))
+    resultado, errores = _leer_patrones(patrones, f"`{RUTA_PROHIBIDOS}`", "general")
+    if errores:
+        raise ValueError(errores[0])
     return resultado
+
+
+def prohibidos_del_grupo(catalogo):
+    """La lista propia del grupo (`grupo.archivosProhibidos` del catálogo) → (lista de `Prohibido`, errores)."""
+    grupo = catalogo.get("grupo") if isinstance(catalogo, dict) else None
+    if not isinstance(grupo, dict) or grupo.get(CAMPO_PROHIBIDOS_GRUPO) is None:
+        return [], []
+    nombre = grupo.get("nombre")
+    lista = f"del grupo {nombre}" if isinstance(nombre, str) and nombre.strip() else "del grupo"
+    return _leer_patrones(grupo[CAMPO_PROHIBIDOS_GRUPO], f"`grupo.{CAMPO_PROHIBIDOS_GRUPO}`", lista)
 
 
 def archivo_prohibido(ruta: str, prohibidos):
@@ -278,9 +313,10 @@ def archivo_prohibido(ruta: str, prohibidos):
 
 
 def mensaje_protegido(donde: str, ruta: str, norma: Prohibido) -> str:
+    origen = f"`{RUTA_PROHIBIDOS}`" if norma.lista == "general" else f"`grupo.{CAMPO_PROHIBIDOS_GRUPO}` del catálogo"
     return (f"{donde}: Este parche toca un archivo protegido ({ruta}). Los parches no pueden modificar "
-            f"archivos de protección anticopia. Norma `{norma.patron}` de `{RUTA_PROHIBIDOS}`"
-            + (f" — {norma.motivo}" if norma.motivo else "."))
+            f"archivos de protección anticopia. Lo bloquea la lista **{norma.lista}**: norma `{norma.patron}` "
+            f"de {origen}" + (f" — {norma.motivo}" if norma.motivo else "."))
 
 
 class PaqueteIlegible(Exception):
@@ -288,9 +324,15 @@ class PaqueteIlegible(Exception):
 
 
 def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer_paquete) -> list:
-    motivos = []
+    # Primero la general: si un archivo está en las dos, el aviso dice «general».
+    del_grupo_antes, _ = prohibidos_del_grupo(cat_antes)
+    del_grupo, motivos = prohibidos_del_grupo(cat_despues)
+    vistos = {(p.patron.lower(), p.lista) for p in del_grupo}
+    del_grupo += [p for p in del_grupo_antes if (p.patron.lower(), p.lista) not in vistos]
+    todos = list(prohibidos) + del_grupo
+
     for donde, ruta in _rutas_parcheadas(cat_despues):
-        norma = archivo_prohibido(ruta, prohibidos)
+        norma = archivo_prohibido(ruta, todos)
         if norma:
             motivos.append(mensaje_protegido(donde, ruta, norma))
 
@@ -309,7 +351,7 @@ def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer
                                "Sin revisarlo no se puede saber si toca archivos protegidos.")
                 continue
             for ruta in rutas:
-                norma = archivo_prohibido(ruta, prohibidos)
+                norma = archivo_prohibido(ruta, todos)
                 if norma:
                     motivos.append(mensaje_protegido(donde, ruta, norma))
     return _sin_repetidos(motivos)
@@ -432,6 +474,12 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
             continue
         if c.ruta == RUTA_CATALOGO:
             continue  # lo que se puede cambiar dentro del catálogo lo decide _comprobar_campos
+        if c.ruta.startswith(CARPETA_NORMAS):
+            if permisos.rol_global < Rol.PROPIETARIO:
+                motivos.append(f"`{c.ruta}`: las normas generales (`{CARPETA_NORMAS}`, por ejemplo la lista "
+                               "general de archivos prohibidos) solo las cambia el Propietario. Un grupo puede "
+                               f"añadir archivos a su propia lista en `grupo.{CAMPO_PROHIBIDOS_GRUPO}` del catálogo.")
+            continue
         if permisos.rol_global >= Rol.ADMINISTRADOR:
             continue
 
@@ -608,13 +656,35 @@ def leer_equipo(texto_equipo_json):
     return {}
 
 
-def permisos_de(usuario: str, api, equipo: dict) -> Permisos:
+RUTA_PROPIETARIO = "normas/propietario.json"
+
+
+def leer_propietarios(texto: str) -> set:
+    """`normas/propietario.json` → cuentas (en minúsculas) que son Propietario.
+
+    El robot no puede distinguir al Propietario (owner de la organización) de un Administrador: los dos
+    tienen nivel `admin` en el repositorio, y saber quién es owner pide una clave con permisos de la
+    organización que el robot no tiene. Por eso se escribe aquí. Solo lo cambia el propio Propietario
+    (está en `normas/`) y se lee siempre de `main`. Solo cuenta si la cuenta, además, es `admin`.
+    """
+    datos = json.loads(texto)
+    cuentas = datos.get("propietario") if isinstance(datos, dict) else None
+    if isinstance(cuentas, str):
+        cuentas = [cuentas]
+    if not isinstance(cuentas, list) or not cuentas or not all(isinstance(c, str) and c.strip() for c in cuentas):
+        raise ValueError(f"`{RUTA_PROPIETARIO}` tiene que tener `propietario`: una cuenta o una lista de cuentas.")
+    return {c.strip().lower() for c in cuentas}
+
+
+def permisos_de(usuario: str, api, equipo: dict, propietarios=frozenset()) -> Permisos:
     """El rol de GitHub de la persona, ampliado con lo que diga `equipo.json` (hoy, nada)."""
     rol = Rol.NINGUNO
     if usuario and not usuario.endswith("[bot]"):
         respuesta = api("GET", f"/collaborators/{usuario}/permission", tolerar=(404,))
         if respuesta:
             rol = ROL_DE_GITHUB.get(respuesta.get("role_name") or respuesta.get("permission"), Rol.NINGUNO)
+        if rol == Rol.ADMINISTRADOR and usuario.lower() in propietarios:
+            rol = Rol.PROPIETARIO
     extra = equipo.get(usuario.lower())
     if extra is None:
         return Permisos(rol)
@@ -712,13 +782,18 @@ def main() -> int:
     # gana permisos por añadir cambios a la propuesta de otra persona con más rol.
     actor = os.environ.get("PR_ACTOR") or autor
     equipo = leer_equipo(None)
-    permisos = permisos_de(autor, api, equipo)
+    raiz = pathlib.Path(__file__).resolve().parents[1]  # la copia de `main`, nunca la propuesta
+    try:
+        propietarios = leer_propietarios((raiz / RUTA_PROPIETARIO).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"No se puede leer `{RUTA_PROPIETARIO}` de `main`: {error}")
+    permisos = permisos_de(autor, api, equipo, propietarios)
     if actor != autor:
-        permisos = permisos.el_menor(permisos_de(actor, api, equipo))
+        permisos = permisos.el_menor(permisos_de(actor, api, equipo, propietarios))
     quien = f"@{autor}" + (f" (último cambio de @{actor})" if actor != autor else "")
 
     # La lista de archivos prohibidos se lee de `main` (esta copia), nunca de la propuesta.
-    ruta_prohibidos = pathlib.Path(__file__).resolve().parents[1] / RUTA_PROHIBIDOS
+    ruta_prohibidos = raiz / RUTA_PROHIBIDOS
     try:
         prohibidos = leer_prohibidos(ruta_prohibidos.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:

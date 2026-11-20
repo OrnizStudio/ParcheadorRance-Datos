@@ -11,7 +11,8 @@ import zipfile
 RAIZ = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ / "robot"))
 from permisos import (Cambio, PaqueteIlegible, Permisos, Prohibido, Rol, RUTA_CATALOGO, RUTA_PROHIBIDOS,  # noqa: E402
-                      archivo_prohibido, comprobar, leer_prohibidos, rutas_del_paquete)
+                      RUTA_PROPIETARIO, archivo_prohibido, comprobar, leer_prohibidos, leer_propietarios,
+                      permisos_de, rutas_del_paquete)
 
 LISTA = leer_prohibidos((RAIZ / RUTA_PROHIBIDOS).read_text(encoding="utf-8"))
 ADMIN = Permisos(Rol.ADMINISTRADOR)
@@ -152,6 +153,118 @@ class Catalogo(unittest.TestCase):
         motivos = revisar(cambiar, {"https://example.org/nuevo.zip": zip_con(["steam_api.dll"])})
         self.assertEqual(1, len(motivos))
         self.assertIn("no se ha podido revisar el paquete", motivos[0])
+
+
+def con_lista_de_grupo(patrones, nombre="Ornizen"):
+    def poner(c):
+        c["grupo"] = {"nombre": nombre, "archivosProhibidos": patrones}
+    return poner
+
+
+def huella_que_toca(*rutas):
+    def poner(c):
+        c["juegos"][0]["ediciones"][0]["huellasParcheadas"] = [
+            {"version": "1.1.0", "archivos": [{"ruta": r, "tamano": 1, "hash": "blake3:" + "b" * 64} for r in rutas]}]
+    return poner
+
+
+def varios(*cambios):
+    def cambiar(c):
+        for cambio in cambios:
+            cambio(c)
+    return cambiar
+
+
+class ListaDelGrupo(unittest.TestCase):
+    def test_el_grupo_anade_sus_propios_archivos(self):
+        motivos = revisar(varios(con_lista_de_grupo([{"patron": "*.sig", "motivo": "Firma del juego."}]),
+                                 huella_que_toca("Datos/juego.sig")))
+        self.assertEqual(1, len(motivos))
+        self.assertIn("(Datos/juego.sig). " + MENSAJE, motivos[0])
+        self.assertIn("lista **del grupo Ornizen**", motivos[0])
+        self.assertIn("`grupo.archivosProhibidos`", motivos[0])
+
+    def test_tambien_en_los_paquetes(self):
+        datos = zip_con(["Datos/juego.sig"])
+
+        def cambiar(c):
+            con_lista_de_grupo([{"patron": "*.sig"}])(c)
+            c["juegos"][0]["parche"]["paquetes"] = [paquete_de(datos)]
+        motivos = revisar(cambiar, {"https://example.org/nuevo.zip": datos})
+        self.assertEqual(1, len(motivos))
+        self.assertIn("del grupo Ornizen", motivos[0])
+
+    def test_el_aviso_de_la_general_dice_general(self):
+        motivos = revisar(varios(con_lista_de_grupo([{"patron": "steam_api64.dll"}]), huella_que_toca("steam_api64.dll")))
+        self.assertEqual(1, len(motivos))
+        self.assertIn("lista **general**", motivos[0])
+        self.assertIn("`normas/archivos-prohibidos.json`", motivos[0])
+
+    def test_no_puede_saltarse_la_general(self):
+        # No hay sintaxis de excepción: un «!» es un patrón más (que no coincide con nada), no un permiso.
+        motivos = revisar(varios(con_lista_de_grupo([{"patron": "!steam_api64.dll"}]), huella_que_toca("steam_api64.dll")))
+        self.assertEqual(1, len(motivos))
+        self.assertIn("lista **general**", motivos[0])
+
+    def test_quitar_una_entrada_no_vale_en_la_misma_propuesta(self):
+        antes = copy.deepcopy(BASE)
+        con_lista_de_grupo([{"patron": "*.sig"}])(antes)
+        despues = copy.deepcopy(antes)
+        despues["versionCatalogo"] += 1
+        despues["grupo"]["archivosProhibidos"] = []
+        huella_que_toca("a.sig")(despues)
+        motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], json.dumps(antes), json.dumps(despues), ADMIN,
+                            prohibidos=LISTA, leer_paquete=lector({}))
+        self.assertEqual(1, len(motivos))
+        self.assertIn("del grupo Ornizen", motivos[0])
+
+    def test_sin_nombre_de_grupo(self):
+        motivos = revisar(varios(con_lista_de_grupo([{"patron": "*.sig"}], nombre=""), huella_que_toca("a.sig")))
+        self.assertIn("lista **del grupo**:", motivos[0])
+
+    def test_lista_mal_escrita(self):
+        self.assertIn("tiene que ser una lista", revisar(con_lista_de_grupo("*.sig"))[0])
+        self.assertIn("patrón vacío", revisar(con_lista_de_grupo([{"patron": ""}]))[0])
+
+    def test_un_editor_no_la_cambia(self):
+        motivos = revisar(con_lista_de_grupo([{"patron": "*.sig"}]), permisos=Permisos(Rol.EDITOR))
+        self.assertEqual(1, len(motivos))
+        self.assertIn("`grupo`: esta parte del catálogo solo la cambia un Administrador", motivos[0])
+
+
+class ListaGeneralYPropietario(unittest.TestCase):
+    def proponer_cambio_de_normas(self, permisos):
+        return comprobar([Cambio(RUTA_PROHIBIDOS, "M")], json.dumps(BASE), json.dumps(BASE), permisos)
+
+    def test_solo_el_propietario_cambia_la_lista_general(self):
+        self.assertEqual([], self.proponer_cambio_de_normas(Permisos(Rol.PROPIETARIO)))
+        for rol in (Rol.ADMINISTRADOR, Rol.EDITOR, Rol.COLABORADOR):
+            with self.subTest(rol=rol):
+                motivos = self.proponer_cambio_de_normas(Permisos(rol))
+                self.assertEqual(1, len(motivos))
+                self.assertIn("solo las cambia el Propietario", motivos[0])
+
+    def test_el_propietario_tambien_queda_sujeto_a_la_lista(self):
+        motivos = revisar(huella_que_toca("steam_api.dll"), permisos=Permisos(Rol.PROPIETARIO))
+        self.assertEqual(1, len(motivos))
+        self.assertIn(MENSAJE, motivos[0])
+
+    def test_quien_es_propietario(self):
+        propietarios = leer_propietarios((RAIZ / RUTA_PROPIETARIO).read_text(encoding="utf-8"))
+
+        def api(nivel):
+            return lambda metodo, ruta, tolerar=(): {"role_name": nivel}
+        cuenta = next(iter(propietarios))
+        self.assertEqual(Rol.PROPIETARIO, permisos_de(cuenta.upper(), api("admin"), {}, propietarios).rol_global)
+        self.assertEqual(Rol.ADMINISTRADOR, permisos_de("otra-cuenta", api("admin"), {}, propietarios).rol_global)
+        # Figurar en la lista no basta: hace falta además ser admin del repositorio.
+        self.assertEqual(Rol.EDITOR, permisos_de(cuenta, api("write"), {}, propietarios).rol_global)
+
+    def test_archivo_de_propietario_mal_escrito(self):
+        for texto in ['{}', '{"propietario": []}', '{"propietario": [""]}', '{"propietario": 3}']:
+            with self.subTest(texto=texto), self.assertRaises(ValueError):
+                leer_propietarios(texto)
+        self.assertEqual({"alguien"}, leer_propietarios('{"propietario": "Alguien"}'))
 
 
 class LeerPaquete(unittest.TestCase):

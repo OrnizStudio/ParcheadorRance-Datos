@@ -16,7 +16,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
 | [Releases](../../releases) | Los **paquetes de parche** (`<juego>-<edición>-<versión>.zip`) y, más adelante, las versiones del propio parcheador. |
 | [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. |
-| [`normas/archivos-prohibidos.json`](normas/archivos-prohibidos.json) | Los archivos que **ningún parche puede tocar** (protección anticopia y cracks). |
+| [`normas/`](normas/) | Las normas generales, que solo cambia el Propietario: los archivos que **ningún parche puede tocar** (protección anticopia y cracks) y la cuenta del Propietario. |
 | [`pruebas/`](pruebas/) | El «Juego de prueba»: un juego inventado para probar el parcheador de principio a fin. |
 
 ## La dirección del catálogo
@@ -60,7 +60,8 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 
 | Rol | Equipo de GitHub | Nivel en este repositorio | Qué puede cambiar |
 |---|---|---|---|
-| Propietario y Administrador | `administradores` | Admin | Todo. |
+| Propietario | `administradores` (y *owner* de la organización) | Admin | Todo, también las normas generales (`normas/`). |
+| Administrador | `administradores` | Admin | Todo menos las normas generales (`normas/`). |
 | Editor | `editores` | Escritura (*write*) | El contenido de los juegos **que ya existen**: ediciones, versiones (crearlas, publicarlas, retirarlas), textos, imágenes, etiquetas puestas, créditos. No puede dar de alta, quitar, publicar ni ocultar un juego entero, ni tocar el parcheador (`launcher`), el grupo, las etiquetas del catálogo o cualquier archivo fuera de `catalogo/`. |
 | Colaborador | `colaboradores` | Clasificación (*triage*) | Solo, en juegos y versiones que ya existen: **textos y notas** (`sinopsis`, `notaEdicion`, `parche.notas`), **etiquetas** (poner y quitar las que existen) y **estado de la traducción** (`estado`, `progreso`, `contenido`). |
 
@@ -86,8 +87,28 @@ eso ningún parche puede modificar ni añadir archivos de protección anticopia 
 tiendas que comprueban que el juego es tuyo (Steam, GOG Galaxy, Epic, Ubisoft Connect) ni los archivos
 típicos de los cracks y emuladores de Steam.
 
-- La lista está en [`normas/archivos-prohibidos.json`](normas/archivos-prohibidos.json): cada entrada lleva
-  su `patron` y su `motivo`. Solo la cambia un Administrador, y el robot la lee siempre de `main`.
+Hay **dos listas** y cuentan las dos a la vez:
+
+| Lista | Dónde está | Para qué parches | Quién la cambia |
+|---|---|---|---|
+| **General** | [`normas/archivos-prohibidos.json`](normas/archivos-prohibidos.json) | Todos. | Solo el **Propietario**. El robot la lee siempre de `main`. |
+| **Del grupo** | `grupo.archivosProhibidos` en el catálogo (la ficha del grupo) | Los de este catálogo, que son los del grupo. | Quien puede cambiar la ficha del grupo: Administradores y Propietario. |
+
+- Las dos tienen el mismo formato: una lista de `{ "patron": "…", "motivo": "…" }`. Por ejemplo:
+  ```json
+  "grupo": { "nombre": "Ornizen", "archivosProhibidos": [ { "patron": "*.sig", "motivo": "Firma de los datos del juego." } ] }
+  ```
+- La del grupo **solo añade**. No hay forma de escribir una excepción, así que nunca quita ni se salta nada
+  de la general. Si un grupo quita una entrada suya, el cambio vale a partir de la propuesta siguiente:
+  en la misma propuesta todavía cuenta la lista que había en `main`.
+- El aviso dice de qué lista viene el bloqueo: «general» o «del grupo X». Si un archivo está en las
+  dos, dice «general».
+- El Propietario es el *owner* de la organización. El robot no puede distinguirlo de un Administrador (los
+  dos tienen nivel *admin*), así que su cuenta está escrita en [`normas/propietario.json`](normas/propietario.json).
+  Todo lo que hay en `normas/` lo cambia solo el Propietario, también ese archivo. Si cambia la cuenta del
+  Propietario, hay que cambiarla allí.
+- Más adelante, con los canales comunitarios, cada canal tendrá su lista propia con la misma regla: solo
+  añadir.
 - Cómo se escriben los patrones (sin distinguir mayúsculas; `*` vale por cualquier cosa):
   - `steam_api64.dll` o `uplay_r1_loader*.dll`: el **nombre del archivo**, en cualquier carpeta del juego;
   - `steam_settings/` (con barra al final): **cualquier archivo dentro de una carpeta** con ese nombre;
