@@ -3,8 +3,8 @@
 
 Mira qué cambia una propuesta (pull request) y decide si quien la hace tiene permiso, según su rol:
 
-  Propietario    todo, también las normas generales (`normas/`).
-  Administrador  todo menos las normas generales (`normas/`).
+  Propietario    todo, también las normas generales (`normas/`), el robot (`robot/`) y `.github/`.
+  Administrador  todo menos `normas/`, `robot/` y `.github/`.
   Editor         el contenido de los juegos que ya existen (y sus imágenes). No puede añadir, quitar,
                  publicar ni ocultar juegos, ni tocar el parcheador, el grupo o las etiquetas del catálogo.
   Colaborador    solo textos y notas, etiquetas y estado de la traducción de lo que ya existe.
@@ -245,6 +245,20 @@ def _validar_parche(donde, parche):
 
 RUTA_PROHIBIDOS = "normas/archivos-prohibidos.json"
 CARPETA_NORMAS = "normas/"
+
+# Carpetas que solo cambia el Propietario (ni siquiera los Administradores): las normas generales y lo que
+# las hace cumplir. Si un Administrador pudiera cambiar el robot o sus flujos de trabajo, podría quitar
+# cualquier regla, también la de que `normas/` es del Propietario.
+SOLO_PROPIETARIO = {
+    CARPETA_NORMAS: "lo que hay en las normas generales (la lista general de archivos prohibidos y la cuenta del Propietario)",
+    "robot/": "el robot de permisos",
+    ".github/": "la configuración de GitHub (los flujos de trabajo que ejecutan el robot)",
+}
+
+
+def _carpeta_del_propietario(ruta: str):
+    ruta = ruta.lower()
+    return next((c for c in SOLO_PROPIETARIO if ruta.startswith(c)), None)
 CAMPO_PROHIBIDOS_GRUPO = "archivosProhibidos"
 TAMANO_MAXIMO_PAQUETE = 4 * 1024 * 1024 * 1024
 TAMANO_MAXIMO_MANIFIESTO = 16 * 1024 * 1024
@@ -474,11 +488,13 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
             continue
         if c.ruta == RUTA_CATALOGO:
             continue  # lo que se puede cambiar dentro del catálogo lo decide _comprobar_campos
-        if c.ruta.startswith(CARPETA_NORMAS):
+        carpeta = _carpeta_del_propietario(c.ruta)
+        if carpeta is not None:
             if permisos.rol_global < Rol.PROPIETARIO:
-                motivos.append(f"`{c.ruta}`: las normas generales (`{CARPETA_NORMAS}`, por ejemplo la lista "
-                               "general de archivos prohibidos) solo las cambia el Propietario. Un grupo puede "
-                               f"añadir archivos a su propia lista en `grupo.{CAMPO_PROHIBIDOS_GRUPO}` del catálogo.")
+                motivos.append(f"`{c.ruta}`: {SOLO_PROPIETARIO[carpeta]} (`{carpeta}`) solo lo cambia el "
+                               "Propietario." + (f" Un grupo puede añadir archivos a su propia lista en "
+                                                 f"`grupo.{CAMPO_PROHIBIDOS_GRUPO}` del catálogo."
+                                                 if carpeta == CARPETA_NORMAS else ""))
             continue
         if permisos.rol_global >= Rol.ADMINISTRADOR:
             continue
