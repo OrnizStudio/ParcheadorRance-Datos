@@ -93,3 +93,47 @@ jobs:
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'
+
+  # Después de publicar: si la propuesta cambia `equipo/miembros.json`, aplica el cambio en la organización
+  # (invitar, mover de equipo, quitar o expulsar) con el token de una GitHub App. Es un trabajo aparte: si
+  # falla o faltan los secretos, la comprobación `permisos` no se ve afectada. Como los demás, lee `main` y
+  # nunca descarga ni ejecuta nada de la propuesta. Es idempotente: se puede relanzar («Re-run failed jobs»).
+  miembros:
+    needs: fusionar
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      MIEMBROS_APP_ID: ${{ secrets.MIEMBROS_APP_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # El token sale de la GitHub App de la organización (permiso «Members»). La acción va fijada por hash.
+      # Sin los secretos no se pide token: el robot avisa y no rompe nada.
+      - name: Token de la GitHub App de miembros
+        id: app
+        if: env.MIEMBROS_APP_ID != ''
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ secrets.MIEMBROS_APP_ID }}
+          private-key: ${{ secrets.MIEMBROS_APP_CLAVE }}
+          owner: ${{ github.repository_owner }}
+      - name: Avisar de que no se ha podido crear el token
+        if: failure() && steps.app.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+        run: python robot/miembros.py --fallo-token
+      - name: Aplicar equipo/miembros.json en la organización
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MIEMBROS_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMERO: ${{ github.event.pull_request.number }}
+        run: python robot/miembros.py
