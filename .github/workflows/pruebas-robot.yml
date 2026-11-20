@@ -4,7 +4,7 @@ name: Pruebas del robot
 on:
   push:
     branches: [main]
-    paths: ['robot/**', '.github/workflows/pruebas-robot.yml']
+    paths: ['robot/**', 'normas/**', '.github/workflows/pruebas-robot.yml']
   workflow_dispatch:
 
 permissions:

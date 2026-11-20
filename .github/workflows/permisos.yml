@@ -8,6 +8,8 @@
 #   con git. No añadir pasos que hagan `checkout` de la propuesta ni que ejecuten nada suyo.
 # - El nombre del trabajo `permisos` es la comprobación obligatoria de `main`: no cambiarlo sin cambiar
 #   también la protección de la rama.
+# - Lo único que se instala de fuera es BLAKE3 (robot/requisitos.txt), con versión y hash fijados, para
+#   comprobar los paquetes de parche que se descargan (lista de archivos prohibidos, normas/).
 name: Robot de permisos
 
 on:
@@ -24,7 +26,7 @@ concurrency:
 jobs:
   permisos:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -34,17 +36,24 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instalar BLAKE3 (versión y hash fijados)
+        run: |
+          python -m venv "$RUNNER_TEMP/robot"
+          "$RUNNER_TEMP/robot/bin/pip" install --quiet --no-deps --only-binary :all: --require-hashes -r robot/requisitos.txt
       - name: Comprobar la propuesta
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
-        run: python3 robot/permisos.py
+        run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py'
 
   fusionar:
     needs: permisos
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions:
       contents: write
       pull-requests: write
@@ -54,6 +63,13 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instalar BLAKE3 (versión y hash fijados)
+        run: |
+          python -m venv "$RUNNER_TEMP/robot"
+          "$RUNNER_TEMP/robot/bin/pip" install --quiet --no-deps --only-binary :all: --require-hashes -r robot/requisitos.txt
       # Vuelve a comprobarla contra el `main` de este instante (por si otra propuesta se ha publicado
       # mientras tanto) y, si sigue pasando, la fusiona.
       - name: Volver a comprobar y publicar
@@ -61,4 +77,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
-        run: python3 robot/permisos.py --fusionar
+        run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'
