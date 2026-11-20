@@ -1,0 +1,6 @@
+# Lo único que el robot instala de fuera: BLAKE3, para comprobar que cada paquete de parche es el que dice
+# el catálogo (Python no lo trae). Versión y hash fijados: pip rechaza cualquier otro archivo.
+# Solo vale para Python 3.12 en Linux x86_64 (el flujo de trabajo usa exactamente ese).
+# Para actualizarlo: el hash sha256 de la rueda «cp312-cp312-manylinux…x86_64» en https://pypi.org/project/blake3/#files
+blake3==1.0.11 \
+    --hash=sha256:33424c686b291c7682b5816fe9320466dbc0a457ef7e15c273c804a2d70fea70

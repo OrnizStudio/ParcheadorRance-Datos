@@ -8,6 +8,9 @@ Mira qué cambia una propuesta (pull request) y decide si quien la hace tiene pe
                  publicar ni ocultar juegos, ni tocar el parcheador, el grupo o las etiquetas del catálogo.
   Colaborador    solo textos y notas, etiquetas y estado de la traducción de lo que ya existe.
 
+Y, para todos (también Administradores y Propietario): ningún parche puede tocar los archivos de
+`normas/archivos-prohibidos.json` (protección anticopia y cracks). Ver «Archivos prohibidos» más abajo.
+
 Este archivo tiene dos partes:
 
   1. Las reglas (`comprobar`): no hablan con GitHub ni con git; reciben los datos y devuelven los motivos
@@ -20,13 +23,17 @@ from __future__ import annotations
 
 import copy
 import enum
+import fnmatch
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 
 RUTA_CATALOGO = "catalogo/catalogo.json"
@@ -94,11 +101,13 @@ class Cambio:
     tamano: int = 0
 
 
-def comprobar(cambios, antes, despues, permisos: Permisos) -> list:
+def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
-    (None si no existe).
+    (None si no existe). `prohibidos` son los patrones de `normas/archivos-prohibidos.json` (de `main`) y
+    `leer_paquete(paquete)` devuelve las rutas que escribe un paquete del catálogo (ver `rutas_del_paquete`);
+    sin él no se abren los paquetes (solo en las pruebas: `main` siempre lo pasa).
     """
     motivos = []
     if not cambios:
@@ -112,6 +121,9 @@ def comprobar(cambios, antes, despues, permisos: Permisos) -> list:
     if toca_catalogo:
         cat_despues, errores = validar_catalogo(despues, cat_antes)
         motivos += errores
+        if cat_despues is not None:
+            # Para todos los roles, también Administradores y Propietario: no hay excepción posible.
+            motivos += comprobar_archivos_protegidos(cat_antes, cat_despues, prohibidos, leer_paquete)
 
     juegos_antes = _juegos_por_id(cat_antes)
     motivos += _comprobar_archivos(cambios, juegos_antes, permisos)
@@ -207,6 +219,209 @@ def _validar_parche(donde, parche):
             errores.append(f"{donde}: el `hash` del paquete tiene que ser `blake3:` seguido de 64 caracteres "
                            "(lo da `parcheador-publicador paquete`).")
     return errores
+
+
+# ───────────────────────────────────── Archivos prohibidos ─────────────────────────────────────
+#
+# Ningún parche puede modificar ni añadir archivos de protección anticopia (DRM) ni los típicos de los
+# cracks: la lista está en `normas/archivos-prohibidos.json` y se lee siempre de `main`.
+#
+# De dónde sale qué archivos toca un parche: lo único fiable es el `manifiesto.json` de dentro del `.zip`
+# (es lo que ejecuta el parcheador). `huellasParcheadas` del catálogo se escribe a mano o con el publicador
+# y el parcheador no la contrasta con el paquete, así que se mira también, pero no basta. Por eso el robot
+# descarga cada paquete nuevo, comprueba que su tamaño y su hash son los del catálogo (los mismos que exige
+# el parcheador antes de instalarlo) y lee las rutas de su manifiesto. Nunca ejecuta nada del paquete.
+
+RUTA_PROHIBIDOS = "normas/archivos-prohibidos.json"
+TAMANO_MAXIMO_PAQUETE = 4 * 1024 * 1024 * 1024
+TAMANO_MAXIMO_MANIFIESTO = 16 * 1024 * 1024
+NOMBRE_MANIFIESTO = "manifiesto.json"
+
+
+@dataclass(frozen=True)
+class Prohibido:
+    patron: str
+    motivo: str = ""
+
+    def coincide(self, ruta: str) -> bool:
+        """Sin distinguir mayúsculas. `nombre*.dll` mira el nombre del archivo en cualquier carpeta;
+        `carpeta/` (con barra al final), cualquier carpeta de la ruta con ese nombre; un patrón con una barra
+        en medio, la ruta entera."""
+        partes = [p for p in ruta.replace("\\", "/").lower().split("/") if p]
+        if not partes:
+            return False
+        patron = self.patron.replace("\\", "/").lower()
+        if patron.endswith("/"):
+            return any(fnmatch.fnmatchcase(p, patron.rstrip("/")) for p in partes[:-1])
+        if "/" in patron:
+            return fnmatch.fnmatchcase("/".join(partes), patron.lstrip("/"))
+        return fnmatch.fnmatchcase(partes[-1], patron)
+
+
+def leer_prohibidos(texto: str) -> list:
+    """`normas/archivos-prohibidos.json` → lista de `Prohibido`. Si está mal, falla: mejor no aceptar nada
+    que aceptar sin comprobar."""
+    datos = json.loads(texto)
+    patrones = datos.get("patrones") if isinstance(datos, dict) else None
+    if not isinstance(patrones, list) or not patrones:
+        raise ValueError(f"`{RUTA_PROHIBIDOS}` no tiene una lista `patrones`.")
+    resultado = []
+    for p in patrones:
+        if not isinstance(p, dict) or not isinstance(p.get("patron"), str) or not p["patron"].strip("/ "):
+            raise ValueError(f"`{RUTA_PROHIBIDOS}`: hay un patrón vacío o mal escrito ({p!r}).")
+        resultado.append(Prohibido(p["patron"].strip(), str(p.get("motivo") or "")))
+    return resultado
+
+
+def archivo_prohibido(ruta: str, prohibidos):
+    return next((p for p in prohibidos if p.coincide(ruta)), None)
+
+
+def mensaje_protegido(donde: str, ruta: str, norma: Prohibido) -> str:
+    return (f"{donde}: Este parche toca un archivo protegido ({ruta}). Los parches no pueden modificar "
+            f"archivos de protección anticopia. Norma `{norma.patron}` de `{RUTA_PROHIBIDOS}`"
+            + (f" — {norma.motivo}" if norma.motivo else "."))
+
+
+class PaqueteIlegible(Exception):
+    """No se ha podido leer el paquete o no es el que dice el catálogo."""
+
+
+def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer_paquete) -> list:
+    motivos = []
+    for donde, ruta in _rutas_parcheadas(cat_despues):
+        norma = archivo_prohibido(ruta, prohibidos)
+        if norma:
+            motivos.append(mensaje_protegido(donde, ruta, norma))
+
+    if leer_paquete is not None:
+        ya_publicados = {_clave_paquete(p) for _, p in _paquetes(cat_antes)}
+        revisados = set()
+        for donde, paquete in _paquetes(cat_despues):
+            clave = _clave_paquete(paquete)
+            if clave in ya_publicados or clave in revisados:
+                continue  # ya se revisó cuando se publicó (o más arriba en esta misma propuesta)
+            revisados.add(clave)
+            try:
+                rutas = leer_paquete(paquete)
+            except PaqueteIlegible as error:
+                motivos.append(f"{donde}: no se ha podido revisar el paquete `{paquete.get('url')}`: {error} "
+                               "Sin revisarlo no se puede saber si toca archivos protegidos.")
+                continue
+            for ruta in rutas:
+                norma = archivo_prohibido(ruta, prohibidos)
+                if norma:
+                    motivos.append(mensaje_protegido(donde, ruta, norma))
+    return _sin_repetidos(motivos)
+
+
+def _rutas_parcheadas(catalogo: dict):
+    """(dónde, ruta) de cada archivo de `huellasParcheadas`: lo que el catálogo dice que deja cada parche."""
+    for juego in catalogo.get("juegos") or []:
+        for edicion in juego.get("ediciones") or []:
+            if not isinstance(edicion, dict):
+                continue
+            for huella in edicion.get("huellasParcheadas") or []:
+                if not isinstance(huella, dict):
+                    continue
+                donde = f"`{juego.get('id')}` › edición `{edicion.get('id')}` › versión `{huella.get('version')}`"
+                for archivo in huella.get("archivos") or []:
+                    if isinstance(archivo, dict) and isinstance(archivo.get("ruta"), str):
+                        yield donde, archivo["ruta"]
+
+
+def _paquetes(catalogo):
+    """(dónde, paquete) de cada paquete de parche del catálogo, esté donde esté (`parche` del juego o de la
+    edición, historial de `versiones`…): cualquier objeto de una lista `paquetes` dentro de `juegos`."""
+    if not isinstance(catalogo, dict):
+        return
+
+    def recorrer(valor, donde):
+        if isinstance(valor, dict):
+            for clave, hijo in valor.items():
+                if clave == "paquetes" and isinstance(hijo, list):
+                    for paquete in hijo:
+                        if isinstance(paquete, dict):
+                            yield donde + (f" › paquete `{paquete.get('edicion')}`" if paquete.get("edicion") else ""), paquete
+                else:
+                    yield from recorrer(hijo, donde)
+        elif isinstance(valor, list):
+            for hijo in valor:
+                yield from recorrer(hijo, donde)
+
+    for juego in catalogo.get("juegos") or []:
+        if isinstance(juego, dict):
+            yield from recorrer(juego, f"`{juego.get('id')}`")
+
+
+def _clave_paquete(paquete: dict):
+    return (paquete.get("url"), paquete.get("tamano"), paquete.get("hash"))
+
+
+def rutas_del_paquete(paquete: dict, calcular_hash=None, abrir=None) -> list:
+    """Descarga el paquete, comprueba tamaño y hash y devuelve las rutas del juego que escribe su manifiesto.
+
+    `calcular_hash()` da un objeto con `update(bytes)` y `hexdigest()` (por defecto, BLAKE3) y `abrir(url)`
+    un flujo de bytes (por defecto, una descarga https); las pruebas los cambian.
+    """
+    url, tamano, valor_hash = paquete.get("url"), paquete.get("tamano"), paquete.get("hash")
+    if not isinstance(url, str) or not url.startswith("https://") or not _es_entero(tamano) \
+            or not isinstance(valor_hash, str) or not HASH_VALIDO.match(valor_hash):
+        raise PaqueteIlegible("le falta la dirección `https`, el tamaño o el hash.")
+    if tamano > TAMANO_MAXIMO_PAQUETE:
+        raise PaqueteIlegible("pesa más de 4 GB.")
+    if calcular_hash is None:
+        try:
+            import blake3  # instalado por el flujo de trabajo, con su hash fijado (robot/requisitos.txt)
+        except ImportError:
+            raise PaqueteIlegible("el robot no tiene BLAKE3 instalado (avisa a un Administrador).")
+        calcular_hash = blake3.blake3
+    abrir = abrir or _abrir_https
+
+    with tempfile.TemporaryFile() as temporal:
+        suma, leidos = calcular_hash(), 0
+        try:
+            with abrir(url) as flujo:
+                while bloque := flujo.read(1024 * 1024):
+                    leidos += len(bloque)
+                    if leidos > tamano:
+                        raise PaqueteIlegible(f"pesa más de lo que dice el catálogo ({tamano} bytes).")
+                    suma.update(bloque)
+                    temporal.write(bloque)
+        except (OSError, urllib.error.URLError) as error:
+            raise PaqueteIlegible(f"no se ha podido descargar ({error}).")
+        if leidos != tamano:
+            raise PaqueteIlegible(f"pesa {leidos} bytes y el catálogo dice {tamano}.")
+        if "blake3:" + suma.hexdigest() != valor_hash:
+            raise PaqueteIlegible("su hash no es el que dice el catálogo.")
+
+        temporal.seek(0)
+        try:
+            with zipfile.ZipFile(temporal) as zip_:
+                entrada = next((i for i in zip_.infolist() if i.filename == NOMBRE_MANIFIESTO), None)
+                if entrada is None:
+                    raise PaqueteIlegible(f"no tiene `{NOMBRE_MANIFIESTO}`.")
+                if entrada.file_size > TAMANO_MAXIMO_MANIFIESTO:
+                    raise PaqueteIlegible(f"su `{NOMBRE_MANIFIESTO}` es demasiado grande.")
+                with zip_.open(entrada) as archivo:
+                    manifiesto = json.loads(archivo.read(TAMANO_MAXIMO_MANIFIESTO + 1).decode("utf-8-sig"))
+        except (zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+            raise PaqueteIlegible(f"no es un paquete válido ({error}).")
+
+    operaciones = manifiesto.get("operaciones") if isinstance(manifiesto, dict) else None
+    if not isinstance(operaciones, list):
+        raise PaqueteIlegible(f"su `{NOMBRE_MANIFIESTO}` no tiene `operaciones`.")
+    rutas = []
+    for op in operaciones:
+        if not isinstance(op, dict) or not isinstance(op.get("ruta"), str):
+            raise PaqueteIlegible(f"su `{NOMBRE_MANIFIESTO}` tiene una operación sin `ruta`.")
+        rutas.append(op["ruta"])
+    return rutas
+
+
+def _abrir_https(url: str):
+    peticion = urllib.request.Request(url, headers={"User-Agent": "robot-permisos"})
+    return urllib.request.urlopen(peticion, timeout=60)
 
 
 def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
@@ -502,12 +717,19 @@ def main() -> int:
         permisos = permisos.el_menor(permisos_de(actor, api, equipo))
     quien = f"@{autor}" + (f" (último cambio de @{actor})" if actor != autor else "")
 
+    # La lista de archivos prohibidos se lee de `main` (esta copia), nunca de la propuesta.
+    ruta_prohibidos = pathlib.Path(__file__).resolve().parents[1] / RUTA_PROHIBIDOS
+    try:
+        prohibidos = leer_prohibidos(ruta_prohibidos.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"No se puede leer `{RUTA_PROHIBIDOS}` de `main`: {error}")
+
     leido = leer_propuesta(numero, cabeza)
     if leido is None:
         motivos = ["La propuesta choca con cambios que ya están publicados en `main`. Actualízala con lo "
                    "último de `main` y vuelve a subirla."]
     else:
-        motivos = comprobar(*leido, permisos)
+        motivos = comprobar(*leido, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete)
 
     if motivos:
         lista = "\n".join(f"- {m}" for m in motivos)

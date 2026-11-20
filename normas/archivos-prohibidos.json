@@ -1,0 +1,29 @@
+{
+  "esquema": 1,
+  "descripcion": "Archivos que ningún parche puede modificar ni añadir: protección anticopia (DRM), las bibliotecas de las tiendas que la llevan y los archivos típicos de los cracks. El robot rechaza cualquier propuesta que publique un parche que toque uno, sea cual sea el rol. Cómo se escriben los patrones: README, «Archivos prohibidos».",
+  "patrones": [
+    { "patron": "steam_api.dll", "motivo": "Biblioteca de Steam (32 bits). Comprueba que el juego es tuyo; los cracks la sustituyen por un emulador." },
+    { "patron": "steam_api64.dll", "motivo": "Biblioteca de Steam (64 bits). La misma razón que steam_api.dll." },
+    { "patron": "steamclient.dll", "motivo": "Cliente de Steam (32 bits). Los cargadores de cracks (p. ej. ColdClientLoader) lo sustituyen." },
+    { "patron": "steamclient64.dll", "motivo": "Cliente de Steam (64 bits). La misma razón que steamclient.dll." },
+    { "patron": "*.cdx", "motivo": "Datos de la protección de Steam (CEG / Steam Stub) y de otras protecciones; un parche de traducción no tiene por qué tocarlos." },
+    { "patron": "uplay_r1_loader*.dll", "motivo": "Biblioteca de Ubisoft Connect (Uplay). Los cracks la sustituyen por un emulador." },
+    { "patron": "uplay_r2_loader*.dll", "motivo": "Versión nueva de la biblioteca de Ubisoft Connect. La misma razón." },
+    { "patron": "upc_r2_loader*.dll", "motivo": "Otra variante de la biblioteca de Ubisoft Connect. La misma razón." },
+    { "patron": "EOSSDK-Win*-Shipping.dll", "motivo": "Epic Online Services: identifica al usuario en Epic. Los cracks de Epic la sustituyen." },
+    { "patron": "galaxy.dll", "motivo": "GOG Galaxy (32 bits): los juegos de GOG con funciones en línea la usan para identificar al usuario." },
+    { "patron": "galaxy64.dll", "motivo": "GOG Galaxy (64 bits). La misma razón que galaxy.dll." },
+    { "patron": "denuvo*", "motivo": "Protección anticopia Denuvo." },
+    { "patron": "steam_emu.ini", "motivo": "Configuración de emuladores de Steam (cracks de RELOADED, SKIDROW…)." },
+    { "patron": "steam_settings/", "motivo": "Carpeta de configuración del emulador Goldberg Steam Emu, el más usado en los cracks actuales." },
+    { "patron": "CODEX*", "motivo": "Archivos del grupo de cracks CODEX (CODEX.ini, CODEX64.dll…)." },
+    { "patron": "SmartSteamEmu*", "motivo": "Emulador de Steam SmartSteamEmu (SmartSteamEmu.ini, SmartSteamEmu.dll…)." },
+    { "patron": "SmartSteamEmu/", "motivo": "Carpeta del emulador SmartSteamEmu." },
+    { "patron": "cream_api.ini", "motivo": "CreamAPI: desbloquea contenido descargable (DLC) sin comprarlo." },
+    { "patron": "ColdClientLoader.ini", "motivo": "Cargador que lanza el juego con un cliente de Steam falso." },
+    { "patron": "ALI213.ini", "motivo": "Emulador de Steam del grupo ALI213." },
+    { "patron": "CPY.ini", "motivo": "Archivos del grupo de cracks CPY." },
+    { "patron": "3DMGAME.ini", "motivo": "Emulador de Steam del grupo 3DM." },
+    { "patron": "steam_interfaces.txt", "motivo": "Lista de interfaces que genera y lee el emulador Goldberg Steam Emu." }
+  ]
+}

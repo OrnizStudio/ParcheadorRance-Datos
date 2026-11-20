@@ -16,6 +16,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
 | [Releases](../../releases) | Los **paquetes de parche** (`<juego>-<edición>-<versión>.zip`) y, más adelante, las versiones del propio parcheador. |
 | [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. |
+| [`normas/archivos-prohibidos.json`](normas/archivos-prohibidos.json) | Los archivos que **ningún parche puede tocar** (protección anticopia y cracks). |
 | [`pruebas/`](pruebas/) | El «Juego de prueba»: un juego inventado para probar el parcheador de principio a fin. |
 
 ## La dirección del catálogo
@@ -78,6 +79,36 @@ Cómo funciona:
   Los Editores sí pueden crear ramas (necesitan escritura para subir paquetes a las Releases).
 - Cuenta el rol más bajo entre quien abrió la propuesta y quien subió el último cambio.
 
+### Archivos prohibidos (protección anticopia)
+
+Esta herramienta es para traducciones de juegos que la gente ya tiene, **no para distribuir cracks**. Por
+eso ningún parche puede modificar ni añadir archivos de protección anticopia (DRM), las bibliotecas de las
+tiendas que comprueban que el juego es tuyo (Steam, GOG Galaxy, Epic, Ubisoft Connect) ni los archivos
+típicos de los cracks y emuladores de Steam.
+
+- La lista está en [`normas/archivos-prohibidos.json`](normas/archivos-prohibidos.json): cada entrada lleva
+  su `patron` y su `motivo`. Solo la cambia un Administrador, y el robot la lee siempre de `main`.
+- Cómo se escriben los patrones (sin distinguir mayúsculas; `*` vale por cualquier cosa):
+  - `steam_api64.dll` o `uplay_r1_loader*.dll`: el **nombre del archivo**, en cualquier carpeta del juego;
+  - `steam_settings/` (con barra al final): **cualquier archivo dentro de una carpeta** con ese nombre;
+  - `bin/*.sig` (con una barra en medio): la **ruta entera** desde la carpeta del juego.
+- **No hay excepciones por rol**: la regla vale también para Administradores y Propietario. Si el robot
+  la aplica, la propuesta no se publica. El mensaje es: «Este parche toca un archivo protegido (X). Los
+  parches no pueden modificar archivos de protección anticopia.»
+- Qué mira el robot:
+  1. las rutas de `huellasParcheadas` del catálogo (lo que dice cada versión que deja en el juego);
+  2. **cada paquete nuevo** que aparece en el catálogo (en `parche.paquetes` o en el historial de
+     versiones): lo descarga, comprueba que su tamaño y su hash BLAKE3 son los del catálogo (los mismos que
+     exige el parcheador antes de instalarlo) y lee las rutas de su `manifiesto.json`, que es lo que
+     escribe de verdad el parcheador. Nunca ejecuta nada del paquete. Si no puede descargarlo o no
+     coincide, rechaza la propuesta: sin revisarlo no se puede saber qué toca. Por eso **el `.zip` tiene
+     que estar ya subido a la Release** antes de proponer el cambio del catálogo.
+  3. Los paquetes que ya estaban publicados no se vuelven a descargar.
+- La huella del juego **original** (`huella` de cada edición) sí puede llevar estos archivos: describe el
+  juego tal como se compra, no lo que cambia el parche.
+- Para BLAKE3 el robot instala el paquete `blake3` de PyPI con la versión y el hash fijados en
+  [`robot/requisitos.txt`](robot/requisitos.txt). Es lo único que instala de fuera.
+
 Límites que conviene conocer:
 
 - El robot sabe el rol por el **nivel de acceso** de cada cuenta en este repositorio, que es lo único que
@@ -87,6 +118,10 @@ Límites que conviene conocer:
   buena). El robot evita errores y excesos, pero **el rol de Editor es para gente de confianza**. Todo
   queda en el historial con su autor y se puede deshacer. Un Colaborador no tiene esa posibilidad.
 - Las reglas se prueban con `python -m unittest discover -s robot/pruebas`.
+- La protección de `main` no se aplica a los Administradores (*enforce admins* desactivado): un
+  Administrador puede subir directamente a `main` o publicar una propuesta sin esperar al robot, y así se
+  saltaría también la lista de archivos prohibidos. La regla es la misma para todos; el robot solo la hace
+  cumplir en las propuestas.
 
 Preparado para más adelante (sin hacer): que cada juego tenga su líder y su equipo. Las reglas ya preguntan
 el rol «en este juego»; bastará con que el robot lea los permisos de un archivo `equipo.json` (está
