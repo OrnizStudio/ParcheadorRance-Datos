@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 24,
+  "versionCatalogo": 25,
   "launcher": {
     "ultimaVersion": "0.2.0",
     "versionMinima": "",
@@ -67,7 +67,6 @@
     { "id": "accesibilidad", "nombre": "Accesibilidad", "color": "azul", "icono": "info", "descripcion": "Subtítulos, modos para daltonismo o letra más legible." },
     { "id": "restauracion", "nombre": "Restauración", "color": "violeta", "descripcion": "Recupera contenido recortado del juego." },
     { "id": "pack", "nombre": "Pack", "color": "gris", "icono": "ia", "descripcion": "Varios mods probados juntos." },
-    { "id": "en-pruebas", "nombre": "En pruebas", "color": "ambar", "icono": "aviso", "descripcion": "Versión que aún no es estable." },
-    { "id": "sasdasdsadssssssssssssssssssssssssssssss", "nombre": "sasdasdsadssssssssssssssssssssssssssssss", "color": "rojo", "icono": "candado", "descripcion": "aadddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+    { "id": "en-pruebas", "nombre": "En pruebas", "color": "ambar", "icono": "aviso", "descripcion": "Versión que aún no es estable." }
   ]
 }
