@@ -13,7 +13,7 @@ from permisos import (Cambio, Permisos, Rol, RUTA_CATALOGO, comprobar, error_de_
                       rutas_del_paquete, validar_ignorados)
 
 HASH = "blake3:" + "a" * 64
-EDITOR, COLABORADOR, PROPIETARIO = Permisos(Rol.EDITOR), Permisos(Rol.COLABORADOR), Permisos(Rol.PROPIETARIO)
+EDITOR, COLABORADOR, PROPIETARIO = Permisos(Rol.EDITOR), Permisos(Rol.COLABORADOR), Permisos(Rol.DUENO)
 
 
 def archivo(ruta, tamano=1000):

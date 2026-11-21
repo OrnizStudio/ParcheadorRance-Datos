@@ -58,6 +58,15 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 
 ## Roles y robot de permisos
 
+> **Canales (fase A).** Los roles ya no salen solo de los equipos de GitHub: el robot los lee de
+> [`canales/ornizen/miembros.json`](canales/ornizen/miembros.json) (el canal oficial), por el **número** de la cuenta
+> de GitHub, siempre de `main`. Mientras dure la transición cuenta el mayor entre ese archivo y el equipo, salvo que
+> la cuenta esté en [`canales/ornizen/lista-negra.json`](canales/ornizen/lista-negra.json): entonces no tiene nada.
+> El antiguo «Propietario» (owner) pasa a llamarse **Dueño del programa** y se reconoce por su número en
+> [`normas/propietario.json`](normas/propietario.json) (`duenos`); «Propietario» es ahora el rol más alto **de un
+> canal**. Quién puede invitar, aceptar, cambiar o quitar miembros, y qué puede tocar cada rol en `canales/`, está en
+> [`robot/canales.py`](robot/canales.py). Lo que sigue describe los equipos de GitHub, que se quitan en la fase B.
+
 | Rol | Equipo de GitHub | Nivel en este repositorio | Qué puede cambiar |
 |---|---|---|---|
 | Propietario | `administradores` (y *owner* de la organización) | Admin | Todo, también las normas generales (`normas/`), el robot (`robot/`), la configuración de GitHub (`.github/`) y las **etiquetas del catálogo** (crearlas, editarlas y borrarlas: son globales). |
@@ -111,8 +120,9 @@ Hay **dos listas** y cuentan las dos a la vez:
   dos tienen nivel *admin*), así que su cuenta está escrita en [`normas/propietario.json`](normas/propietario.json).
   Todo lo que hay en `normas/` lo cambia solo el Propietario, también ese archivo. Si cambia la cuenta del
   Propietario, hay que cambiarla allí.
-- Más adelante, con los canales comunitarios, cada canal tendrá su lista propia con la misma regla: solo
-  añadir.
+- Desde la fase A de canales, la lista propia del canal oficial es `archivos` de
+  [`canales/ornizen/lista-negra.json`](canales/ornizen/lista-negra.json), con la misma regla: solo añade, y cuentan la
+  de `main` y la de la propuesta a la vez.
 - Cómo se escriben los patrones (sin distinguir mayúsculas; `*` vale por cualquier cosa):
   - `steam_api64.dll` o `uplay_r1_loader*.dll`: el **nombre del archivo**, en cualquier carpeta del juego;
   - `steam_settings/` (con barra al final): **cualquier archivo dentro de una carpeta** con ese nombre;

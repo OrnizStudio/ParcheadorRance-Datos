@@ -56,6 +56,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
+          PR_ACTOR_ID: ${{ github.event.sender.id }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py'
 
   fusionar:
@@ -92,4 +93,5 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
+          PR_ACTOR_ID: ${{ github.event.sender.id }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'

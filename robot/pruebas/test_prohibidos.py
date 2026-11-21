@@ -237,15 +237,15 @@ class ListaGeneralYPropietario(unittest.TestCase):
         return comprobar([Cambio(RUTA_PROHIBIDOS, "M")], json.dumps(BASE), json.dumps(BASE), permisos)
 
     def test_solo_el_propietario_cambia_la_lista_general(self):
-        self.assertEqual([], self.proponer_cambio_de_normas(Permisos(Rol.PROPIETARIO)))
+        self.assertEqual([], self.proponer_cambio_de_normas(Permisos(Rol.DUENO)))
         for rol in (Rol.ADMINISTRADOR, Rol.EDITOR, Rol.COLABORADOR):
             with self.subTest(rol=rol):
                 motivos = self.proponer_cambio_de_normas(Permisos(rol))
                 self.assertEqual(1, len(motivos))
-                self.assertIn("solo lo cambia el Propietario", motivos[0])
+                self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
 
     def test_el_propietario_tambien_queda_sujeto_a_la_lista(self):
-        motivos = revisar(huella_que_toca("steam_api.dll"), permisos=Permisos(Rol.PROPIETARIO))
+        motivos = revisar(huella_que_toca("steam_api.dll"), permisos=Permisos(Rol.DUENO))
         self.assertEqual(1, len(motivos))
         self.assertIn(MENSAJE, motivos[0])
 
@@ -255,7 +255,7 @@ class ListaGeneralYPropietario(unittest.TestCase):
         def api(nivel):
             return lambda metodo, ruta, tolerar=(): {"role_name": nivel}
         cuenta = next(iter(propietarios))
-        self.assertEqual(Rol.PROPIETARIO, permisos_de(cuenta.upper(), api("admin"), {}, propietarios).rol_global)
+        self.assertEqual(Rol.DUENO, permisos_de(cuenta.upper(), api("admin"), {}, propietarios).rol_global)
         self.assertEqual(Rol.ADMINISTRADOR, permisos_de("otra-cuenta", api("admin"), {}, propietarios).rol_global)
         # Figurar en la lista no basta: hace falta además ser admin del repositorio.
         self.assertEqual(Rol.EDITOR, permisos_de(cuenta, api("write"), {}, propietarios).rol_global)

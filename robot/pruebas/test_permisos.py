@@ -25,7 +25,7 @@ BASE = {
     }],
 }
 ADMIN, EDITOR, COLABORADOR, NADIE = (Permisos(r) for r in (Rol.ADMINISTRADOR, Rol.EDITOR, Rol.COLABORADOR, Rol.NINGUNO))
-PROPIETARIO = Permisos(Rol.PROPIETARIO)
+PROPIETARIO = Permisos(Rol.DUENO)
 
 
 def catalogo(cambiar=None, subir_version=True):
@@ -104,7 +104,7 @@ class Administrador(unittest.TestCase):
             with self.subTest(que):
                 motivos = revisar(ADMIN, cambiar)
                 self.assertEqual(1, len(motivos), motivos)
-                self.assertIn("solo las crea, edita o borra el Propietario", motivos[0])
+                self.assertIn("solo las crea, edita o borra el Dueño del programa", motivos[0])
 
     def test_pone_y_quita_en_un_juego_etiquetas_que_ya_existen(self):
         self.assertEqual([], revisar(ADMIN, lambda c: juego(c).update(etiquetas=["adultos"])))
@@ -162,7 +162,7 @@ class Editor(unittest.TestCase):
             with self.subTest(clave):
                 motivos = revisar(EDITOR, lambda c: c.update({clave: valor}))
                 self.assertEqual(1, len(motivos), motivos)
-                self.assertIn("el Propietario" if clave == "etiquetas" else "solo la cambia un Administrador", motivos[0])
+                self.assertIn("el Dueño del programa" if clave == "etiquetas" else "solo la cambia un Administrador", motivos[0])
 
     def test_no_toca_el_robot_ni_otros_archivos(self):
         for ruta in ("README.md", "equipo.json", "catalogo/otro.json"):
@@ -172,7 +172,7 @@ class Editor(unittest.TestCase):
         for ruta in (".github/workflows/permisos.yml", "robot/permisos.py"):
             with self.subTest(ruta):
                 motivos = revisar(EDITOR, archivos=[Cambio(ruta, "M")], subir_version=False)
-                self.assertIn("solo lo cambia el Propietario", motivos[0])
+                self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
 
     def test_solo_imagenes_y_no_enormes(self):
         exe = revisar(EDITOR, archivos=[Cambio("catalogo/juegos/juego1/a.exe", "A", tamano=1)], subir_version=False)
@@ -243,7 +243,7 @@ class SoloDelPropietario(unittest.TestCase):
              "robot/permisos.py", "robot/pruebas/test_permisos.py", "robot/requisitos.txt",
              ".github/workflows/permisos.yml", ".github/workflows/nuevo.yml", ".github/CODEOWNERS",
              "Robot/permisos.py", ".GITHUB/workflows/x.yml"]
-    PROPIETARIO = Permisos(Rol.PROPIETARIO)
+    PROPIETARIO = Permisos(Rol.DUENO)
 
     def proponer(self, permisos, ruta, estado="M"):
         return comprobar([Cambio(ruta, estado)], json.dumps(BASE), json.dumps(BASE), permisos)
@@ -254,13 +254,13 @@ class SoloDelPropietario(unittest.TestCase):
                 with self.subTest(ruta=ruta, estado=estado):
                     motivos = self.proponer(ADMIN, ruta, estado)
                     self.assertEqual(1, len(motivos))
-                    self.assertIn("solo lo cambia el Propietario", motivos[0])
+                    self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
 
     def test_los_demas_roles_tampoco(self):
         for permisos in (EDITOR, COLABORADOR):
             for ruta in ("robot/permisos.py", ".github/workflows/permisos.yml", "normas/propietario.json"):
                 with self.subTest(rol=permisos.rol_global, ruta=ruta):
-                    self.assertIn("solo lo cambia el Propietario", self.proponer(permisos, ruta)[0])
+                    self.assertIn("solo lo cambia el Dueño del programa", self.proponer(permisos, ruta)[0])
 
     def test_el_propietario_si(self):
         for ruta in self.RUTAS:
@@ -268,13 +268,13 @@ class SoloDelPropietario(unittest.TestCase):
                 self.assertEqual([], self.proponer(self.PROPIETARIO, ruta))
 
     def test_si_un_administrador_sube_un_cambio_a_la_propuesta_del_propietario_cuenta_el_administrador(self):
-        self.assertIn("solo lo cambia el Propietario",
+        self.assertIn("solo lo cambia el Dueño del programa",
                       self.proponer(self.PROPIETARIO.el_menor(ADMIN), "robot/permisos.py")[0])
 
     def test_el_mensaje_dice_que_carpeta_es(self):
         self.assertIn("el robot de permisos (`robot/`)", self.proponer(ADMIN, "robot/permisos.py")[0])
         self.assertIn("(`.github/`)", self.proponer(ADMIN, ".github/workflows/permisos.yml")[0])
-        self.assertIn("grupo.archivosProhibidos", self.proponer(ADMIN, "normas/archivos-prohibidos.json")[0])
+        self.assertIn("canales/<canal>/lista-negra.json", self.proponer(ADMIN, "normas/archivos-prohibidos.json")[0])
 
     def test_lo_demas_fuera_de_catalogo_sigue_siendo_del_administrador(self):
         for ruta in ("README.md", "pruebas/crear-juego-prueba.py", "robots.txt", "normas.md", "github/x.yml"):

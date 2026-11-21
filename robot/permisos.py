@@ -3,15 +3,20 @@
 
 Mira qué cambia una propuesta (pull request) y decide si quien la hace tiene permiso, según su rol:
 
-  Propietario    todo, también las normas generales (`normas/`), el robot (`robot/`), `.github/` y las
-                 etiquetas del catálogo.
+  Dueño          (del programa, `normas/propietario.json`) todo, también las normas generales (`normas/`), el
+                 robot (`robot/`), `.github/` y las etiquetas del catálogo.
+  Propietario    (del canal) como un Administrador, y además lo suyo del canal (`canales/<canal>/`).
   Administrador  todo menos `normas/`, `robot/` y `.github/`, y menos crear, editar o borrar etiquetas del
                  catálogo.
   Editor         el contenido de los juegos que ya existen (y sus imágenes). No puede añadir, quitar,
                  publicar ni ocultar juegos, ni tocar el parcheador, el grupo o las etiquetas del catálogo.
   Colaborador    solo textos y notas, etiquetas y estado de la traducción de lo que ya existe.
 
-Y, para todos (también Administradores y Propietario): ningún parche puede tocar los archivos de la lista
+Desde la fase A de canales (docs/canales.md del parcheador) los roles salen de `canales/ornizen/miembros.json`, por
+el id numérico de la cuenta; mientras dure la transición cuenta el mayor entre ese archivo y el equipo de GitHub,
+salvo que la cuenta esté en la lista negra del canal. Lo de `canales/` lo decide `canales.py`.
+
+Y, para todos (también Administradores y Dueño): ningún parche puede tocar los archivos de la lista
 general (`normas/archivos-prohibidos.json`) ni de la del grupo (`grupo.archivosProhibidos` del catálogo):
 protección anticopia y cracks. Ver «Archivos prohibidos» más abajo.
 
@@ -40,6 +45,8 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 
+import canales
+
 RUTA_CATALOGO = "catalogo/catalogo.json"
 CARPETA_JUEGOS = "catalogo/juegos/"
 TAMANO_MAXIMO_CATALOGO = 8 * 1024 * 1024  # el mismo tope que aplica el parcheador al descargarlo
@@ -56,11 +63,12 @@ class Rol(enum.IntEnum):
     COLABORADOR = 1
     EDITOR = 2
     ADMINISTRADOR = 3
-    PROPIETARIO = 4  # un Administrador que además figura en `normas/propietario.json`
+    PROPIETARIO = 4  # Propietario del canal: como Administrador en el catálogo, y lo suyo en `canales/<canal>/`
+    DUENO = 5        # Dueño del programa: figura en `normas/propietario.json`
 
     @property
     def nombre(self) -> str:
-        return {0: "sin rol", 1: "Colaborador", 2: "Editor", 3: "Administrador", 4: "Propietario"}[int(self)]
+        return canales.NOMBRE_ROL[int(self)]
 
 
 @dataclass(frozen=True)
@@ -72,14 +80,23 @@ class Permisos:
     """
     rol_global: Rol
     por_juego: dict = field(default_factory=dict)
+    por_canal: dict = field(default_factory=dict)  # {canal: Rol} en `main` (invitaciones sin aceptar, no)
+    cuenta_id: int | None = None  # el id numérico de la cuenta: para aceptar su propia invitación o salir
+
+    @property
+    def es_dueno(self) -> bool:
+        return self.rol_global >= Rol.DUENO
 
     def en_juego(self, juego_id: str) -> Rol:
         return max(self.rol_global, self.por_juego.get(juego_id, Rol.NINGUNO))
 
     def el_menor(self, otro: "Permisos") -> "Permisos":
         juegos = set(self.por_juego) & set(otro.por_juego)
+        canales_ = set(self.por_canal) & set(otro.por_canal)
         return Permisos(min(self.rol_global, otro.rol_global),
-                        {j: min(self.por_juego[j], otro.por_juego[j]) for j in juegos})
+                        {j: min(self.por_juego[j], otro.por_juego[j]) for j in juegos},
+                        {c: min(self.por_canal[c], otro.por_canal[c]) for c in canales_},
+                        self.cuenta_id if self.cuenta_id == otro.cuenta_id else None)
 
 
 # Campos que puede cambiar un Colaborador (ARQUITECTURA §8, rol 4): textos y notas, etiquetas y estado
@@ -106,19 +123,33 @@ class Cambio:
     tamano: int = 0
 
 
-def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None) -> list:
+def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
     (None si no existe). `prohibidos` son los patrones de `normas/archivos-prohibidos.json` (de `main`) y
     `leer_paquete(paquete)` devuelve las rutas que escribe un paquete del catálogo (ver `rutas_del_paquete`);
-    sin él no se abren los paquetes (solo en las pruebas: `main` siempre lo pasa).
+    sin él no se abren los paquetes (solo en las pruebas: `main` siempre lo pasa). `leer_archivo(ruta, lado)` da los
+    bytes de un archivo en `main` (`"antes"`) o tras la propuesta (`"despues"`), o None si no existe: hace falta para
+    lo que cambia en `canales/`.
     """
     motivos = []
     if not cambios:
         return ["La propuesta no cambia ningún archivo."]
-    if permisos.rol_global == Rol.NINGUNO and not permisos.por_juego:
+    de_canales = [c for c in cambios if c.ruta.startswith(canales.CARPETA_CANALES)]
+    sin_rol = permisos.rol_global == Rol.NINGUNO and not permisos.por_juego and not any(permisos.por_canal.values())
+    if sin_rol and (len(de_canales) != len(cambios) or permisos.cuenta_id is None):
         return [_SIN_ROL]
+    motivos += _comprobar_tamanos(cambios, permisos)
+
+    if de_canales:
+        leer = leer_archivo or (lambda ruta, lado: None)
+        motivos += canales.comprobar_canales(
+            [canales.CambioCanal(c.ruta, c.estado, c.tamano, leer(c.ruta, "antes"),
+                                 None if c.estado == "D" else leer(c.ruta, "despues")) for c in de_canales],
+            {k: int(v) for k, v in permisos.por_canal.items()}, permisos.cuenta_id, permisos.es_dueno, leer)
+        if sin_rol:
+            return motivos
 
     cat_antes = _leer_json(antes)
     cat_despues = None
@@ -128,7 +159,9 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         motivos += errores
         if cat_despues is not None:
             # Para todos los roles, también Administradores y Propietario: no hay excepción posible.
-            motivos += comprobar_archivos_protegidos(cat_antes, cat_despues, prohibidos, leer_paquete)
+            motivos += comprobar_archivos_protegidos(cat_antes, cat_despues,
+                                                     list(prohibidos) + _prohibidos_del_canal(leer_archivo),
+                                                     leer_paquete)
             motivos += comprobar_largos(cat_antes, cat_despues)
 
     juegos_antes = _juegos_por_id(cat_antes)
@@ -136,6 +169,47 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     if toca_catalogo and cat_despues is not None and isinstance(cat_antes, dict):
         motivos += _comprobar_campos(cat_antes, cat_despues, permisos)
     return motivos
+
+
+def _comprobar_tamanos(cambios, permisos: Permisos) -> list:
+    """Topes de la propuesta entera (docs/canales.md §7.7). El Dueño se los salta (migraciones de una vez)."""
+    if permisos.es_dueno:
+        return []
+    motivos = []
+    if len(cambios) > canales.TOPE_ARCHIVOS_PROPUESTA:
+        motivos.append(f"La propuesta cambia {len(cambios)} archivos y el máximo son {canales.TOPE_ARCHIVOS_PROPUESTA}: "
+                       "divídela en varias.")
+    total = sum(c.tamano for c in cambios)
+    if total > canales.TOPE_BYTES_PROPUESTA:
+        motivos.append(f"La propuesta pesa {total / 1048576:.1f} MB y el máximo son "
+                       f"{canales.TOPE_BYTES_PROPUESTA // 1048576} MB: divídela en varias.")
+    for c in cambios:
+        if c.modo == "100755":
+            motivos.append(f"`{c.ruta}`: en el repositorio de datos no van archivos ejecutables (quítale el permiso de ejecución).")
+    return motivos
+
+
+def _prohibidos_del_canal(leer_archivo) -> list:
+    """Los archivos de la lista negra del canal oficial: cuentan la de `main` y la de la propuesta a la vez (solo
+    añade a la general, igual que la antigua `grupo.archivosProhibidos`)."""
+    if leer_archivo is None:
+        return []
+    ruta = f"{canales.CARPETA_CANALES}{canales.CANAL_OFICIAL}/lista-negra.json"
+    resultado, vistos = [], set()
+    for lado in ("antes", "despues"):
+        datos = leer_archivo(ruta, lado)
+        if datos is None:
+            continue
+        try:
+            lista, _ = canales.leer_lista_negra(canales.leer_json_estricto(datos, ruta), ruta)
+        except canales.JsonMalo:
+            continue  # el error ya sale en la parte de canales
+        for fila in lista.archivos:
+            clave = fila["patron"].strip().lower()
+            if clave not in vistos:
+                vistos.add(clave)
+                resultado.append(Prohibido(fila["patron"].strip(), fila.get("motivo", ""), f"del canal @{canales.CANAL_OFICIAL}"))
+    return resultado
 
 
 def validar_catalogo(texto, cat_antes):
@@ -533,7 +607,9 @@ def archivo_prohibido(ruta: str, prohibidos):
 
 
 def mensaje_protegido(donde: str, ruta: str, norma: Prohibido) -> str:
-    origen = f"`{RUTA_PROHIBIDOS}`" if norma.lista == "general" else f"`grupo.{CAMPO_PROHIBIDOS_GRUPO}` del catálogo"
+    origen = (f"`{RUTA_PROHIBIDOS}`" if norma.lista == "general"
+              else f"`canales/{canales.CANAL_OFICIAL}/lista-negra.json`" if norma.lista.startswith("del canal")
+              else f"`grupo.{CAMPO_PROHIBIDOS_GRUPO}` del catálogo")
     return (f"{donde}: Este parche toca un archivo protegido ({ruta}). Los parches no pueden modificar "
             f"archivos de protección anticopia. Lo bloquea la lista **{norma.lista}**: norma `{norma.patron}` "
             f"de {origen}" + (f" — {norma.motivo}" if norma.motivo else "."))
@@ -711,15 +787,18 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
         if c.modo in ("120000", "160000"):
             motivos.append(f"`{c.ruta}`: no se admiten enlaces simbólicos ni submódulos.")
             continue
-        if c.ruta == RUTA_CATALOGO:
-            continue  # lo que se puede cambiar dentro del catálogo lo decide _comprobar_campos
+        if c.ruta == RUTA_CATALOGO or c.ruta.startswith(canales.CARPETA_CANALES):
+            continue  # lo decide _comprobar_campos (catálogo) o canales.py (`canales/`)
+        if c.ruta.lower().startswith(canales.CARPETA_CANALES) and not permisos.es_dueno:
+            motivos.append(f"`{c.ruta}`: la carpeta de los canales se escribe `canales/`, en minúsculas.")
+            continue
         carpeta = _carpeta_del_propietario(c.ruta)
         if carpeta is not None:
-            if permisos.rol_global < Rol.PROPIETARIO:
+            if not permisos.es_dueno:
                 motivos.append(f"`{c.ruta}`: {SOLO_PROPIETARIO[carpeta]} (`{carpeta}`) solo lo cambia el "
-                               "Propietario." + (f" Un grupo puede añadir archivos a su propia lista en "
-                                                 f"`grupo.{CAMPO_PROHIBIDOS_GRUPO}` del catálogo."
-                                                 if carpeta == CARPETA_NORMAS else ""))
+                               "Dueño del programa." + (" Un canal puede añadir archivos a su propia lista en "
+                                                        "`canales/<canal>/lista-negra.json`."
+                                                        if carpeta == CARPETA_NORMAS else ""))
             continue
         if permisos.rol_global >= Rol.ADMINISTRADOR:
             continue
@@ -746,9 +825,9 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
     return _sin_repetidos(motivos)
 
 
-_SIN_ROL = ("Tu cuenta no tiene ningún rol en este repositorio (Administrador, Editor o Colaborador), "
+_SIN_ROL = ("Tu cuenta no tiene ningún rol en el canal @ornizen (Administrador, Editor o Colaborador), "
             "así que el robot no puede aceptar cambios tuyos. Si eres del equipo, pide a un Administrador "
-            "que te añada.")
+            "que te invite y acepta la invitación desde el parcheador.")
 
 
 def _comprobar_campos(antes: dict, despues: dict, permisos: Permisos) -> list:
@@ -759,9 +838,9 @@ def _comprobar_campos(antes: dict, despues: dict, permisos: Permisos) -> list:
     #    del Propietario. Ponerlas o quitarlas en un juego (`juegos[].etiquetas`) no es esto: va con el juego.
     for clave in _claves_distintas(antes, despues):
         if clave == "etiquetas":
-            if permisos.rol_global < Rol.PROPIETARIO:
+            if not permisos.es_dueno:
                 motivos.append("`etiquetas`: las etiquetas del catálogo son globales y solo las crea, edita o "
-                               "borra el Propietario (los demás roles ponen y quitan en sus juegos etiquetas "
+                               "borra el Dueño del programa (los demás roles ponen y quitan en sus juegos etiquetas "
                                "que ya existen, pero no las crean ni las editan).")
         elif clave not in RAIZ_LIBRE and permisos.rol_global < Rol.ADMINISTRADOR:
             motivos.append(f"`{clave}`: esta parte del catálogo solo la cambia un Administrador.")
@@ -905,35 +984,85 @@ RUTA_PROPIETARIO = "normas/propietario.json"
 
 
 def leer_propietarios(texto: str) -> set:
-    """`normas/propietario.json` → cuentas (en minúsculas) que son Propietario.
+    """`normas/propietario.json` → cuentas (en minúsculas) del Dueño del programa (formato de antes, sin ids)."""
+    return canales.leer_duenos(texto)[1]
 
-    El robot no puede distinguir al Propietario (owner de la organización) de un Administrador: los dos
-    tienen nivel `admin` en el repositorio, y saber quién es owner pide una clave con permisos de la
-    organización que el robot no tiene. Por eso se escribe aquí. Solo lo cambia el propio Propietario
-    (está en `normas/`) y se lee siempre de `main`. Solo cuenta si la cuenta, además, es `admin`.
+
+@dataclass(frozen=True)
+class Canales:
+    """Lo que hay en `main` de cada canal: sus miembros y las cuentas de su lista negra."""
+    miembros: dict = field(default_factory=dict)  # {canal: {id: canales.Miembro}}
+    vetados: dict = field(default_factory=dict)   # {canal: set de ids}
+
+    def rol(self, canal: str, cuenta_id) -> Rol:
+        if cuenta_id in self.vetados.get(canal, ()):
+            return Rol.NINGUNO
+        return Rol(canales.rol_en_canal(self.miembros.get(canal, {}), cuenta_id))
+
+
+def leer_canales(raiz: pathlib.Path) -> Canales:
+    """`canales/*/miembros.json` y `lista-negra.json` de la copia de `main`. Si uno está mal, falla: mejor no aceptar
+    nada que aceptar con roles que no son."""
+    miembros, vetados = {}, {}
+    carpeta = raiz / canales.CARPETA_CANALES
+    for dir_canal in sorted(carpeta.iterdir()) if carpeta.is_dir() else []:
+        if not dir_canal.is_dir():
+            continue
+        canal = dir_canal.name
+        archivo = dir_canal / "miembros.json"
+        if archivo.is_file():
+            ruta = f"canales/{canal}/miembros.json"
+            leidos, errores = canales.leer_miembros(canales.leer_json_estricto(archivo.read_bytes(), ruta), ruta)
+            if errores:
+                raise ValueError(errores[0])
+            miembros[canal] = leidos
+        archivo = dir_canal / "lista-negra.json"
+        if archivo.is_file():
+            ruta = f"canales/{canal}/lista-negra.json"
+            lista, errores = canales.leer_lista_negra(canales.leer_json_estricto(archivo.read_bytes(), ruta), ruta)
+            if errores:
+                raise ValueError(errores[0])
+            vetados[canal] = set(lista.usuarios)
+    return Canales(miembros, vetados)
+
+
+def permisos_de(usuario: str, api, equipo: dict, propietarios=frozenset(), cuenta_id=None,
+                canales_main: Canales | None = None, ids_duenos=frozenset()) -> Permisos:
+    """Lo que puede la cuenta: su rol en cada canal (`canales/<c>/miembros.json` de `main`, por id) y, para el catálogo
+    de hoy, el del canal oficial.
+
+    Transición de la fase A: en el canal oficial cuenta el mayor entre el archivo y el equipo de GitHub (los equipos
+    se quitan en la fase B), salvo que la cuenta esté en la lista negra del canal: entonces no tiene nada.
+    Dueño del programa: su id en `normas/propietario.json` → `duenos`. Si el archivo aún no tiene ids, como antes: la
+    cuenta en `propietario` y además `admin` del repositorio.
     """
-    datos = json.loads(texto)
-    cuentas = datos.get("propietario") if isinstance(datos, dict) else None
-    if isinstance(cuentas, str):
-        cuentas = [cuentas]
-    if not isinstance(cuentas, list) or not cuentas or not all(isinstance(c, str) and c.strip() for c in cuentas):
-        raise ValueError(f"`{RUTA_PROPIETARIO}` tiene que tener `propietario`: una cuenta o una lista de cuentas.")
-    return {c.strip().lower() for c in cuentas}
+    canales_main = canales_main or Canales()
+    if not usuario or usuario.endswith("[bot]"):
+        return Permisos(Rol.NINGUNO)
+    vetado = cuenta_id is not None and cuenta_id in canales_main.vetados.get(canales.CANAL_OFICIAL, ())
 
+    de_github = Rol.NINGUNO
+    respuesta = api("GET", f"/collaborators/{usuario}/permission", tolerar=(404,))
+    if respuesta:
+        de_github = ROL_DE_GITHUB.get(respuesta.get("role_name") or respuesta.get("permission"), Rol.NINGUNO)
 
-def permisos_de(usuario: str, api, equipo: dict, propietarios=frozenset()) -> Permisos:
-    """El rol de GitHub de la persona, ampliado con lo que diga `equipo.json` (hoy, nada)."""
-    rol = Rol.NINGUNO
-    if usuario and not usuario.endswith("[bot]"):
-        respuesta = api("GET", f"/collaborators/{usuario}/permission", tolerar=(404,))
-        if respuesta:
-            rol = ROL_DE_GITHUB.get(respuesta.get("role_name") or respuesta.get("permission"), Rol.NINGUNO)
-        if rol == Rol.ADMINISTRADOR and usuario.lower() in propietarios:
-            rol = Rol.PROPIETARIO
+    if cuenta_id is not None and cuenta_id in ids_duenos:
+        es_dueno = True
+    else:
+        es_dueno = not ids_duenos and de_github == Rol.ADMINISTRADOR and usuario.lower() in propietarios
+    if es_dueno:
+        return Permisos(Rol.DUENO, cuenta_id=cuenta_id)
+
+    por_canal = {c: canales_main.rol(c, cuenta_id) for c in canales_main.miembros} if cuenta_id is not None else {}
+    oficial = Rol.NINGUNO if vetado else max(por_canal.get(canales.CANAL_OFICIAL, Rol.NINGUNO), de_github)
+    if por_canal or oficial:
+        por_canal[canales.CANAL_OFICIAL] = oficial
+    por_canal = {c: r for c, r in por_canal.items() if r}
+
     extra = equipo.get(usuario.lower())
     if extra is None:
-        return Permisos(rol)
-    return Permisos(max(rol, extra.rol_global), dict(extra.por_juego))
+        return Permisos(oficial, por_canal=por_canal, cuenta_id=cuenta_id)
+    return Permisos(max(oficial, extra.rol_global), dict(extra.por_juego), por_canal, cuenta_id)
 
 
 # ────────────────────────────────────── GitHub y git (main) ──────────────────────────────────────
@@ -992,7 +1121,21 @@ def leer_propuesta(numero: int, cabeza: str):
         salida = git("show", f"{revision}:{RUTA_CATALOGO}", comprobar_salida=False)
         return salida.stdout.decode("utf-8", errors="replace") if salida.returncode == 0 else None
 
-    return cambios, texto("origin/main"), texto(arbol)
+    def leer_archivo(ruta, lado):
+        """Bytes del archivo en `main` o tras la propuesta (None si no existe). Solo se usa con los de `canales/`,
+        y el tamaño se mira antes con `cat-file -s` (un archivo enorme no se llega a cargar)."""
+        revision = "origin/main" if lado == "antes" else arbol
+        tamano = git("cat-file", "-s", f"{revision}:{ruta}", comprobar_salida=False)
+        if tamano.returncode != 0:
+            return None
+        nombre = ruta.rsplit("/", 1)[-1]
+        if int(tamano.stdout.decode().strip()) > canales.TOPES.get(nombre, canales.TOPE_LOGO):
+            return b" " * (canales.TOPES.get(nombre, canales.TOPE_LOGO) + 1)  # basta para que se rechace por tamaño
+        if nombre not in canales.TOPES:
+            return b""  # imágenes: no hace falta su contenido
+        return git("show", f"{revision}:{ruta}").stdout
+
+    return cambios, texto("origin/main"), texto(arbol), leer_archivo
 
 
 def comentar(api, numero: int, texto: str, solo_si_existe=False) -> None:
@@ -1045,19 +1188,36 @@ def main() -> int:
 
     propuesta = api("GET", f"/pulls/{numero}")
     cabeza = propuesta["head"]["sha"]
-    autor = propuesta["user"]["login"]
+    autor, autor_id = propuesta["user"]["login"], propuesta["user"]["id"]
     # Cuenta el rol más bajo entre quien abrió la propuesta y quien ha subido el último cambio: así nadie
     # gana permisos por añadir cambios a la propuesta de otra persona con más rol.
     actor = os.environ.get("PR_ACTOR") or autor
+    actor_id = int(os.environ["PR_ACTOR_ID"]) if os.environ.get("PR_ACTOR_ID", "").isdigit() else None
+    if actor == autor:
+        actor_id = autor_id
+    elif actor_id is None:
+        actor_id = (api("GET", f"https://api.github.com/users/{actor}", tolerar=(404,)) or {}).get("id")
     equipo = leer_equipo(None)
     raiz = pathlib.Path(__file__).resolve().parents[1]  # la copia de `main`, nunca la propuesta
     try:
-        propietarios = leer_propietarios((raiz / RUTA_PROPIETARIO).read_text(encoding="utf-8"))
+        ids_duenos, propietarios = canales.leer_duenos((raiz / RUTA_PROPIETARIO).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise RuntimeError(f"No se puede leer `{RUTA_PROPIETARIO}` de `main`: {error}")
-    permisos = permisos_de(autor, api, equipo, propietarios)
+    # Si los miembros de `main` no se pueden leer, nadie tiene rol salvo el Dueño, que es quien lo arregla (si
+    # el robot fallara del todo, ni siquiera él podría publicar el arreglo).
+    canales_roto = None
+    try:
+        canales_main = leer_canales(raiz)
+    except (OSError, ValueError) as error:
+        canales_main, canales_roto = Canales(), str(error)
+
+    def de(usuario, cuenta_id):
+        return permisos_de(usuario, api, equipo, propietarios, cuenta_id, canales_main, ids_duenos)
+    permisos = de(autor, autor_id)
     if actor != autor:
-        permisos = permisos.el_menor(permisos_de(actor, api, equipo, propietarios))
+        permisos = permisos.el_menor(de(actor, actor_id))
+    if canales_roto and not permisos.es_dueno:
+        permisos = Permisos(Rol.NINGUNO)
     quien = f"@{autor}" + (f" (último cambio de @{actor})" if actor != autor else "")
 
     # La lista de archivos prohibidos se lee de `main` (esta copia), nunca de la propuesta.
@@ -1068,11 +1228,16 @@ def main() -> int:
         raise RuntimeError(f"No se puede leer `{RUTA_PROHIBIDOS}` de `main`: {error}")
 
     leido = leer_propuesta(numero, cabeza)
-    if leido is None:
+    if canales_roto and not permisos.es_dueno:
+        motivos = [f"Los miembros de los canales que hay en `main` no se pueden leer ({canales_roto}). Hasta que el "
+                   "Dueño del programa lo arregle, el robot no acepta propuestas de nadie más."]
+    elif leido is None:
         motivos = ["La propuesta choca con cambios que ya están publicados en `main`. Actualízala con lo "
                    "último de `main` y vuelve a subirla."]
     else:
-        motivos = comprobar(*leido, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete)
+        cambios, antes, despues, leer_archivo = leido
+        motivos = comprobar(cambios, antes, despues, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete,
+                            leer_archivo=leer_archivo)
 
     if motivos:
         lista = "\n".join(f"- {m}" for m in motivos)
