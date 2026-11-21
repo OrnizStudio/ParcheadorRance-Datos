@@ -129,6 +129,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         if cat_despues is not None:
             # Para todos los roles, también Administradores y Propietario: no hay excepción posible.
             motivos += comprobar_archivos_protegidos(cat_antes, cat_despues, prohibidos, leer_paquete)
+            motivos += comprobar_largos(cat_antes, cat_despues)
 
     juegos_antes = _juegos_por_id(cat_antes)
     motivos += _comprobar_archivos(cambios, juegos_antes, permisos)
@@ -194,7 +195,210 @@ def validar_catalogo(texto, cat_antes):
             donde = f"`{jid}` › edición `{edicion['id']}`"
             errores += _validar_etiquetas(donde, edicion, etiquetas)
             errores += _validar_parche(donde, edicion.get("parche"))
+            errores += validar_ignorados(donde, edicion)
     return (cat if not errores else None), errores
+
+
+# ───────────────────────────────────── Topes de largo ─────────────────────────────────────
+#
+# Lo que escribe el equipo tiene tope, el mismo que pone el parcheador en cada campo (`LimitesTexto` en
+# Parcheador.Equipo; si cambia allí, cambia aquí): un texto enorme hincha el catálogo que descargan todos y
+# descoloca las pantallas. Vale para cualquier rol.
+#
+# Solo se mira lo que la propuesta escribe o cambia: un texto largo que ya estaba publicado no bloquea las
+# propuestas que no lo tocan. Se cuenta como el parcheador: sin los espacios de los lados y en unidades
+# UTF-16 (un emoji de los nuevos cuenta dos), para no rechazar aquí lo que allí cabe ni al revés.
+
+LARGO_SINOPSIS = 4000
+LARGO_NOVEDADES = 4000
+LARGO_NOTA_EDICION = 1000
+LARGO_VERSION = 40
+
+
+def _largo(texto: str) -> int:
+    return len(texto.strip().encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _textos_con_tope(catalogo):
+    """{clave: (dónde, nombre del campo, texto, máximo)} de cada texto con tope del catálogo."""
+    textos = {}
+    if not isinstance(catalogo, dict):
+        return textos
+
+    def apuntar(clave, donde, nombre, valor, maximo):
+        if isinstance(valor, str):
+            textos[clave] = (donde, nombre, valor, maximo)
+
+    def parche(clave, donde, valor):
+        if isinstance(valor, dict):
+            apuntar(clave + ("notas",), donde, "las novedades (`notas`)", valor.get("notas"), LARGO_NOVEDADES)
+            apuntar(clave + ("version",), donde, "la versión (`version`)", valor.get("version"), LARGO_VERSION)
+
+    for juego in catalogo.get("juegos") or []:
+        if not isinstance(juego, dict):
+            continue
+        jid = juego.get("id")
+        donde = f"`{jid}`"
+        apuntar((jid, "sinopsis"), donde, "la sinopsis", juego.get("sinopsis"), LARGO_SINOPSIS)
+        parche((jid, "parche"), donde, juego.get("parche"))
+        for edicion in juego.get("ediciones") or []:
+            if not isinstance(edicion, dict):
+                continue
+            eid = edicion.get("id")
+            aqui = f"{donde} › edición `{eid}`"
+            apuntar((jid, eid, "notaEdicion"), aqui, "la nota de la edición (`notaEdicion`)", edicion.get("notaEdicion"), LARGO_NOTA_EDICION)
+            parche((jid, eid, "parche"), aqui, edicion.get("parche"))
+            for lista in ("versiones", "huellasParcheadas"):
+                for i, version in enumerate(edicion.get(lista) or []):
+                    # Por posición y no por versión: una versión kilométrica no puede ser su propia clave.
+                    parche((jid, eid, lista, i), f"{aqui} › `{lista}`", version)
+    return textos
+
+
+def comprobar_largos(cat_antes, cat_despues) -> list:
+    """Los textos que la propuesta escribe o cambia y se pasan de su tope."""
+    antes = _textos_con_tope(cat_antes)
+    motivos = []
+    for clave, (donde, nombre, texto, maximo) in _textos_con_tope(cat_despues).items():
+        largo = _largo(texto)
+        if largo <= maximo or (clave in antes and antes[clave][2] == texto):
+            continue
+        motivos.append(f"{donde}: {nombre} tiene {largo} caracteres y el máximo es {maximo}. Acórtala y vuelve a proponerlo.")
+    return motivos
+
+
+# ───────────────────────────────────── Archivos ignorados ─────────────────────────────────────
+#
+# Cada edición puede llevar `ignorar`: patrones al estilo de un `.gitignore` con los archivos de la carpeta del
+# juego que no cuentan para reconocerla (configuración, caché: lo que el juego o el usuario cambian). Tiene
+# límites, para que nadie deje la huella en «todo ignorado menos el .exe». Son los mismos que aplica el
+# parcheador (`ReglasIgnorados` en Parcheador.Core); si cambian allí, cambian aquí.
+#
+#   - Patrones prohibidos: los que valen para cualquier archivo (`*`, `**`, `**/*`, `*.*`, `*/*`…), los
+#     vacíos, los que salen de la carpeta (`..`, rutas absolutas) y los de ejecutables (`.exe`, `.dll`).
+#   - Como mucho 50 patrones de 200 caracteres.
+#   - Nunca pueden encajar con un archivo que el parche modifica (`huellasParcheadas` y, en los paquetes
+#     nuevos, su manifiesto) ni con un archivo de la `huella` (lo ignorado no entra en la huella).
+#   - En la huella tiene que quedar al menos el 80 % de los bytes y el 70 % de los archivos.
+#
+# El robot no ve la carpeta del juego: los porcentajes los comprueba con `ignorados` (`archivos` y `bytes`),
+# el resumen que escribe el parcheador junto a la lista. Quien lo falsee a mano se salta el porcentaje, pero
+# no las demás reglas. Tampoco puede comprobar aquí el tope de un patrón solo ni «los 10 archivos más
+# grandes»: eso lo hace el parcheador, que sí tiene la carpeta delante.
+
+IGNORAR_MAXIMO_PATRONES = 50
+IGNORAR_LARGO_MAXIMO = 200
+IGNORAR_MINIMO_BYTES = 0.80
+IGNORAR_MINIMO_ARCHIVOS = 0.70
+_IGNORAR_CUALQUIERA = ("q7x", "q7x.q7x", "q7x/q7x", "q7x/q7x.q7x", "q7x/q7x/q7x.q7x")
+_IGNORAR_EJECUTABLES = ("q7x.exe", "q7x.dll", "q7x/q7x.exe", "q7x/q7x.dll")
+
+
+def _es_ejecutable(ruta: str) -> bool:
+    return ruta.lower().endswith((".exe", ".dll"))
+
+
+def regex_ignorar(patron: str):
+    """El patrón como expresión regular, igual que `OpcionesHuella.Convertir` del parcheador: `*` = cualquier
+    cosa dentro de un nombre, `**` = cualquier número de carpetas, `?` = un carácter; sin distinguir
+    mayúsculas; un patrón sin `/` vale en cualquier carpeta."""
+    patron = patron.strip().replace("\\", "/").lstrip("/")
+    if "/" not in patron:
+        patron = "**/" + patron
+    partes, i = ["^"], 0
+    while i < len(patron):
+        c = patron[i]
+        if c == "*" and patron[i + 1:i + 2] == "*":
+            if patron[i + 2:i + 3] == "/":
+                partes.append("(?:.*/)?")
+                i += 3
+            else:
+                partes.append(".*")
+                i += 2
+            continue
+        partes.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
+        i += 1
+    return re.compile("".join(partes) + "$", re.IGNORECASE)
+
+
+def error_de_patron(patron):
+    """Por qué ese patrón no vale por sí mismo, o None si vale."""
+    if not isinstance(patron, str) or not patron.strip():
+        return "está vacío o no es un texto"
+    limpio = patron.strip().replace("\\", "/")
+    if len(limpio) > IGNORAR_LARGO_MAXIMO:
+        return f"es demasiado largo (más de {IGNORAR_LARGO_MAXIMO} caracteres)"
+    if limpio.startswith("/") or ":" in limpio or any(parte in ("..", ".") for parte in limpio.split("/")):
+        return "tiene que ser una ruta relativa dentro de la carpeta del juego (sin `..`, sin unidad y sin `/` al principio)"
+    if any(ord(c) < 32 or ord(c) == 127 for c in limpio):
+        return "tiene caracteres que no valen"
+    regex = regex_ignorar(limpio)
+    if any(regex.match(prueba) for prueba in _IGNORAR_CUALQUIERA):
+        return "vale para cualquier archivo: ignoraría la carpeta entera"
+    if _es_ejecutable(limpio) or any(regex.match(prueba) for prueba in _IGNORAR_EJECUTABLES):
+        return "los ejecutables (`.exe` y `.dll`) no se pueden ignorar"
+    return None
+
+
+def _rutas(archivos):
+    return [a["ruta"] for a in archivos or [] if isinstance(a, dict) and isinstance(a.get("ruta"), str)]
+
+
+def validar_ignorados(donde: str, edicion: dict) -> list:
+    """Las reglas de `ignorar` e `ignorados` de una edición. Valen para cualquier rol."""
+    ignorar, resumen = edicion.get("ignorar"), edicion.get("ignorados")
+    if ignorar is None and resumen is None:
+        return []
+    if ignorar is None or not isinstance(ignorar, list):
+        return [f"{donde}: `ignorar` tiene que ser una lista de patrones (y `ignorados` solo va con ella)."]
+    if not ignorar:
+        return [f"{donde}: `ignorados` sobra si la lista `ignorar` está vacía."] if resumen is not None else []
+    if len(ignorar) > IGNORAR_MAXIMO_PATRONES:
+        return [f"{donde}: `ignorar` tiene {len(ignorar)} patrones y el máximo es {IGNORAR_MAXIMO_PATRONES}."]
+
+    errores, patrones = [], []
+    for patron in ignorar:
+        error = error_de_patron(patron)
+        if error:
+            errores.append(f"{donde}: el patrón de `ignorar` {patron!r} no vale: {error}.")
+        else:
+            patrones.append((patron, regex_ignorar(patron)))
+
+    def encaja(ruta):
+        ruta = ruta.replace("\\", "/")
+        return next((patron for patron, regex in patrones if regex.match(ruta)), None)
+
+    huella = edicion.get("huella") if isinstance(edicion.get("huella"), list) else []
+    for ruta in _rutas(huella):
+        patron = encaja(ruta)
+        if patron:
+            errores.append(f"{donde}: `{ruta}` está en la `huella` y también lo ignora `{patron}`. Lo ignorado no "
+                           "entra en la huella: vuelve a registrar la edición con el parcheador.")
+            break
+    for parcheada in edicion.get("huellasParcheadas") or []:
+        if not isinstance(parcheada, dict):
+            continue
+        for ruta in _rutas(parcheada.get("archivos")):
+            patron = encaja(ruta)
+            if patron:
+                errores.append(f"{donde}: el patrón `{patron}` ignoraría `{ruta}`, que es un archivo que el parche "
+                               f"modifica (versión `{parcheada.get('version')}`). Los archivos del parche no se pueden ignorar.")
+
+    if not isinstance(resumen, dict) or not _es_entero(resumen.get("archivos")) or not _es_entero(resumen.get("bytes")) \
+            or resumen["archivos"] < 0 or resumen["bytes"] < 0:
+        errores.append(f"{donde}: con `ignorar` tiene que ir `ignorados` (`{{ \"archivos\": …, \"bytes\": … }}`): cuánto deja "
+                       "fuera la lista. Lo escribe el parcheador al registrar la edición.")
+        return errores
+    en_huella = len(huella)
+    bytes_huella = sum(a["tamano"] for a in huella if isinstance(a, dict) and _es_entero(a.get("tamano")) and a["tamano"] > 0)
+    archivos, tamano = en_huella + resumen["archivos"], bytes_huella + resumen["bytes"]
+    if archivos > 0 and en_huella < archivos * IGNORAR_MINIMO_ARCHIVOS:
+        errores.append(f"{donde}: se ignoran {resumen['archivos']} de {archivos} archivos. En la huella tiene que quedar "
+                       f"al menos el {IGNORAR_MINIMO_ARCHIVOS:.0%} de los archivos.")
+    if tamano > 0 and bytes_huella < tamano * IGNORAR_MINIMO_BYTES:
+        errores.append(f"{donde}: se ignora el {resumen['bytes'] / tamano:.0%} del tamaño de la carpeta. En la huella "
+                       f"tiene que quedar al menos el {IGNORAR_MINIMO_BYTES:.0%}.")
+    return errores
 
 
 def _validar_etiquetas(donde, objeto, definidas):
@@ -370,7 +574,26 @@ def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer
                 norma = archivo_prohibido(ruta, todos)
                 if norma:
                     motivos.append(mensaje_protegido(donde, ruta, norma))
+            motivos += _ignorados_que_toca(cat_despues, donde, paquete, rutas)
     return _sin_repetidos(motivos)
+
+
+def _ignorados_que_toca(catalogo: dict, donde: str, paquete: dict, rutas) -> list:
+    """Un paquete nuevo no puede tocar un archivo que su edición ignora (se mira con su manifiesto)."""
+    motivos = []
+    for juego in catalogo.get("juegos") or []:
+        if not isinstance(juego, dict) or not donde.startswith(f"`{juego.get('id')}`"):
+            continue
+        for edicion in juego.get("ediciones") or []:
+            if not isinstance(edicion, dict) or edicion.get("id") != paquete.get("edicion"):
+                continue
+            patrones = [(p, regex_ignorar(p)) for p in edicion.get("ignorar") or [] if error_de_patron(p) is None]
+            for ruta in rutas:
+                patron = next((p for p, regex in patrones if regex.match(ruta.replace("\\", "/"))), None)
+                if patron:
+                    motivos.append(f"{donde}: el paquete toca `{ruta}`, que la edición ignora con `{patron}`. Un parche "
+                                   "no puede modificar un archivo ignorado: quita el patrón o el archivo del parche.")
+    return motivos
 
 
 def _rutas_parcheadas(catalogo: dict):

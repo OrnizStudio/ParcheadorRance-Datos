@@ -152,6 +152,48 @@ Preparado para más adelante (sin hacer): que cada juego tenga su líder y su eq
 el rol «en este juego»; bastará con que el robot lea los permisos de un archivo `equipo.json` (está
 indicado dónde, en `leer_equipo` de `robot/permisos.py`).
 
+### Topes de largo
+
+Lo que escribe el equipo tiene tope, el mismo que pone el parcheador en cada campo. El robot lo comprueba para
+cualquier rol, también Administradores y Propietario:
+
+| Texto | Máximo |
+|---|---|
+| Sinopsis de un juego (`sinopsis`) | 4000 caracteres |
+| Novedades de una versión (`notas` de `parche` y de `versiones`) | 4000 caracteres |
+| Nota de una edición (`notaEdicion`) | 1000 caracteres |
+| Versión de un parche (`version`) | 40 caracteres |
+
+Solo se mira lo que la propuesta escribe o cambia: un texto largo que ya estaba publicado no bloquea las
+propuestas que no lo tocan. Se cuenta sin los espacios de los lados.
+
+### Archivos ignorados de una edición
+
+Cada edición puede llevar `ignorar`: una lista de patrones, al estilo de un `.gitignore`, con los archivos de
+la carpeta del juego que **no cuentan para reconocer la edición** (configuración, caché: lo que el juego o el
+usuario cambian). No entran en la `huella` y el parcheador no los mira al detectar.
+
+```json
+{ "id": "steam", "ignorar": ["config.ini", "UserData/**"], "ignorados": { "archivos": 3, "bytes": 90 } }
+```
+
+La lista se escribe en el parcheador (Equipo → Registrar edición), que tiene la carpeta delante y enseña
+cuánto deja fuera. Tiene límites, para que nadie deje la huella en «todo ignorado menos el `.exe`», y el
+robot los vuelve a comprobar para cualquier rol, también Administradores y Propietario:
+
+- **Patrones prohibidos**: los que valen para cualquier archivo (`*`, `**`, `**/*`, `*.*`, `*/*`), los vacíos,
+  los que salen de la carpeta (`..`, rutas absolutas) y los de ejecutables (`.exe`, `.dll`).
+- Como mucho **50 patrones** de 200 caracteres.
+- **Nunca pueden ignorar un archivo que el parche modifica**: ni los de `huellasParcheadas` ni, en un paquete
+  nuevo, los de su manifiesto.
+- Lo ignorado **no puede seguir en la `huella`**.
+- En la huella tiene que quedar **al menos el 80 % del tamaño y el 70 % de los archivos**. Como el robot no
+  ve la carpeta del juego, lo comprueba con `ignorados` (cuántos archivos y bytes deja fuera la lista), que
+  escribe el parcheador. Sin `ignorados` la lista no se acepta.
+
+Lo que el robot no puede comprobar y sí hace el parcheador, con la carpeta delante: que un patrón solo no pase
+del 10 % del tamaño ni del 20 % de los archivos, y que no se ignoren los 10 archivos más grandes.
+
 ## Contenido de pruebas
 
 Los juegos, ediciones y versiones marcados con `"pruebas": true` **no los ve el público**: el parcheador
