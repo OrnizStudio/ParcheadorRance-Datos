@@ -65,7 +65,20 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 > El antiguo «Propietario» (owner) pasa a llamarse **Dueño del programa** y se reconoce por su número en
 > [`normas/propietario.json`](normas/propietario.json) (`duenos`); «Propietario» es ahora el rol más alto **de un
 > canal**. Quién puede invitar, aceptar, cambiar o quitar miembros, y qué puede tocar cada rol en `canales/`, está en
-> [`robot/canales.py`](robot/canales.py). Lo que sigue describe los equipos de GitHub, que se quitan en la fase B.
+> [`robot/canales.py`](robot/canales.py). En resumen:
+>
+> - Cada uno gestiona (invita, cambia, quita, veta y quita vetos) solo a quien está **por debajo de su rol**. Un
+>   Propietario del canal no toca a otro Propietario: solo puede irse él. Siempre queda al menos un Propietario.
+> - Cada veto de `lista-negra.json → usuarios` lleva `por` (el número de quien lo puso). Nadie deshace el veto de
+>   alguien de su mismo rol o superior, salvo el suyo propio.
+> - El **Dueño del programa está por encima de todo veto**: no se le puede vetar, y lo puede todo salvo romper el formato.
+> - Lo que cuenta es el número de la cuenta; el nombre (`cuenta`) solo se enseña, pero tiene que ser el de esa cuenta
+>   en GitHub (el robot lo comprueba). Cada miembro puede corregir el suyo tras renombrarse.
+> - En `canales/` solo valen archivos normales (nada de enlaces simbólicos ni submódulos), y el logo tiene que ser
+>   de verdad PNG, WebP o JPEG.
+> - Fuera de `canales/` (el catálogo y lo demás) hace falta rol en el canal oficial.
+>
+> Lo que sigue describe los equipos de GitHub, que se quitan en la fase B.
 
 | Rol | Equipo de GitHub | Nivel en este repositorio | Qué puede cambiar |
 |---|---|---|---|

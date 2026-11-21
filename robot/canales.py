@@ -25,6 +25,20 @@ REPOSITORIO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,1
 RUTA_SEGURA = re.compile(r"^[a-z0-9._/-]+$")
 EXTENSIONES_LOGO = (".png", ".webp", ".jpg", ".jpeg")
 
+
+def tipo_de_imagen(datos: bytes):
+    """«png», «webp» o «jpeg» según los primeros bytes (no según el nombre), o None."""
+    if datos.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if datos.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if len(datos) >= 12 and datos[:4] == b"RIFF" and datos[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+TIPO_POR_EXTENSION = {".png": "png", ".webp": "webp", ".jpg": "jpeg", ".jpeg": "jpeg"}
+
 # Topes (docs/canales.md §7.7). Se miran con el tamaño de git, antes de leer nada.
 TOPES = {"canal.json": 16 * 1024, "miembros.json": 128 * 1024, "lista-negra.json": 256 * 1024}
 TOPE_LOGO = 512 * 1024
@@ -64,6 +78,20 @@ def _sin_repetidas(pares):
 
 def _sin_nan(valor):
     raise JsonMalo(f"`{valor}` no es un número válido")
+
+
+def _decimal_finito(texto):
+    valor = float(texto)
+    if valor != valor or valor in (float("inf"), float("-inf")):
+        raise JsonMalo(f"`{texto[:20]}` no es un número válido")
+    return valor
+
+
+def _entero_razonable(texto):
+    # Python no convierte enteros de más de 4300 cifras (ValueError); aquí ni hace falta acercarse.
+    if len(texto.lstrip("-")) > 30:
+        raise JsonMalo(f"un número tiene {len(texto)} cifras")
+    return int(texto)
 
 
 def _profundidad(texto: str) -> int:
@@ -107,13 +135,17 @@ def leer_json_estricto(datos: bytes, ruta: str, tope: int | None = None):
     if _profundidad(texto) > PROFUNDIDAD_MAXIMA:
         raise JsonMalo(f"`{ruta}` está anidado a más de {PROFUNDIDAD_MAXIMA} niveles.")
     try:
-        return json.loads(texto, object_pairs_hook=_sin_repetidas, parse_constant=_sin_nan)
-    except json.JSONDecodeError as e:
-        raise JsonMalo(f"`{ruta}` no es un JSON válido (línea {e.lineno}, columna {e.colno}): {e.msg}.")
+        return json.loads(texto, object_pairs_hook=_sin_repetidas, parse_constant=_sin_nan,
+                          parse_float=_decimal_finito, parse_int=_entero_razonable)
     except JsonMalo as e:
         raise JsonMalo(f"`{ruta}`: {e}.")
+    except json.JSONDecodeError as e:
+        raise JsonMalo(f"`{ruta}` no es un JSON válido (línea {e.lineno}, columna {e.colno}): {e.msg}.")
     except RecursionError:
         raise JsonMalo(f"`{ruta}` está anidado demasiado hondo.")
+    except (ValueError, OverflowError, MemoryError) as e:
+        # Cualquier otra cosa que el parser no digiera: un rechazo con comentario, nunca que el robot se caiga.
+        raise JsonMalo(f"`{ruta}` no se puede leer ({type(e).__name__}).")
 
 
 # ───────────────────────────────────────── Utilidades ─────────────────────────────────────────
@@ -241,7 +273,7 @@ def leer_miembros(objeto, ruta: str):
     filas = objeto.get("miembros")
     if not isinstance(filas, list):
         return {}, errores + [f"`{ruta}`: `miembros` tiene que ser una lista."]
-    miembros, cuentas = {}, set()
+    miembros = {}
     for i, fila in enumerate(filas):
         donde = f"`{ruta}` › miembro {i + 1}"
         if not isinstance(fila, dict):
@@ -272,10 +304,6 @@ def leer_miembros(objeto, ruta: str):
         if mid in miembros:
             errores.append(f"{donde}: la cuenta {mid} está repetida.")
             continue
-        if cuenta.lower() in cuentas:
-            errores.append(f"{donde}: la cuenta `{cuenta}` está repetida.")
-            continue
-        cuentas.add(cuenta.lower())
         miembros[mid] = Miembro(mid, cuenta, TEXTO_ROL.index(rol) + 1, estado, fila)
 
     activos = sum(1 for m in miembros.values() if m.activo)
@@ -345,10 +373,11 @@ def leer_lista_negra(objeto, ruta: str):
     lista.huellas = filas("huellas", ("hash", "motivo", "fecha"),
                           lambda f: None if isinstance(f.get("hash"), str) and HASH_VALIDO.match(f["hash"])
                           else "el `hash` tiene que ser `blake3:` y 64 caracteres")
-    for fila in filas("usuarios", ("id", "cuenta", "motivo", "fecha"),
+    for fila in filas("usuarios", ("id", "cuenta", "motivo", "fecha", "por"),
                       lambda f: None if _es_id(f.get("id")) and ("cuenta" not in f or (
                           isinstance(f["cuenta"], str) and CUENTA_GITHUB.match(f["cuenta"])))
-                      else "falta el `id` de la cuenta o la `cuenta` no vale"):
+                      and ("por" not in f or _es_id(f["por"]))
+                      else "falta el `id` de la cuenta, o la `cuenta` o `por` no valen"):
         if fila["id"] in lista.usuarios:
             errores.append(f"`{ruta}`: la cuenta {fila['id']} está repetida en `usuarios`.")
         lista.usuarios[fila["id"]] = fila
@@ -479,14 +508,24 @@ def _diferencias(a: dict, b: dict):
 NOMBRE_ROL = {0: "sin rol", 1: "Colaborador", 2: "Editor", 3: "Administrador", 4: "Propietario del canal", 5: "Dueño del programa"}
 
 
-def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_dueno: bool, leer=None) -> list:
+def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_dueno: bool, leer=None,
+                      ids_duenos=frozenset(), cuenta_de=None) -> list:
     """Motivos de rechazo de lo que la propuesta cambia en `canales/` (lista vacía = se acepta).
 
     `cambios` son `CambioCanal` (solo los de `canales/`). `rol_por_canal` = {canal: rol del autor en `main`} (1–4;
-    0 o sin clave = ninguno). El Dueño del programa puede con todo, salvo las reglas de formato. `leer(ruta, lado)` da
-    los archivos del canal que la propuesta no cambia (la lista negra de `main`).
+    0 o sin clave = ninguno). El Dueño del programa puede con todo, salvo las reglas de formato y el veto a un Dueño.
+    `leer(ruta, lado)` da los archivos del canal que la propuesta no cambia (la lista negra y los miembros de `main`).
+    `ids_duenos` son los ids del Dueño (nadie los puede vetar). `cuenta_de(id)` da el nombre actual de esa cuenta en
+    GitHub (None si no existe): sirve para que nadie escriba el nombre de otra persona junto a un id.
     """
     leer = leer or (lambda ruta, lado: None)
+    if cuenta_de is not None:
+        sabidas = {}
+
+        def cuenta_de(cuenta_id, _consultar=cuenta_de):
+            if cuenta_id not in sabidas:
+                sabidas[cuenta_id] = _consultar(cuenta_id)
+            return sabidas[cuenta_id]
     motivos = []
     por_canal = {}
     for c in cambios:
@@ -507,7 +546,7 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
 
     for canal, archivos in sorted(por_canal.items()):
         rol = 5 if es_dueno else rol_por_canal.get(canal, 0)
-        motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer)
+        motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer, frozenset(ids_duenos), cuenta_de)
     return list(dict.fromkeys(motivos))
 
 
@@ -518,7 +557,7 @@ def _leer(c: CambioCanal, lado: str, nombre: str):
     return leer_json_estricto(datos, c.ruta, TOPES.get(nombre))
 
 
-def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer) -> list:
+def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids_duenos, cuenta_de) -> list:
     motivos = []
     arroba = f"@{canal}"
     solo_aceptar = False
@@ -532,8 +571,12 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer) -> 
         if resto in ("canal.json", "miembros.json", "lista-negra.json"):
             try:
                 antes = _leer(c, "antes", resto)
-            except JsonMalo:
-                antes = None  # en `main` siempre debería estar bien; si no, se juzga como si no existiera
+            except JsonMalo as e:
+                if rol < 5:
+                    motivos.append(f"`{c.ruta}` de `main` no se puede leer ({e}). Hasta que el Dueño del programa lo "
+                                   "arregle, no se acepta ningún cambio sobre él.")
+                    continue
+                antes = None  # el Dueño lo está arreglando: se juzga como si no existiera
             try:
                 despues = _leer(c, "despues", resto)
             except JsonMalo as e:
@@ -553,10 +596,12 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer) -> 
             if resto == "canal.json":
                 motivos += _comprobar_canal_json(canal, c.ruta, antes, despues, rol)
             elif resto == "miembros.json":
-                motivos += _comprobar_miembros(c.ruta, antes, despues, rol, autor_id, solo_aceptar,
-                                               _vetados(canal, archivos, leer))
+                vetados, ilegibles = _vetados(canal, archivos, leer, rol)
+                motivos += ilegibles
+                motivos += _comprobar_miembros(c.ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de)
             else:
-                motivos += _comprobar_lista_negra(c.ruta, antes, despues, rol)
+                motivos += _comprobar_lista_negra(c.ruta, antes, despues, rol, autor_id, ids_duenos,
+                                                  _miembros_de_main(canal, archivos, leer), cuenta_de)
             continue
 
         if "/" not in resto and resto.endswith(EXTENSIONES_LOGO):
@@ -565,6 +610,13 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer) -> 
                                f"(tu rol: {NOMBRE_ROL[rol]}).")
             elif c.despues is not None and c.tamano > TOPE_LOGO:
                 motivos.append(f"`{c.ruta}`: el logo pesa {c.tamano // 1024} KB y el máximo son {TOPE_LOGO // 1024} KB.")
+            elif c.despues is not None:
+                esperado = TIPO_POR_EXTENSION[resto[resto.rfind("."):]]
+                tipo = tipo_de_imagen(c.despues)
+                if tipo is None:
+                    motivos.append(f"`{c.ruta}`: no es una imagen PNG, WebP ni JPEG de verdad (se mira su contenido, no el nombre).")
+                elif tipo != esperado:
+                    motivos.append(f"`{c.ruta}`: por dentro es {tipo.upper()}, no {esperado.upper()}: cámbiale la extensión.")
             continue
 
         if rol < 5:
@@ -587,27 +639,57 @@ def _comprobar_canal_json(canal, ruta, antes, despues, rol) -> list:
 
 
 def _puede_sobre(rol: int, otro: int) -> bool:
-    """Un Administrador gestiona solo por debajo de su rol; el Propietario del canal y el Dueño, a cualquiera."""
-    return rol >= 4 or rol > otro
+    """Cada uno gestiona solo por debajo de su rol: un Propietario del canal no toca a otro Propietario (solo puede
+    irse él). El Dueño del programa, a cualquiera."""
+    return rol >= 5 or rol > otro
 
 
-def _vetados(canal, archivos, leer) -> set:
-    """Las cuentas de la lista negra del canal: la de `main` y la de la propuesta a la vez."""
+def _vetados(canal, archivos, leer, rol):
+    """(cuentas de la lista negra del canal —la de `main` y la de la propuesta a la vez—, motivos si no se lee)."""
     ruta = f"{CARPETA_CANALES}{canal}/lista-negra.json"
     cambio = next((c for resto, c in archivos if resto == "lista-negra.json"), None)
-    lados = (cambio.antes, cambio.despues) if cambio else (leer(ruta, "antes"),)
-    vetados = set()
-    for datos in lados:
+    lados = (("antes", cambio.antes), ("despues", cambio.despues)) if cambio else (("antes", leer(ruta, "antes")),)
+    vetados, motivos = set(), []
+    for lado, datos in lados:
         if datos is None:
             continue
         try:
             vetados |= set(leer_lista_negra(leer_json_estricto(datos, ruta, TOPES["lista-negra.json"]), ruta)[0].usuarios)
-        except JsonMalo:
-            pass
-    return vetados
+        except JsonMalo as e:
+            if lado == "antes" and rol < 5:
+                motivos.append(f"`{ruta}` de `main` no se puede leer ({e}): sin ella no se sabe quién está vetado. "
+                               "Hasta que el Dueño del programa lo arregle, no se aceptan cambios de miembros.")
+            # La de la propuesta: su error ya sale al comprobar ese archivo.
+    return vetados, motivos
 
 
-def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetados) -> list:
+def _miembros_de_main(canal, archivos, leer) -> dict:
+    """{id: Miembro} de `main` (para saber el rol de a quién se veta)."""
+    ruta = f"{CARPETA_CANALES}{canal}/miembros.json"
+    cambio = next((c for resto, c in archivos if resto == "miembros.json"), None)
+    datos = cambio.antes if cambio else leer(ruta, "antes")
+    if datos is None:
+        return {}
+    try:
+        return leer_miembros(leer_json_estricto(datos, ruta, TOPES["miembros.json"]), ruta)[0]
+    except JsonMalo:
+        return {}  # `leer_canales` ya para al robot si los miembros de `main` están rotos
+
+
+def _cuenta_que_no_es(cuenta_de, cuenta_id, cuenta: str, donde: str):
+    """Motivo si `cuenta` no es el nombre actual en GitHub de la cuenta `cuenta_id` (o None si cuadra)."""
+    if cuenta_de is None:
+        return None
+    real = cuenta_de(cuenta_id)
+    if not real:
+        return f"{donde}: la cuenta {cuenta_id} no existe en GitHub."
+    if real.lower() != cuenta.lower():
+        return (f"{donde}: la cuenta {cuenta_id} se llama `{real}` en GitHub, no `{cuenta}` "
+                "(el nombre tiene que ser el de esa cuenta; no se puede poner el de otra persona).")
+    return None
+
+
+def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de=None) -> list:
     m_despues, motivos = leer_miembros(despues, ruta)
     if motivos:
         return motivos
@@ -615,6 +697,14 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
 
     for mid in sorted(set(m_despues) & vetados):
         motivos.append(f"`{ruta}`: `{m_despues[mid].cuenta}` está en la lista negra del canal: no puede ser miembro.")
+
+    # El nombre que acompaña a un id nuevo o cambiado tiene que ser el de esa cuenta (también para el Dueño).
+    for mid, d in sorted(m_despues.items()):
+        a = m_antes.get(mid)
+        if a is None or a.cuenta != d.cuenta:
+            problema = _cuenta_que_no_es(cuenta_de, mid, d.cuenta, f"`{ruta}`")
+            if problema:
+                motivos.append(problema)
 
     if rol >= 5:
         return motivos
@@ -627,10 +717,13 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
         if mid == autor_id:
             if a is not None and d is None:
                 continue  # salir del canal (si era el último Propietario ya lo ha parado `leer_miembros`)
-            if a is not None and d is not None and a.estado == "invitado" and d.estado == "activo" \
-                    and {k: v for k, v in a.fila.items() if k != "estado"} == {k: v for k, v in d.fila.items() if k != "estado"}:
-                continue  # aceptar la propia invitación, sin tocar nada más
-            motivos.append(f"`{ruta}`: no puedes cambiar tu propia fila (solo aceptar tu invitación o salir del canal).")
+            if a is not None and d is not None:
+                otros = {k for k in _diferencias(a.fila, d.fila)}
+                # Aceptar la propia invitación y/o poner al día el propio nombre tras renombrar la cuenta.
+                if otros <= {"estado", "cuenta"} and (a.estado == d.estado or (a.estado == "invitado" and d.estado == "activo")):
+                    continue
+            motivos.append(f"`{ruta}`: no puedes cambiar tu propia fila (solo aceptar tu invitación, corregir tu nombre "
+                           "de cuenta o salir del canal).")
             continue
         if solo_aceptar or rol < 3:
             motivos.append(f"`{ruta}`: invitar, cambiar o quitar miembros es cosa de un Administrador del canal "
@@ -660,7 +753,7 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
         if d.rol != a.rol:
             if d.rol == 4 and (rol < 4 or not d.activo):
                 motivos.append(f"`{ruta}`: hacer Propietario a alguien solo lo hace otro Propietario, y sobre un miembro activo.")
-            elif not _puede_sobre(rol, d.rol):
+            elif d.rol != 4 and not _puede_sobre(rol, d.rol):
                 motivos.append(f"`{ruta}`: como {NOMBRE_ROL[rol]} no puedes dar a `{quien}` el rol {NOMBRE_ROL[d.rol]}.")
         for campo in ("invitadoPor", "desde"):
             if a.fila.get(campo) != d.fila.get(campo):
@@ -668,20 +761,58 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
     return motivos
 
 
-def _comprobar_lista_negra(ruta, antes, despues, rol) -> list:
+# Un veto antiguo sin `por` se trata como puesto por un Administrador: un Administrador no lo deshace, un Propietario sí.
+ROL_VETO_SIN_POR = 3
+
+
+def _comprobar_lista_negra(ruta, antes, despues, rol, autor_id, ids_duenos, miembros_main, cuenta_de=None) -> list:
     l_despues, motivos = leer_lista_negra(despues, ruta)
     if motivos:
         return motivos
-    if rol >= 4:
-        return []
+    # El Dueño del programa está por encima de cualquier veto: nadie lo puede vetar, ni él mismo.
+    for mid in sorted(set(l_despues.usuarios) & ids_duenos):
+        motivos.append(f"`{ruta}`: la cuenta {mid} es del Dueño del programa y no se puede vetar.")
     if rol < 3:
-        return [f"`{ruta}`: la lista negra del canal la cambia un Administrador (tu rol: {NOMBRE_ROL[rol]})."]
+        return motivos + [f"`{ruta}`: la lista negra del canal la cambia un Administrador (tu rol: {NOMBRE_ROL[rol]})."]
     l_antes, _ = leer_lista_negra(antes, ruta)
+
+    def rol_de(cuenta_id) -> int:
+        if cuenta_id in ids_duenos:
+            return 5
+        m = miembros_main.get(cuenta_id)
+        return m.rol if m is not None else 0
+
+    for mid in sorted(l_antes.usuarios.keys() | l_despues.usuarios.keys()):
+        a, d = l_antes.usuarios.get(mid), l_despues.usuarios.get(mid)
+        if a == d:
+            continue
+        objetivo = rol_de(mid)
+        if a is not None:
+            # Quitar (o cambiar) un veto: solo sobre alguien por debajo de tu rol, y sin deshacer lo de alguien que
+            # está a tu altura o por encima (salvo que el veto sea tuyo).
+            puso = a.get("por")
+            rol_puso = ROL_VETO_SIN_POR if puso is None else rol_de(puso)
+            if rol < 5 and not (_puede_sobre(rol, objetivo) and (puso == autor_id or _puede_sobre(rol, rol_puso))):
+                motivos.append(f"`{ruta}`: como {NOMBRE_ROL[rol]} no puedes quitar ni cambiar el veto a la cuenta {mid} "
+                               f"(es {NOMBRE_ROL[objetivo]}; lo puso {NOMBRE_ROL[rol_puso] if puso != autor_id else 'tu cuenta'}).")
+                continue
+        if d is not None:
+            if rol < 5 and not _puede_sobre(rol, objetivo):
+                motivos.append(f"`{ruta}`: como {NOMBRE_ROL[rol]} solo puedes vetar a quien está por debajo de tu rol "
+                               f"(la cuenta {mid} es {NOMBRE_ROL[objetivo]}).")
+            if rol < 5 and d.get("por") != autor_id:
+                motivos.append(f"`{ruta}`: en el veto a la cuenta {mid}, `por` tiene que ser tu cuenta ({autor_id}).")
+            if "cuenta" in d and (a is None or a.get("cuenta") != d["cuenta"]):
+                problema = _cuenta_que_no_es(cuenta_de, mid, d["cuenta"], f"`{ruta}`")
+                if problema:
+                    motivos.append(problema)
+    if rol >= 4:
+        return motivos
     quitados = [f"`{f['patron']}`" for f in l_antes.archivos if f not in l_despues.archivos] \
         + [f"`{f['hash'][:15]}…`" for f in l_antes.huellas if f not in l_despues.huellas]
     if quitados:
-        motivos.append(f"`{ruta}`: un Administrador puede añadir a la lista negra y quitar cuentas, pero quitar archivos "
-                       "o huellas es del Propietario del canal (" + ", ".join(quitados) + ").")
+        motivos.append(f"`{ruta}`: un Administrador puede añadir a la lista negra y quitar vetos de cuentas por debajo de "
+                       "su rol, pero quitar archivos o huellas es del Propietario del canal (" + ", ".join(quitados) + ").")
     return motivos
 
 

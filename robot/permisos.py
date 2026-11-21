@@ -123,7 +123,8 @@ class Cambio:
     tamano: int = 0
 
 
-def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None) -> list:
+def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None,
+              ids_duenos=frozenset(), cuenta_de=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
@@ -131,15 +132,25 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     `leer_paquete(paquete)` devuelve las rutas que escribe un paquete del catálogo (ver `rutas_del_paquete`);
     sin él no se abren los paquetes (solo en las pruebas: `main` siempre lo pasa). `leer_archivo(ruta, lado)` da los
     bytes de un archivo en `main` (`"antes"`) o tras la propuesta (`"despues"`), o None si no existe: hace falta para
-    lo que cambia en `canales/`.
+    lo que cambia en `canales/`. `ids_duenos` son los ids del Dueño (nadie los veta) y `cuenta_de(id)` el nombre actual
+    de una cuenta en GitHub (para que nadie ponga el nombre de otra persona junto a un id).
     """
     motivos = []
     if not cambios:
         return ["La propuesta no cambia ningún archivo."]
     de_canales = [c for c in cambios if c.ruta.startswith(canales.CARPETA_CANALES)]
-    sin_rol = permisos.rol_global == Rol.NINGUNO and not permisos.por_juego and not any(permisos.por_canal.values())
-    if sin_rol and (len(de_canales) != len(cambios) or permisos.cuenta_id is None):
+    # El catálogo y todo lo que no es `canales/` se juzga con el rol del canal oficial (`rol_global`): un rol en otro
+    # canal no cuenta. En `canales/` hace falta saber el id de la cuenta (aceptar la invitación propia, salir…).
+    sin_rol_oficial = permisos.rol_global == Rol.NINGUNO and not permisos.por_juego
+    if (sin_rol_oficial and len(de_canales) != len(cambios)) or (permisos.cuenta_id is None and not permisos.es_dueno
+                                                                  and sin_rol_oficial):
         return [_SIN_ROL]
+    # En `canales/` solo archivos normales (ni enlaces simbólicos, ni submódulos, ni cambios de tipo), sea cual sea el
+    # rol y antes de mirar nada más.
+    for c in de_canales:
+        if c.estado not in ("A", "M", "D") or (c.estado != "D" and c.modo != "100644"):
+            return [f"`{c.ruta}`: en `canales/` solo valen archivos normales (sin enlaces simbólicos, submódulos, "
+                    "permisos de ejecución ni cambios de tipo)."]
     motivos += _comprobar_tamanos(cambios, permisos)
 
     if de_canales:
@@ -147,9 +158,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         motivos += canales.comprobar_canales(
             [canales.CambioCanal(c.ruta, c.estado, c.tamano, leer(c.ruta, "antes"),
                                  None if c.estado == "D" else leer(c.ruta, "despues")) for c in de_canales],
-            {k: int(v) for k, v in permisos.por_canal.items()}, permisos.cuenta_id, permisos.es_dueno, leer)
-        if sin_rol:
-            return motivos
+            {k: int(v) for k, v in permisos.por_canal.items()}, permisos.cuenta_id, permisos.es_dueno, leer,
+            ids_duenos, cuenta_de)
 
     cat_antes = _leer_json(antes)
     cat_despues = None
@@ -1000,26 +1010,70 @@ class Canales:
         return Rol(canales.rol_en_canal(self.miembros.get(canal, {}), cuenta_id))
 
 
-def leer_canales(raiz: pathlib.Path) -> Canales:
-    """`canales/*/miembros.json` y `lista-negra.json` de la copia de `main`. Si uno está mal, falla: mejor no aceptar
-    nada que aceptar con roles que no son."""
-    miembros, vetados = {}, {}
+def _archivos_de_canales_en_carpeta(raiz: pathlib.Path):
+    """{ruta: bytes} de `canales/*/miembros.json` y `lista-negra.json` de una carpeta (las pruebas). Un enlace
+    simbólico o algo que no sea un archivo normal es un error, no se sigue."""
+    archivos = {}
     carpeta = raiz / canales.CARPETA_CANALES
+    if carpeta.is_symlink():
+        raise ValueError("`canales/` es un enlace simbólico")
     for dir_canal in sorted(carpeta.iterdir()) if carpeta.is_dir() else []:
+        if dir_canal.is_symlink():
+            raise ValueError(f"`canales/{dir_canal.name}` es un enlace simbólico")
         if not dir_canal.is_dir():
             continue
-        canal = dir_canal.name
-        archivo = dir_canal / "miembros.json"
-        if archivo.is_file():
-            ruta = f"canales/{canal}/miembros.json"
-            leidos, errores = canales.leer_miembros(canales.leer_json_estricto(archivo.read_bytes(), ruta), ruta)
+        for nombre in ("miembros.json", "lista-negra.json"):
+            archivo = dir_canal / nombre
+            ruta = f"canales/{dir_canal.name}/{nombre}"
+            if archivo.is_symlink() or (archivo.exists() and not archivo.is_file()):
+                raise ValueError(f"`{ruta}` no es un archivo normal")
+            if archivo.is_file():
+                archivos[ruta] = archivo.read_bytes()
+    return archivos
+
+
+def archivo_de_git(revision: str, ruta: str, tope: int):
+    """Bytes de `ruta` en `revision` (None si no existe). Si no es un archivo normal (100644) o pasa del tope, error:
+    nunca se sigue un enlace simbólico ni se carga un archivo enorme."""
+    salida = git("ls-tree", "-z", "--full-tree", revision, "--", ruta).stdout.decode()
+    entradas = [e for e in salida.split("\0") if e]
+    if not entradas:
+        return None
+    modo, tipo, sha = entradas[0].split("\t", 1)[0].split(" ")
+    if modo != "100644" or tipo != "blob":
+        raise ValueError(f"`{ruta}` no es un archivo normal en `{revision}` (modo {modo})")
+    tamano = int(git("cat-file", "-s", sha).stdout.decode().strip())
+    if tamano > tope:
+        raise ValueError(f"`{ruta}` pesa {tamano} bytes en `{revision}` y el máximo son {tope}")
+    return git("cat-file", "blob", sha).stdout
+
+
+def _archivos_de_canales_en_git(revision: str):
+    salida = git("ls-tree", "-r", "-z", "--full-tree", "--name-only", revision, "--", canales.CARPETA_CANALES).stdout.decode()
+    archivos = {}
+    for ruta in sorted(e for e in salida.split("\0") if e):
+        partes = ruta.split("/")
+        if len(partes) == 3 and partes[2] in ("miembros.json", "lista-negra.json"):
+            archivos[ruta] = archivo_de_git(revision, ruta, canales.TOPES[partes[2]])
+    return archivos
+
+
+def leer_canales(raiz: pathlib.Path | None = None, revision: str | None = None) -> Canales:
+    """`canales/*/miembros.json` y `lista-negra.json` de `main`: con git de `revision` (el robot, de `origin/main`
+    recién traído) o de la carpeta `raiz` (las pruebas). Si uno está mal, falla: mejor no aceptar nada que aceptar con
+    roles que no son."""
+    archivos = _archivos_de_canales_en_git(revision) if revision else _archivos_de_canales_en_carpeta(raiz)
+    miembros, vetados = {}, {}
+    for ruta, datos in archivos.items():
+        canal, nombre = ruta.split("/")[1:3]
+        objeto = canales.leer_json_estricto(datos, ruta, canales.TOPES[nombre])
+        if nombre == "miembros.json":
+            leidos, errores = canales.leer_miembros(objeto, ruta)
             if errores:
                 raise ValueError(errores[0])
             miembros[canal] = leidos
-        archivo = dir_canal / "lista-negra.json"
-        if archivo.is_file():
-            ruta = f"canales/{canal}/lista-negra.json"
-            lista, errores = canales.leer_lista_negra(canales.leer_json_estricto(archivo.read_bytes(), ruta), ruta)
+        else:
+            lista, errores = canales.leer_lista_negra(objeto, ruta)
             if errores:
                 raise ValueError(errores[0])
             vetados[canal] = set(lista.usuarios)
@@ -1092,22 +1146,28 @@ def git(*argumentos, comprobar_salida=True) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *argumentos], capture_output=True, check=comprobar_salida)
 
 
-def leer_propuesta(numero: int, cabeza: str):
-    """Une la propuesta con el `main` de ahora mismo (sin ejecutar nada) y devuelve lo que cambia.
-
-    Devuelve (cambios, catálogo antes, catálogo después) o None si hay conflicto con `main`.
-    """
+def traer(numero: int, cabeza: str) -> str:
+    """Trae el `main` de ahora mismo y la propuesta, y fija ese `main` (su commit): las reglas (`normas/`, los
+    miembros de `canales/`) y la comparación salen del mismo commit, nunca de la copia con la que arrancó el robot."""
     git("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main",
         f"+refs/pull/{numero}/head:refs/remotes/propuesta/cabeza")
     if git("rev-parse", "refs/remotes/propuesta/cabeza").stdout.decode().strip() != cabeza:
         raise RuntimeError("La propuesta ha cambiado mientras se comprobaba; el robot volverá a mirarla.")
-    union = git("merge-tree", "--write-tree", "origin/main", cabeza, comprobar_salida=False)
+    return git("rev-parse", "refs/remotes/origin/main").stdout.decode().strip()
+
+
+def leer_propuesta(base: str, cabeza: str):
+    """Une la propuesta con `base` (el commit de `main` traído por `traer`, sin ejecutar nada) y devuelve lo que cambia.
+
+    Devuelve (cambios, catálogo antes, catálogo después, leer_archivo) o None si hay conflicto con `main`.
+    """
+    union = git("merge-tree", "--write-tree", base, cabeza, comprobar_salida=False)
     if union.returncode != 0:
         return None
     arbol = union.stdout.decode().split()[0]
 
     cambios = []
-    bruto = git("diff", "--raw", "-z", "--no-renames", "--no-abbrev", "origin/main", arbol).stdout.decode()
+    bruto = git("diff", "--raw", "-z", "--no-renames", "--no-abbrev", base, arbol).stdout.decode()
     partes = bruto.split("\0")
     for i in range(0, len(partes) - 1, 2):
         _, modo_nuevo, _, _, estado = partes[i].lstrip(":").split(" ")
@@ -1124,18 +1184,16 @@ def leer_propuesta(numero: int, cabeza: str):
     def leer_archivo(ruta, lado):
         """Bytes del archivo en `main` o tras la propuesta (None si no existe). Solo se usa con los de `canales/`,
         y el tamaño se mira antes con `cat-file -s` (un archivo enorme no se llega a cargar)."""
-        revision = "origin/main" if lado == "antes" else arbol
+        revision = base if lado == "antes" else arbol
         tamano = git("cat-file", "-s", f"{revision}:{ruta}", comprobar_salida=False)
         if tamano.returncode != 0:
             return None
         nombre = ruta.rsplit("/", 1)[-1]
         if int(tamano.stdout.decode().strip()) > canales.TOPES.get(nombre, canales.TOPE_LOGO):
             return b" " * (canales.TOPES.get(nombre, canales.TOPE_LOGO) + 1)  # basta para que se rechace por tamaño
-        if nombre not in canales.TOPES:
-            return b""  # imágenes: no hace falta su contenido
-        return git("show", f"{revision}:{ruta}").stdout
+        return git("cat-file", "blob", f"{revision}:{ruta}").stdout  # también los logos: se mira qué son de verdad
 
-    return cambios, texto("origin/main"), texto(arbol), leer_archivo
+    return cambios, texto(base), texto(arbol), leer_archivo
 
 
 def comentar(api, numero: int, texto: str, solo_si_existe=False) -> None:
@@ -1192,42 +1250,50 @@ def main() -> int:
     # Cuenta el rol más bajo entre quien abrió la propuesta y quien ha subido el último cambio: así nadie
     # gana permisos por añadir cambios a la propuesta de otra persona con más rol.
     actor = os.environ.get("PR_ACTOR") or autor
-    actor_id = int(os.environ["PR_ACTOR_ID"]) if os.environ.get("PR_ACTOR_ID", "").isdigit() else None
-    if actor == autor:
-        actor_id = autor_id
-    elif actor_id is None:
-        actor_id = (api("GET", f"https://api.github.com/users/{actor}", tolerar=(404,)) or {}).get("id")
+    # Las cuentas van por id: sin el id de quien ha subido el último cambio no se adivina por su nombre (un nombre
+    # se puede soltar y otra cuenta quedárselo).
+    if not os.environ.get("PR_ACTOR_ID", "").isdigit():
+        raise RuntimeError("Falta `PR_ACTOR_ID` (el id de la cuenta que ha subido el último cambio): revisa el flujo de trabajo.")
+    actor_id = int(os.environ["PR_ACTOR_ID"])
+    if actor.lower() == autor.lower() and actor_id != autor_id:
+        actor = f"{actor} (otra cuenta con ese nombre)"
     equipo = leer_equipo(None)
-    raiz = pathlib.Path(__file__).resolve().parents[1]  # la copia de `main`, nunca la propuesta
+
+    # Las reglas se leen del mismo commit de `main` con el que se compara la propuesta (recién traído).
+    base = traer(numero, cabeza)
     try:
-        ids_duenos, propietarios = canales.leer_duenos((raiz / RUTA_PROPIETARIO).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        ids_duenos, propietarios = canales.leer_duenos(
+            (archivo_de_git(base, RUTA_PROPIETARIO, 64 * 1024) or b"").decode("utf-8"))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         raise RuntimeError(f"No se puede leer `{RUTA_PROPIETARIO}` de `main`: {error}")
     # Si los miembros de `main` no se pueden leer, nadie tiene rol salvo el Dueño, que es quien lo arregla (si
     # el robot fallara del todo, ni siquiera él podría publicar el arreglo).
     canales_roto = None
     try:
-        canales_main = leer_canales(raiz)
-    except (OSError, ValueError) as error:
+        canales_main = leer_canales(revision=base)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         canales_main, canales_roto = Canales(), str(error)
+
+    def cuenta_de(cuenta_id):
+        """El nombre actual de la cuenta con ese id en GitHub (None si no existe)."""
+        return (api("GET", f"https://api.github.com/user/{int(cuenta_id)}", tolerar=(404,)) or {}).get("login")
 
     def de(usuario, cuenta_id):
         return permisos_de(usuario, api, equipo, propietarios, cuenta_id, canales_main, ids_duenos)
     permisos = de(autor, autor_id)
-    if actor != autor:
+    if actor_id != autor_id:
         permisos = permisos.el_menor(de(actor, actor_id))
     if canales_roto and not permisos.es_dueno:
         permisos = Permisos(Rol.NINGUNO)
-    quien = f"@{autor}" + (f" (último cambio de @{actor})" if actor != autor else "")
+    quien = f"@{autor}" + (f" (último cambio de @{actor})" if actor_id != autor_id else "")
 
-    # La lista de archivos prohibidos se lee de `main` (esta copia), nunca de la propuesta.
-    ruta_prohibidos = raiz / RUTA_PROHIBIDOS
+    # La lista de archivos prohibidos se lee de `main` (el mismo commit), nunca de la propuesta.
     try:
-        prohibidos = leer_prohibidos(ruta_prohibidos.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        prohibidos = leer_prohibidos((archivo_de_git(base, RUTA_PROHIBIDOS, 1024 * 1024) or b"").decode("utf-8"))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         raise RuntimeError(f"No se puede leer `{RUTA_PROHIBIDOS}` de `main`: {error}")
 
-    leido = leer_propuesta(numero, cabeza)
+    leido = leer_propuesta(base, cabeza)
     if canales_roto and not permisos.es_dueno:
         motivos = [f"Los miembros de los canales que hay en `main` no se pueden leer ({canales_roto}). Hasta que el "
                    "Dueño del programa lo arregle, el robot no acepta propuestas de nadie más."]
@@ -1237,7 +1303,7 @@ def main() -> int:
     else:
         cambios, antes, despues, leer_archivo = leido
         motivos = comprobar(cambios, antes, despues, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete,
-                            leer_archivo=leer_archivo)
+                            leer_archivo=leer_archivo, ids_duenos=frozenset(ids_duenos), cuenta_de=cuenta_de)
 
     if motivos:
         lista = "\n".join(f"- {m}" for m in motivos)
@@ -1259,6 +1325,14 @@ def main() -> int:
     if propuesta.get("draft"):
         resumen(aprobado + "\n\nEs un borrador: no se publica hasta que se marque como lista.")
         return 0
+    # Si `main` se ha movido desde que se trajo, lo comprobado ya no vale: se vuelve a mirar en la siguiente vuelta.
+    actual = (api("GET", "/git/ref/heads/main") or {}).get("object", {}).get("sha")
+    if actual != base:
+        texto = (aprobado + "\n\n⚠️ Pero no se ha publicado: `main` ha cambiado mientras se comprobaba. Actualiza la "
+                 "propuesta con lo último de `main` (o vuelve a lanzar la comprobación) y el robot lo intenta otra vez.")
+        comentar(api, numero, texto)
+        resumen(texto)
+        return 1
     resultado = api("PUT", f"/pulls/{numero}/merge",
                     {"sha": cabeza, "merge_method": "squash"}, tolerar=(405, 409, 422))
     if resultado is None:

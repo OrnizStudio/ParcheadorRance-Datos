@@ -4,15 +4,18 @@ Uso:  python -m unittest discover -s robot/pruebas
 """
 import copy
 import json
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 RAIZ = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ / "robot"))
 import canales  # noqa: E402
 from canales import JsonMalo, leer_json_estricto, leer_miembros, error_de_texto  # noqa: E402
+import permisos as robot  # noqa: E402
 from permisos import (Cambio, Canales, Permisos, Rol, RUTA_CATALOGO, comprobar, leer_canales,  # noqa: E402
                       permisos_de)
 
@@ -35,6 +38,11 @@ CANAL = {"esquema": 1, "id": "ornizen", "nombre": "Ornizen", "descripcion": "Can
                           "historial": [{"fecha": "2026-11-21", "accion": "verificar", "motivo": "Canal oficial.", "por": DUENO_ID}]}}
 LISTA = {"esquema": 1, "archivos": [{"patron": "*.sig", "motivo": "Firmas"}], "huellas": [],
          "usuarios": [{"id": VETADO_ID, "cuenta": "spammer", "motivo": "Abusos"}]}
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 100
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+CUENTAS = {PROP_ID: "prop", ADMIN_ID: "admin", EDITOR_ID: "editor", COLAB_ID: "colab", INVITADO_ID: "invitada",
+           NUEVO_ID: "nueva", NUEVO_ID + 1: "prop2", VETADO_ID: "spammer", DUENO_ID: "0rnizL"}
 CATALOGO = {"esquema": 1, "versionCatalogo": 1, "etiquetas": [], "juegos": []}
 
 
@@ -53,7 +61,7 @@ def permisos(cuenta_id):
     return Permisos(rol, por_canal={"ornizen": rol} if rol else {}, cuenta_id=cuenta_id)
 
 
-def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, extra=()):
+def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, extra=(), cuentas=None, estados=None):
     """`archivos` = {ruta: objeto o bytes o None (borrar)}; `antes` = lo que hay en `main` (por defecto, lo de siempre)."""
     main = {M: b(MIEMBROS), C: b(CANAL), L: b(LISTA)}
     if antes is not None:
@@ -62,14 +70,16 @@ def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, e
     cambios = []
     for ruta, valor in archivos.items():
         datos = None if valor is None else valor if isinstance(valor, bytes) else b(valor)
-        estado = "D" if datos is None else "A" if main.get(ruta) is None else "M"
+        estado = (estados or {}).get(ruta) or ("D" if datos is None else "A" if main.get(ruta) is None else "M")
         despues[ruta] = datos
-        cambios.append(Cambio(ruta, estado, (modos or {}).get(ruta, "100644"), len(datos or b"")))
+        cambios.append(Cambio(ruta, estado, (modos or {}).get(ruta, "000000" if datos is None else "100644"), len(datos or b"")))
     cambios += list(extra)
 
     def leer(ruta, lado):
         return (main if lado == "antes" else despues).get(ruta)
-    return comprobar(cambios, json.dumps(CATALOGO), json.dumps(CATALOGO), permisos(cuenta_id), leer_archivo=leer)
+    nombres = CUENTAS if cuentas is None else cuentas
+    return comprobar(cambios, json.dumps(CATALOGO), json.dumps(CATALOGO), permisos(cuenta_id), leer_archivo=leer,
+                     ids_duenos=frozenset({DUENO_ID}), cuenta_de=nombres.get)
 
 
 def miembros(cambiar):
@@ -170,12 +180,15 @@ class MiembrosFormato(unittest.TestCase):
             (lambda m: m[2].update(etiquetas=["x" * 25]), "`etiquetas`"),
             (lambda m: m[2].update(etiquetas=[""]), "`etiquetas`"),
             (lambda m: m.append(dict(m[1])), "repetida"),
-            (lambda m: m.append(dict(m[1], id=999, cuenta="ADMIN")), "repetida"),
             (lambda m: m[0].update(estado="invitado"), "sin ningún Propietario activo"),
         ]
         for cambiar, contiene in casos:
             with self.subTest(contiene=contiene):
                 self.assertTrue(any(contiene in e for e in self.errores(miembros(cambiar))), self.errores(miembros(cambiar)))
+
+    def test_el_nombre_de_cuenta_no_tiene_que_ser_unico(self):
+        # Una cuenta se renombra y otra se queda con su nombre viejo: lo que cuenta es el id.
+        self.assertEqual([], self.errores(miembros(lambda m: m.append(dict(m[1], id=999, cuenta="ADMIN")))))
 
     def test_topes_de_miembros_e_invitaciones(self):
         def muchos(n, estado):
@@ -273,7 +286,7 @@ class GestionDeMiembros(unittest.TestCase):
         self.assertIn("lista negra del canal", motivos[0])
         # Banear = quitar de miembros y añadir a la lista en la misma propuesta.
         lista = copy.deepcopy(LISTA)
-        lista["usuarios"].append({"id": COLAB_ID, "cuenta": "colab", "motivo": "Spam"})
+        lista["usuarios"].append({"id": COLAB_ID, "cuenta": "colab", "motivo": "Spam", "por": ADMIN_ID})
         self.assertEqual([], proponer(ADMIN_ID, {M: miembros(lambda m: m.remove(fila(m, COLAB_ID))), L: lista}))
         self.assertIn("lista negra del canal", proponer(ADMIN_ID, {L: lista, M: miembros(lambda m: None)})[0])
 
@@ -347,17 +360,29 @@ class RutasYTopes(unittest.TestCase):
         self.assertIn("en minúsculas", proponer(ADMIN_ID, {}, extra=[Cambio("Canales/ornizen/miembros.json", "A")])[0])
 
     def test_logo(self):
-        self.assertEqual([], proponer(ADMIN_ID, {"canales/ornizen/logo.webp": b"x" * 1000}))
-        self.assertIn("máximo son 512 KB", proponer(ADMIN_ID, {"canales/ornizen/logo.webp": b"x" * (513 * 1024)})[0])
-        self.assertIn("lo cambia un Administrador", proponer(EDITOR_ID, {"canales/ornizen/logo.webp": b"x"})[0])
+        self.assertEqual([], proponer(ADMIN_ID, {"canales/ornizen/logo.webp": WEBP}))
+        self.assertEqual([], proponer(ADMIN_ID, {"canales/ornizen/logo.png": PNG}))
+        self.assertEqual([], proponer(ADMIN_ID, {"canales/ornizen/logo.jpg": JPEG, "canales/ornizen/otro.jpeg": JPEG}))
+        self.assertIn("máximo son 512 KB", proponer(ADMIN_ID, {"canales/ornizen/logo.webp": WEBP + b"x" * (513 * 1024)})[0])
+        self.assertIn("lo cambia un Administrador", proponer(EDITOR_ID, {"canales/ornizen/logo.webp": WEBP})[0])
+
+    def test_un_logo_tiene_que_ser_una_imagen_de_verdad(self):
+        for datos, contiene in ((b"x" * 1000, "de verdad"), (b"<svg onload=alert(1)>", "de verdad"), (b"", "de verdad"),
+                                (b"RIFF\x00\x00\x00\x00AVI ", "de verdad"), (b"MZ\x90\x00", "de verdad"),
+                                (PNG, "por dentro es PNG")):
+            with self.subTest(contiene=contiene, datos=datos[:8]):
+                self.assertIn(contiene, proponer(ADMIN_ID, {"canales/ornizen/logo.webp": datos})[0])
+        # Borrar el logo no necesita mirar nada.
+        self.assertEqual([], proponer(ADMIN_ID, {"canales/ornizen/logo.png": None}, antes={"canales/ornizen/logo.png": PNG}))
 
     def test_propuestas_enormes(self):
         muchos = [Cambio(f"catalogo/juegos/j/{i}.png", "A", "100644", 10) for i in range(301)]
         self.assertTrue(any("máximo son 300" in m for m in proponer(ADMIN_ID, {}, extra=muchos)))
         grande = [Cambio(f"catalogo/juegos/j/{i}.png", "A", "100644", 5 * 1024 * 1024) for i in range(5)]
         self.assertTrue(any("MB y el máximo son 20 MB" in m for m in proponer(ADMIN_ID, {}, extra=grande)))
-        self.assertTrue(any("ejecutables" in m for m in proponer(ADMIN_ID, {"canales/ornizen/logo.png": b"x"},
-                                                                 modos={"canales/ornizen/logo.png": "100755"})))
+        self.assertTrue(any("ejecutables" in m for m in proponer(ADMIN_ID, {}, extra=[Cambio("catalogo/juegos/j/a.png", "A", "100755", 10)])))
+        self.assertIn("solo valen archivos normales", proponer(ADMIN_ID, {"canales/ornizen/logo.png": PNG},
+                                                                modos={"canales/ornizen/logo.png": "100755"})[0])
         self.assertEqual([], [m for m in proponer(DUENO_ID, {}, extra=muchos) if "máximo son 300" in m])
 
 
@@ -372,10 +397,65 @@ class ListaNegraDelCanal(unittest.TestCase):
         quitar_archivo = self.lista(lambda l: l["archivos"].clear())
         quitar_usuario = self.lista(lambda l: l["usuarios"].clear())
         self.assertEqual([], proponer(ADMIN_ID, {L: añadir}))
-        self.assertEqual([], proponer(ADMIN_ID, {L: quitar_usuario}))
+        # El veto de `spammer` no dice quién lo puso: cuenta como de un Administrador; otro Administrador no lo deshace.
+        self.assertIn("no puedes quitar ni cambiar el veto", proponer(ADMIN_ID, {L: quitar_usuario})[0])
+        self.assertEqual([], proponer(PROP_ID, {L: quitar_usuario}))
         self.assertIn("es del Propietario del canal", proponer(ADMIN_ID, {L: quitar_archivo})[0])
         self.assertEqual([], proponer(PROP_ID, {L: quitar_archivo}))
         self.assertIn("la cambia un Administrador", proponer(EDITOR_ID, {L: añadir})[0])
+
+    def vetar(self, cuenta_id, por, cuenta=None):
+        fila = {"id": cuenta_id, "motivo": "Abusos", "por": por}
+        if cuenta:
+            fila["cuenta"] = cuenta
+        return self.lista(lambda l: l["usuarios"].append(fila))
+
+    def test_solo_se_veta_por_debajo_del_rol_propio(self):
+        # Un Administrador no veta al Propietario, a otro Administrador ni al Dueño (dejaría `miembros.json` congelado).
+        otro_admin = miembros(invitar(cuenta_id=NUEVO_ID, rol="administrador", estado="activo", por=PROP_ID))
+        for victima in (PROP_ID, NUEVO_ID):
+            with self.subTest(victima=victima):
+                self.assertIn("por debajo de tu rol", proponer(ADMIN_ID, {L: self.vetar(victima, ADMIN_ID)}, antes={M: otro_admin})[0])
+        self.assertEqual([], proponer(ADMIN_ID, {L: self.vetar(EDITOR_ID, ADMIN_ID), M: miembros(lambda m: m.remove(fila(m, EDITOR_ID)))}))
+        self.assertEqual([], proponer(ADMIN_ID, {L: self.vetar(999, ADMIN_ID)}))  # alguien de fuera
+        # Un Propietario tampoco veta a otro Propietario; el Dueño, a cualquiera menos a sí mismo.
+        dos = miembros(invitar(cuenta_id=NUEVO_ID + 1, rol="propietario", estado="activo", por=PROP_ID, cuenta="prop2"))
+        self.assertIn("por debajo de tu rol", proponer(PROP_ID, {L: self.vetar(NUEVO_ID + 1, PROP_ID)}, antes={M: dos})[0])
+        sin_prop2 = copy.deepcopy(dos)
+        sin_prop2["miembros"].remove(fila(sin_prop2["miembros"], NUEVO_ID + 1))
+        self.assertEqual([], proponer(DUENO_ID, {L: self.vetar(NUEVO_ID + 1, DUENO_ID), M: sin_prop2}, antes={M: dos}))
+
+    def test_el_dueno_no_se_puede_vetar_nunca(self):
+        for quien in (ADMIN_ID, PROP_ID, DUENO_ID):
+            with self.subTest(quien=quien):
+                motivos = proponer(quien, {L: self.vetar(DUENO_ID, quien)})
+                self.assertTrue(any("Dueño del programa y no se puede vetar" in m for m in motivos), motivos)
+
+    def test_por_tiene_que_ser_quien_veta(self):
+        self.assertIn("`por` tiene que ser tu cuenta", proponer(ADMIN_ID, {L: self.vetar(999, PROP_ID)})[0])
+        sin_por = self.lista(lambda l: l["usuarios"].append({"id": 999, "motivo": "x"}))
+        self.assertIn("`por` tiene que ser tu cuenta", proponer(ADMIN_ID, {L: sin_por})[0])
+
+    def test_cada_uno_quita_solo_los_vetos_de_quien_esta_por_debajo(self):
+        def con(por):
+            return self.vetar(999, por)
+        sin = self.lista(lambda l: None)
+        otro_admin = miembros(invitar(cuenta_id=NUEVO_ID, rol="administrador", estado="activo", por=PROP_ID))
+        # El suyo, sí; el de otro Administrador o el de un Propietario, no.
+        self.assertEqual([], proponer(ADMIN_ID, {L: sin}, antes={L: con(ADMIN_ID)}))
+        self.assertIn("no puedes quitar ni cambiar", proponer(ADMIN_ID, {L: sin}, antes={L: con(NUEVO_ID), M: otro_admin})[0])
+        self.assertIn("no puedes quitar ni cambiar", proponer(ADMIN_ID, {L: sin}, antes={L: con(PROP_ID)})[0])
+        # Un Propietario deshace el de un Administrador, pero no el del Dueño; el Dueño, todos.
+        self.assertEqual([], proponer(PROP_ID, {L: sin}, antes={L: con(ADMIN_ID)}))
+        self.assertIn("no puedes quitar ni cambiar", proponer(PROP_ID, {L: sin}, antes={L: con(DUENO_ID)})[0])
+        self.assertEqual([], proponer(DUENO_ID, {L: sin}, antes={L: con(PROP_ID)}))
+        # Cambiar el motivo de un veto ajeno es como quitarlo y volverlo a poner.
+        otro_motivo = self.lista(lambda l: l["usuarios"].append({"id": 999, "motivo": "Otro", "por": ADMIN_ID}))
+        self.assertIn("no puedes quitar ni cambiar", proponer(ADMIN_ID, {L: otro_motivo}, antes={L: con(PROP_ID)})[0])
+
+    def test_el_nombre_del_vetado_es_el_de_su_cuenta(self):
+        self.assertIn("se llama `colab` en GitHub", proponer(ADMIN_ID, {L: self.vetar(COLAB_ID, ADMIN_ID, cuenta="otra"),
+                                                                       M: miembros(lambda m: m.remove(fila(m, COLAB_ID)))})[0])
 
     def test_formato(self):
         for cambiar, contiene in ((lambda l: l["huellas"].append({"hash": "md5:1", "motivo": "x"}), "`hash`"),
@@ -397,6 +477,90 @@ class ListaNegraDelCanal(unittest.TestCase):
         self.assertEqual(1, len(motivos))
         self.assertIn("del canal @ornizen", motivos[0])
         self.assertIn("lista-negra.json", motivos[0])
+
+
+class Seguridad(unittest.TestCase):
+    """Lo que sale de la revisión de seguridad del PR de la fase A."""
+
+    def test_en_canales_solo_archivos_normales_tambien_sin_rol(self):
+        aceptar = miembros(lambda m: fila(m, INVITADO_ID).update(estado="activo"))
+        for modo, estado in (("120000", "T"), ("120000", "A"), ("160000", "M"), ("100755", "M")):
+            for quien in (INVITADO_ID, NUEVO_ID, ADMIN_ID, DUENO_ID):
+                with self.subTest(modo=modo, estado=estado, quien=quien):
+                    motivos = proponer(quien, {M: aceptar}, modos={M: modo}, estados={M: estado})
+                    self.assertTrue(motivos)
+                    self.assertTrue(any("solo valen archivos normales" in m or "ningún rol" in m for m in motivos), motivos)
+        # Un cambio de tipo (T) aunque diga 100644.
+        self.assertIn("solo valen archivos normales", proponer(INVITADO_ID, {M: aceptar}, estados={M: "T"})[0])
+
+    def test_json_con_numeros_enormes_o_infinitos_es_un_rechazo_y_no_una_caida(self):
+        for datos in (b'{"esquema": 1, "miembros": [], "x": ' + b"9" * 5000 + b"}", b'{"esquema": 1e999}',
+                      b'{"esquema": -1e999}', b'{"a": ' + b"1" * 31 + b"}"):
+            with self.subTest(datos=datos[:30]):
+                with self.assertRaises(JsonMalo):
+                    leer_json_estricto(datos, "x.json")
+                self.assertTrue(proponer(ADMIN_ID, {M: datos}))
+        self.assertEqual({"a": 1.5, "b": 10 ** 20}, leer_json_estricto(b'{"a": 1.5, "b": 100000000000000000000}', "x.json"))
+
+    def test_un_archivo_de_main_ilegible_no_se_juzga_como_si_no_existiera(self):
+        roto = b'{"esquema": 1, "esquema": 1}'
+        self.assertIn("de `main` no se puede leer", proponer(ADMIN_ID, {C: dict(CANAL, nombre="Otro")}, antes={C: roto})[0])
+        self.assertIn("de `main` no se puede leer", proponer(PROP_ID, {L: LISTA}, antes={L: roto})[0])
+        self.assertIn("de `main` no se puede leer", proponer(ADMIN_ID, {M: miembros(invitar())}, antes={L: roto})[0])
+        # El Dueño sí lo puede arreglar.
+        self.assertEqual([], proponer(DUENO_ID, {C: CANAL}, antes={C: roto}))
+
+    def test_un_propietario_no_toca_a_otro_propietario_pero_puede_irse(self):
+        dos = miembros(invitar(cuenta_id=NUEVO_ID + 1, rol="propietario", estado="activo", por=PROP_ID, cuenta="prop2"))
+
+        def cambiar(quien, como):
+            nuevo = copy.deepcopy(dos)
+            como(nuevo["miembros"], fila(nuevo["miembros"], quien))
+            return nuevo
+        degradar = cambiar(NUEVO_ID + 1, lambda m, f: f.update(rol="administrador"))
+        quitar = cambiar(NUEVO_ID + 1, lambda m, f: m.remove(f))
+        irse = cambiar(PROP_ID, lambda m, f: m.remove(f))
+        for propuesta in (degradar, quitar):
+            self.assertIn("no puedes cambiar ni quitar", proponer(PROP_ID, {M: propuesta}, antes={M: dos})[0])
+            self.assertEqual([], proponer(DUENO_ID, {M: propuesta}, antes={M: dos}))
+        self.assertEqual([], proponer(PROP_ID, {M: irse}, antes={M: dos}))
+        # Ascender a otro a Propietario sí; y siempre queda al menos uno.
+        self.assertEqual([], proponer(PROP_ID, {M: miembros(lambda m: fila(m, ADMIN_ID).update(rol="propietario"))}))
+        self.assertIn("sin ningún Propietario activo", proponer(DUENO_ID, {M: miembros(lambda m: m.remove(fila(m, PROP_ID)))})[0])
+
+    def test_el_nombre_va_con_su_id(self):
+        # Al invitar no se puede poner el nombre de otra persona junto al id.
+        self.assertIn("se llama `nueva` en GitHub", proponer(ADMIN_ID, {M: miembros(invitar(cuenta="admin"))})[0])
+        self.assertIn("no existe en GitHub", proponer(ADMIN_ID, {M: miembros(invitar(cuenta_id=123456))})[0])
+        # Tampoco el Dueño (es una regla de formato).
+        self.assertIn("se llama", proponer(DUENO_ID, {M: miembros(invitar(cuenta="otra", por=DUENO_ID))})[0])
+
+    def test_cada_uno_corrige_su_propio_nombre_tras_renombrarse(self):
+        renombrada = {**CUENTAS, EDITOR_ID: "editora-nueva"}
+        nuevo = miembros(lambda m: fila(m, EDITOR_ID).update(cuenta="editora-nueva"))
+        self.assertEqual([], proponer(EDITOR_ID, {M: nuevo}, cuentas=renombrada))
+        # …pero no a un nombre que no es el suyo, ni de paso el rol.
+        self.assertIn("se llama `editor`", proponer(EDITOR_ID, {M: nuevo})[0])
+        con_rol = miembros(lambda m: fila(m, EDITOR_ID).update(cuenta="editora-nueva", rol="administrador"))
+        self.assertIn("tu propia fila", proponer(EDITOR_ID, {M: con_rol}, cuentas=renombrada)[0])
+        # Y un invitado puede aceptar y corregirse el nombre a la vez.
+        aceptar = miembros(lambda m: fila(m, INVITADO_ID).update(estado="activo", cuenta="invitada-2"))
+        self.assertEqual([], proponer(INVITADO_ID, {M: aceptar}, cuentas={**CUENTAS, INVITADO_ID: "invitada-2"}))
+
+    def test_el_catalogo_pide_rol_en_el_canal_oficial(self):
+        # Un rol en otro canal no da nada fuera de `canales/`.
+        solo_otro = Permisos(Rol.NINGUNO, por_canal={"otro_canal": Rol.PROPIETARIO}, cuenta_id=ADMIN_ID)
+        self.assertIn("ningún rol", comprobar([Cambio(RUTA_CATALOGO, "M")], json.dumps(CATALOGO), json.dumps(CATALOGO), solo_otro)[0])
+        self.assertIn("ningún rol", comprobar([Cambio("catalogo/juegos/j/a.png", "A", "100644", 10)], None, None, solo_otro)[0])
+
+    def test_falta_el_id_de_quien_sube_el_ultimo_cambio(self):
+        api = mock.Mock(return_value={"head": {"sha": "x"}, "user": {"login": "admin", "id": ADMIN_ID}})
+        entorno = {"GITHUB_REPOSITORY": "a/b", "PR_NUMERO": "1", "GITHUB_TOKEN": "t", "PR_ACTOR": "admin"}
+        with mock.patch.dict(os.environ, entorno, clear=True), mock.patch.object(robot, "crear_api", return_value=api), \
+                mock.patch.object(sys, "argv", ["permisos.py"]):
+            with self.assertRaises(RuntimeError) as error:
+                robot.main()
+        self.assertIn("PR_ACTOR_ID", str(error.exception))
 
 
 class RolesDesdeMain(unittest.TestCase):
@@ -466,6 +630,56 @@ class ArchivosDelRepositorio(unittest.TestCase):
             errores = (canales.validar_canal(objeto, "ornizen", ruta) if nombre == "canal.json"
                        else canales.leer_lista_negra(objeto, ruta)[1])
             self.assertEqual([], errores)
+
+    def test_un_enlace_simbolico_en_main_cuenta_como_roto(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            canal = pathlib.Path(carpeta, "canales", "x_y")
+            canal.mkdir(parents=True)
+            fuera = pathlib.Path(carpeta, "fuera.json")
+            fuera.write_bytes(b(MIEMBROS))
+            try:
+                os.symlink(fuera, canal / "miembros.json")
+            except (OSError, NotImplementedError):
+                self.skipTest("este sistema no deja crear enlaces simbólicos")
+            with self.assertRaises(ValueError):
+                leer_canales(pathlib.Path(carpeta))
+
+    def test_las_reglas_se_leen_de_main_con_git(self):
+        """`leer_canales(revision=…)` y `archivo_de_git`: modo, tamaño y contenido salen de git, no de la copia."""
+        import subprocess
+        with tempfile.TemporaryDirectory() as carpeta:
+            def g(*a):
+                return subprocess.run(["git", "-C", carpeta, *a], capture_output=True, check=True)
+            g("init", "-q")
+            g("config", "user.email", "robot@example.invalid")
+            g("config", "user.name", "robot")
+            canal = pathlib.Path(carpeta, "canales", "ornizen")
+            canal.mkdir(parents=True)
+            (canal / "miembros.json").write_bytes(b(MIEMBROS))
+            (canal / "lista-negra.json").write_bytes(b(LISTA))
+            g("add", ".")
+            g("commit", "-qm", "uno")
+            actual = os.getcwd()
+            os.chdir(carpeta)
+            try:
+                leidos = leer_canales(revision="HEAD")
+                self.assertEqual(Rol.PROPIETARIO, leidos.rol("ornizen", PROP_ID))
+                self.assertEqual(Rol.NINGUNO, leidos.rol("ornizen", VETADO_ID))
+                # En la copia de trabajo se cambia, pero lo que vale es el commit.
+                (canal / "miembros.json").write_bytes(b"{")
+                self.assertEqual(Rol.PROPIETARIO, leer_canales(revision="HEAD").rol("ornizen", PROP_ID))
+                self.assertIsNone(robot.archivo_de_git("HEAD", "normas/no-existe.json", 10))
+                with self.assertRaises(ValueError):
+                    robot.archivo_de_git("HEAD", "canales/ornizen/miembros.json", 10)  # pasa del tope
+                # Un enlace simbólico guardado en git (modo 120000) no se sigue.
+                enlace = subprocess.run(["git", "-C", carpeta, "hash-object", "-w", "--stdin"], input=b"../../fuera.json",
+                                        capture_output=True, check=True).stdout.decode().strip()
+                g("update-index", "--add", "--cacheinfo", f"120000,{enlace},canales/ornizen/miembros.json")
+                g("commit", "-qm", "enlace")
+                with self.assertRaises(ValueError):
+                    leer_canales(revision="HEAD")
+            finally:
+                os.chdir(actual)
 
     def test_un_miembros_json_dañado_en_main_para_al_robot(self):
         with tempfile.TemporaryDirectory() as carpeta:

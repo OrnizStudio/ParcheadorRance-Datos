@@ -62,6 +62,13 @@ jobs:
   fusionar:
     needs: permisos
     runs-on: ubuntu-latest
+    # Una sola publicación a la vez en todo el repositorio: cada una vuelve a comprobar contra el `main` de ese
+    # instante y, justo antes de fusionar, confirma que `main` no se ha movido (si se ha movido, no publica y lo dice).
+    # Ojo: GitHub solo deja una en espera por grupo; si llegan varias a la vez, las de en medio se cancelan y hay que
+    # volver a lanzarlas (o subir cualquier cambio a la propuesta).
+    concurrency:
+      group: fusionar-datos
+      cancel-in-progress: false
     timeout-minutes: 20
     permissions:
       contents: write
