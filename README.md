@@ -152,6 +152,21 @@ Preparado para más adelante (sin hacer): que cada juego tenga su líder y su eq
 el rol «en este juego»; bastará con que el robot lea los permisos de un archivo `equipo.json` (está
 indicado dónde, en `leer_equipo` de `robot/permisos.py`).
 
+### Topes de largo
+
+Lo que escribe el equipo tiene tope, el mismo que pone el parcheador en cada campo. El robot lo comprueba para
+cualquier rol, también Administradores y Propietario:
+
+| Texto | Máximo |
+|---|---|
+| Sinopsis de un juego (`sinopsis`) | 4000 caracteres |
+| Novedades de una versión (`notas` de `parche` y de `versiones`) | 4000 caracteres |
+| Nota de una edición (`notaEdicion`) | 1000 caracteres |
+| Versión de un parche (`version`) | 40 caracteres |
+
+Solo se mira lo que la propuesta escribe o cambia: un texto largo que ya estaba publicado no bloquea las
+propuestas que no lo tocan. Se cuenta sin los espacios de los lados.
+
 ### Archivos ignorados de una edición
 
 Cada edición puede llevar `ignorar`: una lista de patrones, al estilo de un `.gitignore`, con los archivos de

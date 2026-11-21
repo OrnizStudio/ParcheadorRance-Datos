@@ -129,6 +129,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         if cat_despues is not None:
             # Para todos los roles, también Administradores y Propietario: no hay excepción posible.
             motivos += comprobar_archivos_protegidos(cat_antes, cat_despues, prohibidos, leer_paquete)
+            motivos += comprobar_largos(cat_antes, cat_despues)
 
     juegos_antes = _juegos_por_id(cat_antes)
     motivos += _comprobar_archivos(cambios, juegos_antes, permisos)
@@ -196,6 +197,74 @@ def validar_catalogo(texto, cat_antes):
             errores += _validar_parche(donde, edicion.get("parche"))
             errores += validar_ignorados(donde, edicion)
     return (cat if not errores else None), errores
+
+
+# ───────────────────────────────────── Topes de largo ─────────────────────────────────────
+#
+# Lo que escribe el equipo tiene tope, el mismo que pone el parcheador en cada campo (`LimitesTexto` en
+# Parcheador.Equipo; si cambia allí, cambia aquí): un texto enorme hincha el catálogo que descargan todos y
+# descoloca las pantallas. Vale para cualquier rol.
+#
+# Solo se mira lo que la propuesta escribe o cambia: un texto largo que ya estaba publicado no bloquea las
+# propuestas que no lo tocan. Se cuenta como el parcheador: sin los espacios de los lados y en unidades
+# UTF-16 (un emoji de los nuevos cuenta dos), para no rechazar aquí lo que allí cabe ni al revés.
+
+LARGO_SINOPSIS = 4000
+LARGO_NOVEDADES = 4000
+LARGO_NOTA_EDICION = 1000
+LARGO_VERSION = 40
+
+
+def _largo(texto: str) -> int:
+    return len(texto.strip().encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _textos_con_tope(catalogo):
+    """{clave: (dónde, nombre del campo, texto, máximo)} de cada texto con tope del catálogo."""
+    textos = {}
+    if not isinstance(catalogo, dict):
+        return textos
+
+    def apuntar(clave, donde, nombre, valor, maximo):
+        if isinstance(valor, str):
+            textos[clave] = (donde, nombre, valor, maximo)
+
+    def parche(clave, donde, valor):
+        if isinstance(valor, dict):
+            apuntar(clave + ("notas",), donde, "las novedades (`notas`)", valor.get("notas"), LARGO_NOVEDADES)
+            apuntar(clave + ("version",), donde, "la versión (`version`)", valor.get("version"), LARGO_VERSION)
+
+    for juego in catalogo.get("juegos") or []:
+        if not isinstance(juego, dict):
+            continue
+        jid = juego.get("id")
+        donde = f"`{jid}`"
+        apuntar((jid, "sinopsis"), donde, "la sinopsis", juego.get("sinopsis"), LARGO_SINOPSIS)
+        parche((jid, "parche"), donde, juego.get("parche"))
+        for edicion in juego.get("ediciones") or []:
+            if not isinstance(edicion, dict):
+                continue
+            eid = edicion.get("id")
+            aqui = f"{donde} › edición `{eid}`"
+            apuntar((jid, eid, "notaEdicion"), aqui, "la nota de la edición (`notaEdicion`)", edicion.get("notaEdicion"), LARGO_NOTA_EDICION)
+            parche((jid, eid, "parche"), aqui, edicion.get("parche"))
+            for lista in ("versiones", "huellasParcheadas"):
+                for i, version in enumerate(edicion.get(lista) or []):
+                    # Por posición y no por versión: una versión kilométrica no puede ser su propia clave.
+                    parche((jid, eid, lista, i), f"{aqui} › `{lista}`", version)
+    return textos
+
+
+def comprobar_largos(cat_antes, cat_despues) -> list:
+    """Los textos que la propuesta escribe o cambia y se pasan de su tope."""
+    antes = _textos_con_tope(cat_antes)
+    motivos = []
+    for clave, (donde, nombre, texto, maximo) in _textos_con_tope(cat_despues).items():
+        largo = _largo(texto)
+        if largo <= maximo or (clave in antes and antes[clave][2] == texto):
+            continue
+        motivos.append(f"{donde}: {nombre} tiene {largo} caracteres y el máximo es {maximo}. Acórtala y vuelve a proponerlo.")
+    return motivos
 
 
 # ───────────────────────────────────── Archivos ignorados ─────────────────────────────────────
