@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 25,
+  "versionCatalogo": 26,
   "launcher": {
-    "ultimaVersion": "0.2.0",
+    "ultimaVersion": "0.2.1",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Aviso legal y edad +18 · Aviso cuando Steam o GOG quitan el parche · Desinstalar el parcheador desde Ajustes · Arranque más rápido · Modo equipo: cambios al instante en segundo plano, Versiones, Juegos, Parcheador y grupo, Historial con Revertir, Métricas, Miembros y perfil · Muchos arreglos visuales"],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.2.0/ParcheadorOrnizen-0.2.0-win-x64.zip",
-    "tamano": 23148630,
-    "hash": "blake3:6dcb0d8ba937285130b9134ad688b842914783f066d77f9b8a83f5590f3c797b"
+    "novedades": ["Versión en inglés: el idioma se elige en Ajustes (por defecto, el de Windows)", "Detección de la edición más tolerante: cada edición puede ignorar archivos que cambian en cada usuario (configuración, caché)", "Modo equipo: Métricas nueva, con cifras clave, evolución y descargas por versión", "Modo equipo: crear y borrar lo mismo antes de subirlo se anula, y varias ediciones seguidas se juntan en un solo cambio", "Cuadros de texto centrados y a la misma altura que los botones", "Arreglos: «Buscando…» que no terminaba, «Parcheada» antes de tener la copia de seguridad y textos largos que se salían"],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.2.1/ParcheadorOrnizen-0.2.1-win-x64.zip",
+    "tamano": 23563082,
+    "hash": "blake3:13feb8c8efbfc714e55b8b08c454c66cee5d333d2884f6de6c3162acb9c90190"
   },
   "juegos": [
     {

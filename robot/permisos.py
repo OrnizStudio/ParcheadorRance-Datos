@@ -6,8 +6,8 @@ Mira qué cambia una propuesta (pull request) y decide si quien la hace tiene pe
   Dueño          (del programa, `normas/propietario.json`) todo, también las normas generales (`normas/`), el
                  robot (`robot/`), `.github/` y las etiquetas del catálogo.
   Propietario    (del canal) como un Administrador, y además lo suyo del canal (`canales/<canal>/`).
-  Administrador  todo menos `normas/`, `robot/` y `.github/`, y menos crear, editar o borrar etiquetas del
-                 catálogo.
+  Administrador  solo `catalogo/` (el catálogo y las imágenes de los juegos), y menos crear, editar o borrar
+                 etiquetas del catálogo. Lo de fuera de `catalogo/` y de `canales/` es del Dueño.
   Editor         el contenido de los juegos que ya existen (y sus imágenes). No puede añadir, quitar,
                  publicar ni ocultar juegos, ni tocar el parcheador, el grupo o las etiquetas del catálogo.
   Colaborador    solo textos y notas, etiquetas y estado de la traducción de lo que ya existe.
@@ -23,7 +23,7 @@ protección anticopia y cracks. Ver «Archivos prohibidos» más abajo.
 Este archivo tiene dos partes:
 
   1. Las reglas (`comprobar`): no hablan con GitHub ni con git; reciben los datos y devuelven los motivos
-     de rechazo. Se prueban con `python -m unittest discover -s robot/pruebas`.
+     de rechazo. Se prueban con `python -I -m unittest discover -s robot/pruebas`.
   2. La parte de GitHub (`main`): averigua el rol, lee el cambio con git, comenta el resultado y fusiona.
 
 Solo usa la biblioteca estándar de Python. Nunca ejecuta nada de la propuesta: solo lee sus archivos.
@@ -546,9 +546,21 @@ SOLO_PROPIETARIO = {
 }
 
 
+# Lo único que cambia un Administrador (y, con sus límites, Editores y Colaboradores). Es una lista blanca a
+# propósito: cualquier otro archivo (en la raíz o en cualquier carpeta), salvo `canales/`, es del Dueño. El robot y las pruebas
+# se ejecutan con el `main` descargado como carpeta de trabajo, así que un `venv.py`, `unittest.py`,
+# `sitecustomize.py`, `.gitattributes`… en la raíz podría acabar ejecutándose con el permiso de escritura del robot.
+# Se compara tal cual, distinguiendo mayúsculas: `Catalogo/` es otra carpeta para git y no vale.
+CARPETA_CATALOGO = "catalogo/"
+
+
 def _carpeta_del_propietario(ruta: str):
     ruta = ruta.lower()
     return next((c for c in SOLO_PROPIETARIO if ruta.startswith(c)), None)
+
+
+def _fuera_del_catalogo(ruta: str) -> bool:
+    return not ruta.startswith(CARPETA_CATALOGO)
 CAMPO_PROHIBIDOS_GRUPO = "archivosProhibidos"
 TAMANO_MAXIMO_PAQUETE = 4 * 1024 * 1024 * 1024
 TAMANO_MAXIMO_MANIFIESTO = 16 * 1024 * 1024
@@ -809,6 +821,12 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
                                "Dueño del programa." + (" Un canal puede añadir archivos a su propia lista en "
                                                         "`canales/<canal>/lista-negra.json`."
                                                         if carpeta == CARPETA_NORMAS else ""))
+            continue
+        if _fuera_del_catalogo(c.ruta):
+            if not permisos.es_dueno:
+                motivos.append(f"`{c.ruta}`: lo que está fuera de `catalogo/` y `canales/` solo lo cambia el "
+                               "Dueño del programa. Un Administrador cambia `catalogo/catalogo.json` y lo que hay "
+                               "en `catalogo/`.")
             continue
         if permisos.rol_global >= Rol.ADMINISTRADOR:
             continue
