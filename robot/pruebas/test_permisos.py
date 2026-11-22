@@ -284,13 +284,13 @@ class SoloDelPropietario(unittest.TestCase):
                       "catalogo.json", "otra/catalogo/x.json")
 
     def test_fuera_de_catalogo_es_del_propietario(self):
-        for permisos in (ADMIN, EDITOR, COLABORADOR):
+        for permisos in (Permisos(Rol.PROPIETARIO), ADMIN, EDITOR, COLABORADOR):
             for ruta in self.RAIZ_PELIGROSA:
                 for estado in ("A", "M", "D"):
                     with self.subTest(rol=permisos.rol_global, ruta=ruta, estado=estado):
                         motivos = self.proponer(permisos, ruta, estado)
                         self.assertEqual(1, len(motivos), motivos)
-                        self.assertIn("solo lo cambia el Propietario", motivos[0])
+                        self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
 
     def test_el_propietario_puede_fuera_de_catalogo(self):
         for ruta in self.RAIZ_PELIGROSA:
@@ -298,4 +298,4 @@ class SoloDelPropietario(unittest.TestCase):
                 self.assertEqual([], self.proponer(self.PROPIETARIO, ruta))
 
     def test_un_administrador_que_sube_a_la_propuesta_del_propietario_tampoco_deja_codigo_en_la_raiz(self):
-        self.assertIn("solo lo cambia el Propietario", self.proponer(self.PROPIETARIO.el_menor(ADMIN), "venv.py")[0])
+        self.assertIn("solo lo cambia el Dueño del programa", self.proponer(self.PROPIETARIO.el_menor(ADMIN), "venv.py")[0])

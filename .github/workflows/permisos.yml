@@ -19,7 +19,9 @@ name: Robot de permisos
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `edited`: también al cambiar la base de la propuesta (si no, se podría abrir contra otra rama, dejar en verde
+    # un trabajo `permisos` propio y luego pasarla a `main` sin que este robot la mire).
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
 
@@ -60,6 +62,10 @@ jobs:
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
           PR_ACTOR_ID: ${{ github.event.sender.id }}
+          # El commit del evento (si la propuesta ya tiene otro, el robot para) y quien lanza esta ejecución (distinto
+          # de `sender` al relanzarla): también cuenta para el rol más bajo.
+          PR_CABEZA: ${{ github.event.pull_request.head.sha }}
+          PR_DISPARADOR: ${{ github.triggering_actor }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py'
 
   fusionar:
@@ -104,4 +110,8 @@ jobs:
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
           PR_ACTOR_ID: ${{ github.event.sender.id }}
+          # El commit del evento (si la propuesta ya tiene otro, el robot para) y quien lanza esta ejecución (distinto
+          # de `sender` al relanzarla): también cuenta para el rol más bajo.
+          PR_CABEZA: ${{ github.event.pull_request.head.sha }}
+          PR_DISPARADOR: ${{ github.triggering_actor }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'

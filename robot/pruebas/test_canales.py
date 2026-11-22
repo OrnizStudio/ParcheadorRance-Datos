@@ -554,8 +554,8 @@ class Seguridad(unittest.TestCase):
         self.assertIn("ningún rol", comprobar([Cambio("catalogo/juegos/j/a.png", "A", "100644", 10)], None, None, solo_otro)[0])
 
     def test_falta_el_id_de_quien_sube_el_ultimo_cambio(self):
-        api = mock.Mock(return_value={"head": {"sha": "x"}, "user": {"login": "admin", "id": ADMIN_ID}})
-        entorno = {"GITHUB_REPOSITORY": "a/b", "PR_NUMERO": "1", "GITHUB_TOKEN": "t", "PR_ACTOR": "admin"}
+        api = mock.Mock(return_value={"head": {"sha": "a" * 40}, "base": {"ref": "main"}, "user": {"login": "admin", "id": ADMIN_ID}})
+        entorno = {"GITHUB_REPOSITORY": "a/b", "PR_NUMERO": "1", "GITHUB_TOKEN": "t", "PR_ACTOR": "admin", "PR_CABEZA": "a" * 40}
         with mock.patch.dict(os.environ, entorno, clear=True), mock.patch.object(robot, "crear_api", return_value=api), \
                 mock.patch.object(sys, "argv", ["permisos.py"]):
             with self.assertRaises(RuntimeError) as error:
@@ -689,6 +689,244 @@ class ArchivosDelRepositorio(unittest.TestCase):
             with self.assertRaises(ValueError):
                 leer_canales(pathlib.Path(carpeta))
 
+
+# Formato que escribe el parcheador (Equipo, `EscritorCatalogo.Escribir`). La misma cadena está en
+# tests/Parcheador.Equipo.Tests/MiembrosTests.cs del repositorio del programa: si una cambia, la otra también.
+FORMATO_APP = (
+    '{\n'
+    '  "esquema": 1,\n'
+    '  "miembros": [\n'
+    '    { "id": 101, "cuenta": "ana-trad", "rol": "propietario", "estado": "activo" },\n'
+    '    {\n'
+    '      "id": 201,\n'
+    '      "cuenta": "pepe",\n'
+    '      "rol": "editor",\n'
+    '      "estado": "activo",\n'
+    '      "invitadoPor": 101,\n'
+    '      "etiquetas": ["traductora", "revisora"]\n'
+    '    }\n'
+    '  ]\n'
+    '}\n')
+
+
+def indentado(objeto) -> bytes:
+    return (json.dumps(objeto, ensure_ascii=False, indent=2) + "\n").encode()
+
+
+class SegundaRevision(unittest.TestCase):
+    """Segunda revisión de seguridad de la fase A (cada prueba, un hallazgo)."""
+
+    # ── 2. La cabeza del evento y quién cuenta ──
+    def test_la_cabeza_es_la_del_evento(self):
+        sha = "b" * 40
+        self.assertEqual(sha, robot.cabeza_del_evento({"head": {"sha": sha}}, {"PR_CABEZA": sha}))
+        with self.assertRaises(RuntimeError) as error:
+            robot.cabeza_del_evento({"head": {"sha": "c" * 40}}, {"PR_CABEZA": sha})
+        self.assertIn("ha cambiado", str(error.exception))
+        for malo in ("", "x", "b" * 39, None):
+            with self.subTest(malo=malo), self.assertRaises(RuntimeError):
+                robot.cabeza_del_evento({"head": {"sha": sha}}, {"PR_CABEZA": malo} if malo is not None else {})
+
+    def test_relanzar_un_evento_viejo_con_un_commit_nuevo_no_publica(self):
+        api = mock.Mock(return_value={"head": {"sha": "c" * 40}, "base": {"ref": "main"},
+                                      "user": {"login": "0rnizL", "id": DUENO_ID}})
+        entorno = {"GITHUB_REPOSITORY": "a/b", "PR_NUMERO": "1", "GITHUB_TOKEN": "t", "PR_ACTOR": "0rnizL",
+                   "PR_ACTOR_ID": str(DUENO_ID), "PR_CABEZA": "b" * 40, "PR_DISPARADOR": "0rnizL"}
+        with mock.patch.dict(os.environ, entorno, clear=True), mock.patch.object(robot, "crear_api", return_value=api), \
+                mock.patch.object(sys, "argv", ["permisos.py", "--fusionar"]):
+            with self.assertRaises(RuntimeError) as error:
+                robot.main()
+        self.assertIn("ha cambiado", str(error.exception))
+        self.assertEqual(1, api.call_count)  # solo ha leído la propuesta: ni comenta ni fusiona
+
+    def test_cuenta_tambien_quien_relanza(self):
+        ids = {"admin": ADMIN_ID, "editor": EDITOR_ID}.get
+        base = {"PR_ACTOR": "admin", "PR_ACTOR_ID": str(ADMIN_ID)}
+        self.assertEqual([("admin", ADMIN_ID)],
+                         robot.cuentas_de_la_ejecucion({**base, "PR_DISPARADOR": "Admin"}, "admin", ADMIN_ID, ids))
+        self.assertEqual([("admin", ADMIN_ID), ("editor", EDITOR_ID)],
+                         robot.cuentas_de_la_ejecucion({**base, "PR_DISPARADOR": "editor"}, "admin", ADMIN_ID, ids))
+        with self.assertRaises(RuntimeError):
+            robot.cuentas_de_la_ejecucion({**base, "PR_DISPARADOR": "nadie"}, "admin", ADMIN_ID, ids)
+        with self.assertRaises(RuntimeError):
+            robot.cuentas_de_la_ejecucion({"PR_ACTOR": "admin"}, "admin", ADMIN_ID, ids)
+        # Mismo nombre, otra cuenta: cuentan las dos.
+        self.assertEqual(2, len(robot.cuentas_de_la_ejecucion({"PR_ACTOR": "admin", "PR_ACTOR_ID": "999"},
+                                                               "admin", ADMIN_ID, ids)))
+
+    def test_el_rol_mas_bajo_y_el_dueno_no_rompe_la_cuenta(self):
+        dueno, admin, editor = permisos(DUENO_ID), permisos(ADMIN_ID), permisos(EDITOR_ID)
+        self.assertEqual(Rol.EDITOR, robot.combinar([admin, editor]).rol_global)
+        self.assertIsNone(robot.combinar([admin, editor]).cuenta_id)
+        self.assertEqual(admin, robot.combinar([admin, dueno]))  # el Dueño relanza la de otro: sigue siendo la del otro
+        self.assertEqual(admin, robot.combinar([dueno, admin]))
+        self.assertTrue(robot.combinar([dueno]).es_dueno)
+
+    # ── 3. Cambiar la base de la propuesta ──
+    def test_cambiar_la_base_vuelve_a_lanzar_el_robot_y_solo_vale_main(self):
+        flujo = (RAIZ / ".github/workflows/permisos.yml").read_text(encoding="utf-8")
+        self.assertRegex(flujo, r"types: \[[^\]]*\bedited\b")
+        self.assertEqual(2, flujo.count("PR_CABEZA: ${{ github.event.pull_request.head.sha }}"))
+        self.assertEqual(2, flujo.count("PR_DISPARADOR: ${{ github.triggering_actor }}"))
+        self.assertIsNone(robot.motivo_de_base({"base": {"ref": "main"}}))
+        for otra in ("otra", "Main", "", None):
+            with self.subTest(otra=otra):
+                self.assertIn("solo publica propuestas contra `main`", robot.motivo_de_base({"base": {"ref": otra}}))
+
+    # ── 4. Sin rol o con rol bajo: solo la propia fila, sin mover `main` por nada ──
+    def test_nadie_publica_un_archivo_reordenado_o_lleno_de_espacios(self):
+        reordenado = copy.deepcopy(MIEMBROS)
+        reordenado["miembros"].reverse()
+        for datos in (b(reordenado), b(MIEMBROS) + b" " * 100_000, indentado(MIEMBROS)):
+            for quien in (NUEVO_ID, INVITADO_ID, COLAB_ID, EDITOR_ID, ADMIN_ID, PROP_ID):
+                with self.subTest(quien=quien, largo=len(datos)):
+                    motivos = proponer(quien, {M: datos})
+                    self.assertEqual(1, len(motivos), motivos)
+                    self.assertIn("no cambia nada de lo que dice", motivos[0])
+        self.assertEqual([], proponer(DUENO_ID, {M: indentado(MIEMBROS)}))  # el Dueño puede (migraciones)
+
+    def test_nadie_publica_un_canal_json_o_una_lista_negra_reformateados(self):
+        for quien in (COLAB_ID, EDITOR_ID, ADMIN_ID, PROP_ID):
+            with self.subTest(quien=quien):
+                motivos = proponer(quien, {C: indentado(CANAL)})
+                self.assertEqual(1, len(motivos), motivos)
+                self.assertIn("no cambia nada de lo que dice", motivos[0])
+        self.assertIn("no cambia nada de lo que dice", proponer(ADMIN_ID, {L: indentado(LISTA)})[0])
+        self.assertEqual([], proponer(DUENO_ID, {C: indentado(CANAL)}))
+
+    def test_aceptar_y_de_paso_reformatear_lo_de_los_demas_no_vale(self):
+        main = {M: indentado(MIEMBROS)}
+        aceptado = miembros(lambda m: fila(m, INVITADO_ID).update(estado="activo"))
+        self.assertIn("solo puedes cambiar tu propia fila", proponer(INVITADO_ID, {M: b(aceptado)}, antes=main)[0])
+        al_reves = miembros(lambda m: (m.reverse(), fila(m, INVITADO_ID).update(estado="activo")))
+        self.assertIn("solo puedes cambiar tu propia fila", proponer(INVITADO_ID, {M: indentado(al_reves)}, antes=main)[0])
+        # Con el formato del parcheador, pero los demás reordenados, tampoco.
+        self.assertIn("solo puedes cambiar tu propia fila",
+                      proponer(INVITADO_ID, {M: canales.escribir_como_la_app(al_reves).encode()}, antes=main)[0])
+        # Un Colaborador que corrige su nombre y de paso mete espacios en otra fila.
+        texto = indentado(MIEMBROS).decode().replace('"cuenta": "admin"', '"cuenta":     "admin"')
+        self.assertIn("solo puedes cambiar tu propia fila", proponer(
+            COLAB_ID, {M: texto.replace('"cuenta": "colab"', '"cuenta": "Colab"').encode()}, antes=main)[0])
+
+    def test_aceptar_desde_el_parcheador_o_tocando_solo_su_fila_vale(self):
+        main = {M: indentado(MIEMBROS)}
+        aceptado = miembros(lambda m: fila(m, INVITADO_ID).update(estado="activo"))
+        self.assertEqual([], proponer(INVITADO_ID, {M: canales.escribir_como_la_app(aceptado).encode()}, antes=main))
+        texto = indentado(MIEMBROS).decode()
+        self.assertEqual(1, texto.count('"estado": "invitado"'))
+        a_mano = texto.replace('"estado": "invitado"', '"estado": "activo"')
+        self.assertEqual([], proponer(INVITADO_ID, {M: a_mano.encode()}, antes=main))
+        # Salir (quitar su fila) a mano: con la coma de delante o con la de detrás.
+        filas = canales._filas_con_posicion(texto)
+        k = next(i for i, f in enumerate(filas) if f[2] == INVITADO_ID)
+        sin_su_fila = texto[:filas[k - 1][1]] + texto[filas[k][1]:]
+        self.assertEqual([f for f in MIEMBROS["miembros"] if f["id"] != INVITADO_ID], json.loads(sin_su_fila)["miembros"])
+        self.assertEqual([], proponer(INVITADO_ID, {M: sin_su_fila.encode()}, antes=main))
+        k = next(i for i, f in enumerate(filas) if f[2] == COLAB_ID)
+        self.assertEqual([], proponer(COLAB_ID, {M: (texto[:filas[k][0]] + texto[filas[k + 1][0]:]).encode()}, antes=main))
+        # Quitar una fila ajena con su coma no vale (no es la suya).
+        k = next(i for i, f in enumerate(filas) if f[2] == EDITOR_ID)
+        self.assertTrue(proponer(COLAB_ID, {M: (texto[:filas[k][0]] + texto[filas[k + 1][0]:]).encode()}, antes=main))
+
+    def test_el_formato_del_parcheador(self):
+        self.assertEqual(FORMATO_APP, canales.escribir_como_la_app(json.loads(FORMATO_APP)))
+        self.assertEqual("[]\n", canales.escribir_como_la_app([]))
+        # Una lista o un objeto vacío no es «simple»: el objeto que los tiene va en varias líneas (igual que en C#).
+        self.assertEqual('{\n  "a": [],\n  "b": {}\n}\n', canales.escribir_como_la_app({"a": [], "b": {}}))
+        for raro in ("", "[", '{"miembros": 3}', '{"a": 1 "miembros": []}', "{}", '{"miembros": [1,]}'):
+            with self.subTest(raro=raro):
+                self.assertIsNone(canales._filas_con_posicion(raro))
+        self.assertEqual([], canales._filas_con_posicion('{"esquema": 1, "miembros": [ ]}'))
+
+    # ── 5. El rol del vetado, como lo calcula el robot ──
+    def test_no_se_veta_a_un_administrador_que_lo_es_por_el_equipo_de_github(self):
+        externo_id = 777
+        main = {L: b(LISTA), M: b(MIEMBROS)}
+
+        def revisar(quien, rol_externo):
+            lista = copy.deepcopy(LISTA)
+            lista["usuarios"].append({"id": externo_id, "cuenta": "deequipo", "motivo": "x", "por": quien})
+            despues = {**main, L: b(lista)}
+            return comprobar([Cambio(L, "M", "100644", len(despues[L]))], json.dumps(CATALOGO), json.dumps(CATALOGO),
+                             permisos(quien), leer_archivo=lambda r, lado: (main if lado == "antes" else despues).get(r),
+                             ids_duenos=frozenset({DUENO_ID}), cuenta_de={**CUENTAS, externo_id: "deequipo"}.get,
+                             rol_externo=rol_externo)
+        de_equipo = lambda canal, i: 3 if (canal, i) == ("ornizen", externo_id) else 0  # noqa: E731
+        motivos = revisar(ADMIN_ID, de_equipo)
+        self.assertEqual(1, len(motivos), motivos)
+        self.assertIn("Administrador", motivos[0])
+        self.assertEqual([], revisar(PROP_ID, de_equipo))
+        self.assertEqual([], revisar(ADMIN_ID, None))  # sin rol fuera del archivo, sí
+
+    # ── 6. Varias cuentas en una propuesta de canales ──
+    def test_con_varias_cuentas_no_se_cambia_nada_de_un_canal(self):
+        varias = Permisos(Rol.ADMINISTRADOR, por_canal={"ornizen": Rol.ADMINISTRADOR}, cuenta_id=None)
+        casos = {
+            "invitar sin invitadoPor": {M: miembros(invitar(por=None))},
+            "vetar sin por": {L: {**LISTA, "usuarios": LISTA["usuarios"] + [{"id": EDITOR_ID, "cuenta": "editor", "motivo": "x"}]}},
+            "quitar un veto antiguo": {L: {**LISTA, "usuarios": []}},
+        }
+        for nombre, archivos in casos.items():
+            with self.subTest(nombre):
+                cambios = [Cambio(r, "M", "100644", 10) for r in archivos]
+                motivos = comprobar(cambios, json.dumps(CATALOGO), json.dumps(CATALOGO), varias,
+                                    leer_archivo=lambda r, lado, a=archivos: b(a[r] if lado == "despues" else {M: MIEMBROS, L: LISTA}[r]),
+                                    ids_duenos=frozenset({DUENO_ID}), cuenta_de=CUENTAS.get)
+                self.assertEqual(1, len(motivos))
+                self.assertIn("la han tocado varias cuentas", motivos[0])
+        motivos = comprobar([Cambio(L, "M", "100644", 10)], None, None, Permisos(Rol.DUENO),
+                            leer_archivo=lambda r, lado: b({**LISTA, "usuarios": []} if lado == "despues" else LISTA))
+        self.assertNotIn("varias cuentas", " ".join(motivos))
+
+    # ── 7. Nombres que se hacen pasar por otros ──
+    def test_el_esqueleto_junta_lo_que_se_ve_igual(self):
+        for falso in ("Ornizen", "0rnizen", "ORNIZEN", "Оrnizen", "Οrnizen", "Ｏｒｎｉｚｅｎ", "𝐎𝐫𝐧𝐢𝐳𝐞𝐧", "Ⓞⓡⓝⓘⓩⓔⓝ",
+                      "ᴏʀɴɪᴢᴇɴ", "Ornlzen", "Orn1zen", "Omizen", "Órnízen", "orniz_fan", "Los de Orniz", "O r n i z"):
+            with self.subTest(falso=falso):
+                self.assertTrue(canales.nombre_reservado(falso), canales.esqueleto(falso))
+        for bueno in ("Rance Traducciones", "Ornitorrinco", "Zen Studio", "Nori Zen", "", "ランス翻訳"):
+            with self.subTest(bueno=bueno):
+                self.assertFalse(canales.nombre_reservado(bueno), canales.esqueleto(bueno))
+        self.assertFalse(canales.nombre_reservado(None))
+        self.assertEqual(canales.esqueleto("Rance"), canales.esqueleto("Rаnce"))  # con a cirílica
+
+    def test_el_nombre_de_un_canal_no_usa_letras_de_estilo(self):
+        for falso in ("Ｒａｎｃｅ", "𝐑𝐚𝐧𝐜𝐞", "Ⓡance", "ʀance", "Rance²"):
+            with self.subTest(falso=falso):
+                motivos = canales.validar_canal({**CANAL, "nombre": falso}, "ornizen", C)
+                self.assertTrue(any("letras" in m or "versalitas" in m for m in motivos), motivos)
+        self.assertEqual([], canales.validar_canal({**CANAL, "nombre": "Équipe Ñandú 🎮"}, "ornizen", C))
+
+    def test_solo_el_dueno_y_el_canal_oficial_se_llaman_como_orniz(self):
+        otro = {**CANAL, "id": "otro_canal", "nombre": "Rance Fans"}
+        ruta = "canales/otro_canal/canal.json"
+
+        def renombrar(nombre, rol, es_dueno=False):
+            nuevo = {**otro, "nombre": nombre}
+            return canales.comprobar_canales([canales.CambioCanal(ruta, "M", len(b(nuevo)), b(otro), b(nuevo))],
+                                             {"otro_canal": rol}, ADMIN_ID, es_dueno)
+        for nombre in ("0rnizen", "Orniz Traducciones", "ᴏʀɴɪᴢ"):
+            with self.subTest(nombre=nombre):
+                self.assertTrue(any("se parece a Orniz" in m for m in renombrar(nombre, 4)), renombrar(nombre, 4))
+        self.assertFalse(any("Orniz" in m for m in renombrar("0rnizen", 5, es_dueno=True)))
+        self.assertEqual([], renombrar("Rance Fans 2", 3))
+        # En el canal oficial sí: es el suyo.
+        self.assertEqual([], proponer(ADMIN_ID, {C: {**CANAL, "nombre": "Ornizen Traducciones"}}))
+
+    # ── 8. JSON estricto en el catálogo ──
+    def test_el_catalogo_tambien_es_json_estricto(self):
+        casos = {"NaN": '{"esquema": NaN}', "clave repetida": '{"esquema": 1, "esquema": 1}',
+                 "entero gigante": '{"esquema": ' + "9" * 5000 + "}", "1e999": '{"esquema": 1e999}',
+                 "anidado": "[" * 100000, "roto": '{"esquema": 1,}'}
+        for nombre, texto in casos.items():
+            with self.subTest(nombre):
+                cat, errores = robot.validar_catalogo(texto, CATALOGO)
+                self.assertIsNone(cat)
+                self.assertEqual(1, len(errores))
+                self.assertIn("catalogo.json", errores[0])
+                self.assertTrue(comprobar([Cambio(RUTA_CATALOGO, "M")], json.dumps(CATALOGO), texto, permisos(DUENO_ID)))
+        cat, errores = robot.validar_catalogo(json.dumps({**CATALOGO, "versionCatalogo": 2}), CATALOGO)
+        self.assertEqual([], errores)
 
 if __name__ == "__main__":
     unittest.main()

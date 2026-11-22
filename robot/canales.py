@@ -187,6 +187,70 @@ def _alfabeto(c: str):
     return next((a for a in _ALFABETOS_CONFUNDIBLES if nombre.startswith(a + " ")), None)
 
 
+# Letras que se confunden con las latinas aunque NFKC no las cambie (cirílico, griego, versalitas, dígitos…). Lo de
+# estilo (ancho completo, letras matemáticas, en círculo, superíndices) ya lo deshace NFKC.
+_CONFUNDIBLES = str.maketrans({
+    # cirílico
+    "а": "a", "в": "b", "е": "e", "ё": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t",
+    "у": "y", "х": "x", "ѕ": "s", "і": "i", "ї": "i", "ј": "j", "ԁ": "d", "ԛ": "q", "ԝ": "w", "һ": "h", "ӏ": "l",
+    "п": "n", "г": "r", "ь": "b", "з": "e",
+    # griego
+    "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "i", "κ": "k", "μ": "u", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
+    "υ": "u", "χ": "x", "ω": "w", "ζ": "z", "γ": "y",
+    # versalitas y otras latinas
+    "ᴀ": "a", "ʙ": "b", "ᴄ": "c", "ᴅ": "d", "ᴇ": "e", "ꜰ": "f", "ɢ": "g", "ʜ": "h", "ɪ": "i", "ᴊ": "j", "ᴋ": "k",
+    "ʟ": "l", "ᴍ": "m", "ɴ": "n", "ᴏ": "o", "ᴘ": "p", "ʀ": "r", "ꜱ": "s", "ᴛ": "t", "ᴜ": "u", "ᴠ": "v", "ᴡ": "w",
+    "ʏ": "y", "ᴢ": "z", "ı": "i", "ȷ": "j", "ɑ": "a", "ɡ": "g", "ɩ": "i", "ɵ": "o", "ø": "o", "đ": "d", "ł": "l",
+    "ß": "b",
+    # dígitos y signos que pasan por letras
+    "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g", "|": "l", "!": "l", "$": "s",
+    "@": "a", "ǀ": "l",
+    # i y l se confunden entre sí
+    "i": "l",
+})
+_PARES_CONFUNDIBLES = (("rn", "m"), ("vv", "w"), ("cl", "d"))
+
+# Nombres que solo usa el Dueño del programa: todo lo que se parezca a «Orniz» (ornizen, 0rnizen, Ｏｒｎｉｚ, ᴏʀɴɪᴢ…).
+RESERVADOS = ("orniz",)
+
+
+def esqueleto(texto: str) -> str:
+    """La forma «de cómo se ve» de un nombre, para comparar: NFKC, minúsculas, sin tildes, confundibles a latinas y solo
+    a–z. Dos nombres con el mismo esqueleto se confunden a simple vista (fase B: el @ y el nombre de un canal nuevo)."""
+    t = unicodedata.normalize("NFKC", texto).casefold()
+    t = "".join(c for c in unicodedata.normalize("NFD", t) if not unicodedata.combining(c))
+    # Dos pasadas: una letra puede llevar a otra que también se confunde (ɪ → i → l).
+    t = unicodedata.normalize("NFKC", t).translate(_CONFUNDIBLES).translate(_CONFUNDIBLES)
+    t = "".join(c for c in t if "a" <= c <= "z")  # antes de los pares: «O r n i z» también cuenta
+    for par, letra in _PARES_CONFUNDIBLES:
+        t = t.replace(par, letra)
+    return t
+
+
+def nombre_reservado(texto) -> bool:
+    """¿Se parece (aunque sea dentro de un nombre más largo) a un nombre reservado del Dueño?"""
+    if not isinstance(texto, str):
+        return False
+    e = esqueleto(texto)
+    return any(esqueleto(r) in e for r in RESERVADOS)
+
+
+def error_de_nombre(texto):
+    """Lo que, además de `error_de_texto`, no vale en el nombre de un canal: letras «de estilo» que se hacen pasar por
+    normales (ancho completo, matemáticas, en círculo, superíndices: NFKC las cambia) y las versalitas."""
+    if not isinstance(texto, str):
+        return None
+    if unicodedata.normalize("NFKC", texto) != texto:
+        return "usa letras de estilo (anchas, matemáticas, en círculo…): escríbelo con letras normales"
+    for c in texto:
+        try:
+            if "SMALL CAPITAL" in unicodedata.name(c):
+                return f"usa versalitas (U+{ord(c):04X}): escríbelo con letras normales"
+        except ValueError:
+            pass
+    return None
+
+
 def largo_visible(texto: str) -> int:
     """Caracteres que se ven (aproximación de grafemas: sin contar marcas que se combinan con el anterior)."""
     return sum(1 for c in texto if not unicodedata.combining(c) and unicodedata.category(c) not in ("Mn", "Me"))
@@ -415,6 +479,8 @@ def validar_canal(objeto, carpeta: str, ruta: str) -> list:
         if campo == "descripcion" and campo not in objeto:
             continue
         problema = error_de_texto(objeto.get(campo), maximo, minimo, saltos)
+        if problema is None and campo == "nombre":
+            problema = error_de_nombre(objeto.get(campo))
         if problema:
             errores.append(f"`{ruta}`: `{campo}` {problema}.")
     logo = objeto.get("logo")
@@ -500,6 +566,144 @@ class CambioCanal:
     despues: bytes | None
 
 
+def _mismo_contenido(resto: str, antes, despues) -> bool:
+    """¿El archivo dice lo mismo antes y después (solo cambia el formato, o el orden de los miembros)?"""
+    if resto == "miembros.json":
+        m_a, e_a = leer_miembros(antes, resto)
+        m_d, e_d = leer_miembros(despues, resto)
+        if e_a or e_d:
+            return False
+        resto_a = {k: v for k, v in antes.items() if k != "miembros"}
+        resto_d = {k: v for k, v in despues.items() if k != "miembros"}
+        return resto_a == resto_d and {i: m.fila for i, m in m_a.items()} == {i: m.fila for i, m in m_d.items()}
+    return antes == despues
+
+
+def escribir_como_la_app(valor) -> str:
+    """El texto que escribe el parcheador (Equipo, `EscritorCatalogo.Escribir`): objetos y listas de valores simples en
+    una línea (`{ "a": 1, "b": 2 }`, `[1, 2]`), el resto con dos espacios por nivel, y un salto de línea al final."""
+    return _valor_app(valor, 0) + "\n"
+
+
+def _valor_app(valor, nivel: int) -> str:
+    def simple(v):
+        return not isinstance(v, (dict, list))
+    if isinstance(valor, dict):
+        if not valor:
+            return "{}"
+        if all(simple(v) for v in valor.values()):
+            return "{ " + ", ".join(f"{_cadena_app(k)}: {_valor_app(v, nivel)}" for k, v in valor.items()) + " }"
+        dentro = "  " * (nivel + 1)
+        return ("{\n" + ",\n".join(f"{dentro}{_cadena_app(k)}: {_valor_app(v, nivel + 1)}" for k, v in valor.items())
+                + "\n" + "  " * nivel + "}")
+    if isinstance(valor, list):
+        if not valor:
+            return "[]"
+        if all(simple(v) for v in valor):
+            return "[" + ", ".join(_valor_app(v, nivel) for v in valor) + "]"
+        dentro = "  " * (nivel + 1)
+        return "[\n" + ",\n".join(f"{dentro}{_valor_app(v, nivel + 1)}" for v in valor) + "\n" + "  " * nivel + "]"
+    if valor is True:
+        return "true"
+    if valor is False:
+        return "false"
+    if valor is None:
+        return "null"
+    if isinstance(valor, str):
+        return _cadena_app(valor)
+    return str(valor)
+
+
+def _cadena_app(texto: str) -> str:
+    return json.dumps(texto, ensure_ascii=False)
+
+
+_DECODIFICADOR = json.JSONDecoder()
+
+
+def _saltar_espacios(texto: str, i: int) -> int:
+    while i < len(texto) and texto[i] in " \t\r\n":
+        i += 1
+    return i
+
+
+def _filas_con_posicion(texto: str):
+    """[(inicio, fin, id)] de cada fila de `miembros` en el texto, o None si no se encuentra."""
+    try:
+        i = _saltar_espacios(texto, 0)
+        if texto[i] != "{":
+            return None
+        i += 1
+        while True:
+            i = _saltar_espacios(texto, i)
+            if texto[i] != '"':
+                return None
+            clave, i = json.decoder.scanstring(texto, i + 1)
+            i = _saltar_espacios(texto, i)
+            if texto[i] != ":":
+                return None
+            i = _saltar_espacios(texto, i + 1)
+            if clave == "miembros":
+                if texto[i] != "[":
+                    return None
+                filas, i = [], i + 1
+                while True:
+                    i = _saltar_espacios(texto, i)
+                    if texto[i] == "]" and not filas:
+                        return filas
+                    valor, fin = _DECODIFICADOR.raw_decode(texto, i)
+                    filas.append((i, fin, valor.get("id") if isinstance(valor, dict) else None))
+                    i = _saltar_espacios(texto, fin)
+                    if texto[i] == "]":
+                        return filas
+                    if texto[i] != ",":
+                        return None
+                    i += 1
+            _, i = _DECODIFICADOR.raw_decode(texto, i)
+            i = _saltar_espacios(texto, i)
+            if texto[i] != ",":
+                return None
+            i += 1
+    except (ValueError, IndexError):
+        return None
+
+
+def _solo_su_fila_en_el_texto(antes: bytes, despues: bytes, objeto_despues, autor_id) -> bool:
+    """Quien solo puede tocar su propia fila no puede, de paso, reformatear ni reordenar el resto del archivo (cada
+    publicación mueve `main`). Vale si el resto queda idéntico byte a byte o si el archivo queda tal cual lo escribe el
+    parcheador, con los demás miembros en el mismo orden."""
+    a, d = antes.decode("utf-8"), despues.decode("utf-8")
+    filas_a = _filas_con_posicion(a)
+    if filas_a is None:
+        return False
+    if d == escribir_como_la_app(objeto_despues):
+        filas_d = _filas_con_posicion(d) or []
+        return [i for _, _, i in filas_a if i != autor_id] == [i for _, _, i in filas_d if i != autor_id]
+    filas_d = _filas_con_posicion(d)
+    if filas_d is None:
+        return False
+    en_a = [k for k, (_, _, i) in enumerate(filas_a) if i == autor_id]
+    en_d = [k for k, (_, _, i) in enumerate(filas_d) if i == autor_id]
+    if len(en_a) != 1:
+        return False
+    k = en_a[0]
+    ini_a, fin_a, _ = filas_a[k]
+    if len(en_d) == 1:
+        ini_d, fin_d, _ = filas_d[en_d[0]]
+        return a[:ini_a] == d[:ini_d] and a[fin_a:] == d[fin_d:]
+    if en_d:
+        return False
+    # Sale del canal: su fila desaparece con una de las comas que la separan.
+    candidatos = []
+    if k > 0:
+        candidatos.append(a[:filas_a[k - 1][1]] + a[fin_a:])
+    if k + 1 < len(filas_a):
+        candidatos.append(a[:ini_a] + a[filas_a[k + 1][0]:])
+    if len(filas_a) == 1:
+        candidatos.append(a[:ini_a] + a[fin_a:])
+    return d in candidatos
+
+
 def _diferencias(a: dict, b: dict):
     falta = object()
     return sorted(k for k in a.keys() | b.keys() if a.get(k, falta) != b.get(k, falta))
@@ -509,16 +713,19 @@ NOMBRE_ROL = {0: "sin rol", 1: "Colaborador", 2: "Editor", 3: "Administrador", 4
 
 
 def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_dueno: bool, leer=None,
-                      ids_duenos=frozenset(), cuenta_de=None) -> list:
+                      ids_duenos=frozenset(), cuenta_de=None, rol_externo=None) -> list:
     """Motivos de rechazo de lo que la propuesta cambia en `canales/` (lista vacía = se acepta).
 
     `cambios` son `CambioCanal` (solo los de `canales/`). `rol_por_canal` = {canal: rol del autor en `main`} (1–4;
     0 o sin clave = ninguno). El Dueño del programa puede con todo, salvo las reglas de formato y el veto a un Dueño.
     `leer(ruta, lado)` da los archivos del canal que la propuesta no cambia (la lista negra y los miembros de `main`).
     `ids_duenos` son los ids del Dueño (nadie los puede vetar). `cuenta_de(id)` da el nombre actual de esa cuenta en
-    GitHub (None si no existe): sirve para que nadie escriba el nombre de otra persona junto a un id.
+    GitHub (None si no existe): sirve para que nadie escriba el nombre de otra persona junto a un id. `rol_externo(canal,
+    id)` es el rol que esa cuenta tiene en el canal por fuera del archivo (en la fase A, el equipo de GitHub en el canal
+    oficial): con él se sabe el rol real de a quién se veta, igual que lo calcula el robot para los permisos.
     """
     leer = leer or (lambda ruta, lado: None)
+    rol_externo = rol_externo or (lambda canal, cuenta_id: 0)
     if cuenta_de is not None:
         sabidas = {}
 
@@ -546,7 +753,8 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
 
     for canal, archivos in sorted(por_canal.items()):
         rol = 5 if es_dueno else rol_por_canal.get(canal, 0)
-        motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer, frozenset(ids_duenos), cuenta_de)
+        motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer, frozenset(ids_duenos), cuenta_de,
+                                       lambda cuenta_id, _c=canal: rol_externo(_c, cuenta_id))
     return list(dict.fromkeys(motivos))
 
 
@@ -557,7 +765,8 @@ def _leer(c: CambioCanal, lado: str, nombre: str):
     return leer_json_estricto(datos, c.ruta, TOPES.get(nombre))
 
 
-def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids_duenos, cuenta_de) -> list:
+def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids_duenos, cuenta_de,
+                       rol_externo=lambda cuenta_id: 0) -> list:
     motivos = []
     arroba = f"@{canal}"
     solo_aceptar = False
@@ -594,14 +803,26 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
                 if c.despues is None:
                     continue
             if resto == "canal.json":
-                motivos += _comprobar_canal_json(canal, c.ruta, antes, despues, rol)
+                propios = _comprobar_canal_json(canal, c.ruta, antes, despues, rol)
             elif resto == "miembros.json":
                 vetados, ilegibles = _vetados(canal, archivos, leer, rol)
                 motivos += ilegibles
-                motivos += _comprobar_miembros(c.ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de)
+                propios = _comprobar_miembros(c.ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de)
             else:
-                motivos += _comprobar_lista_negra(c.ruta, antes, despues, rol, autor_id, ids_duenos,
-                                                  _miembros_de_main(canal, archivos, leer), cuenta_de)
+                propios = _comprobar_lista_negra(c.ruta, antes, despues, rol, autor_id, ids_duenos,
+                                                 _miembros_de_main(canal, archivos, leer), cuenta_de, rol_externo)
+            motivos += propios
+            if propios or rol >= 5 or antes is None or despues is None:
+                continue
+            # Lo que sí se permite, pero sin mover `main` por nada: ni un archivo que dice lo mismo, ni (con rol bajo, que
+            # solo toca su propia fila) reformatear o reordenar lo de los demás.
+            if _mismo_contenido(resto, antes, despues):
+                motivos.append(f"`{c.ruta}`: no cambia nada de lo que dice (solo el formato o el orden). Cada publicación "
+                               "mueve `main` y obliga a rehacer las que están en curso: deja el archivo como estaba.")
+            elif resto == "miembros.json" and (solo_aceptar or rol < 3) \
+                    and not _solo_su_fila_en_el_texto(c.antes, c.despues, despues, autor_id):
+                motivos.append(f"`{c.ruta}`: solo puedes cambiar tu propia fila, y el resto del archivo tiene que quedar "
+                               "igual (sin reordenar ni cambiar el formato). Hazlo desde el parcheador.")
             continue
 
         if "/" not in resto and resto.endswith(EXTENSIONES_LOGO):
@@ -627,6 +848,9 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
 
 def _comprobar_canal_json(canal, ruta, antes, despues, rol) -> list:
     motivos = validar_canal(despues, canal, ruta)
+    if rol < 5 and canal != CANAL_OFICIAL and isinstance(despues, dict) and nombre_reservado(despues.get("nombre")) \
+            and not (isinstance(antes, dict) and antes.get("nombre") == despues.get("nombre")):
+        motivos.append(f"`{ruta}` › `nombre`: «{despues.get('nombre')}» se parece a Orniz, que es del Dueño del programa.")
     if motivos or not isinstance(antes, dict):
         return motivos
     for campo in _diferencias(antes, despues):
@@ -765,7 +989,8 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
 ROL_VETO_SIN_POR = 3
 
 
-def _comprobar_lista_negra(ruta, antes, despues, rol, autor_id, ids_duenos, miembros_main, cuenta_de=None) -> list:
+def _comprobar_lista_negra(ruta, antes, despues, rol, autor_id, ids_duenos, miembros_main, cuenta_de=None,
+                           rol_externo=lambda cuenta_id: 0) -> list:
     l_despues, motivos = leer_lista_negra(despues, ruta)
     if motivos:
         return motivos
@@ -780,7 +1005,8 @@ def _comprobar_lista_negra(ruta, antes, despues, rol, autor_id, ids_duenos, miem
         if cuenta_id in ids_duenos:
             return 5
         m = miembros_main.get(cuenta_id)
-        return m.rol if m is not None else 0
+        # El mismo rol que le da el robot (archivo o, en el canal oficial, el equipo de GitHub), sin contar el veto.
+        return max(m.rol if m is not None else 0, int(rol_externo(cuenta_id) or 0))
 
     for mid in sorted(l_antes.usuarios.keys() | l_despues.usuarios.keys()):
         a, d = l_antes.usuarios.get(mid), l_despues.usuarios.get(mid)

@@ -77,6 +77,14 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 > - En `canales/` solo valen archivos normales (nada de enlaces simbólicos ni submódulos), y el logo tiene que ser
 >   de verdad PNG, WebP o JPEG.
 > - Fuera de `canales/` (el catálogo y lo demás) hace falta rol en el canal oficial.
+> - Fuera del Dueño, nadie publica un archivo de canal que dice lo mismo que en `main` (solo cambia el formato o el
+>   orden). Quien solo puede tocar su propia fila (sin rol, Colaborador o Editor) deja el resto del archivo igual
+>   byte a byte, o el archivo entero tal como lo escribe el parcheador.
+> - Si la propuesta la tocan varias cuentas (quien la abre no es quien sube el último cambio), no se acepta nada en
+>   `canales/`. Cuenta el rol más bajo entre quien la abrió, quien subió el último cambio y quien relanza el robot, y
+>   se comprueba el commit del evento: si la propuesta ya tiene otro, el robot para.
+> - El nombre de un canal no usa letras «de estilo» (anchas, matemáticas, en círculo, versalitas). Lo que se parezca
+>   a «Orniz» es solo del Dueño y del canal oficial.
 >
 > Lo que sigue describe los equipos de GitHub, que se quitan en la fase B.
 

@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
@@ -124,7 +125,7 @@ class Cambio:
 
 
 def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None,
-              ids_duenos=frozenset(), cuenta_de=None) -> list:
+              ids_duenos=frozenset(), cuenta_de=None, rol_externo=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
@@ -145,6 +146,12 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     if (sin_rol_oficial and len(de_canales) != len(cambios)) or (permisos.cuenta_id is None and not permisos.es_dueno
                                                                   and sin_rol_oficial):
         return [_SIN_ROL]
+    # Lo de `canales/` se decide por la cuenta (aceptar la invitación propia, `invitadoPor`, `por` de un veto…). Si la
+    # propuesta la ha abierto una cuenta y el último cambio lo ha subido otra, no hay «una» cuenta: no se acepta.
+    if de_canales and permisos.cuenta_id is None and not permisos.es_dueno:
+        return ["La propuesta cambia `canales/` y la han tocado varias cuentas (quien la abrió y quien subió el último "
+                "cambio no son la misma). Los cambios de un canal los propone y los sube una sola cuenta: abre una "
+                "propuesta nueva desde tu cuenta."]
     # En `canales/` solo archivos normales (ni enlaces simbólicos, ni submódulos, ni cambios de tipo), sea cual sea el
     # rol y antes de mirar nada más.
     for c in de_canales:
@@ -159,7 +166,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             [canales.CambioCanal(c.ruta, c.estado, c.tamano, leer(c.ruta, "antes"),
                                  None if c.estado == "D" else leer(c.ruta, "despues")) for c in de_canales],
             {k: int(v) for k, v in permisos.por_canal.items()}, permisos.cuenta_id, permisos.es_dueno, leer,
-            ids_duenos, cuenta_de)
+            ids_duenos, cuenta_de, rol_externo)
 
     cat_antes = _leer_json(antes)
     cat_despues = None
@@ -229,10 +236,11 @@ def validar_catalogo(texto, cat_antes):
     if len(texto.encode("utf-8")) > TAMANO_MAXIMO_CATALOGO:
         return None, ["`catalogo.json` pesa más de 8 MB y el parcheador no lo descargaría."]
     try:
-        cat = json.loads(texto)
-    except json.JSONDecodeError as e:
-        return None, [f"`catalogo.json` no es un JSON válido (línea {e.lineno}, columna {e.colno}): {e.msg}. "
-                      "Suele ser una coma o una comilla de más o de menos."]
+        # Estricto, como en `canales/`: sin claves repetidas, sin NaN ni infinitos, sin enteros gigantes ni anidamiento
+        # sin fondo. Siempre un comentario de rechazo, nunca que el robot se caiga.
+        cat = canales.leer_json_estricto(texto.encode("utf-8", errors="surrogatepass"), "catalogo.json")
+    except canales.JsonMalo as e:
+        return None, [f"{e} Suele ser una coma o una comilla de más o de menos, o una clave repetida."]
     if not isinstance(cat, dict):
         return None, ["`catalogo.json` tiene que ser un objeto `{ … }`."]
 
@@ -1247,6 +1255,71 @@ def aviso_fallo_instalacion(fusionar: bool) -> str:
             "escritura), o sube cualquier cambio a esta misma propuesta.")
 
 
+SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def cabeza_del_evento(propuesta: dict, entorno) -> str:
+    """El commit que se comprueba es el del evento que lanzó la ejecución (`PR_CABEZA`), no el que la API diga ahora.
+
+    Si no coinciden, alguien ha subido otro commit desde entonces (o se está relanzando una ejecución vieja): lo que
+    se sabe de quién empujó ya no vale para ese commit nuevo. Se para; la ejecución del commit nuevo lo comprueba.
+    """
+    evento = (entorno.get("PR_CABEZA") or "").strip().lower()
+    if not SHA.match(evento):
+        raise RuntimeError("Falta `PR_CABEZA` (el commit de la propuesta en el evento): revisa el flujo de trabajo.")
+    actual = ((propuesta.get("head") or {}).get("sha") or "").lower()
+    if actual != evento:
+        raise RuntimeError(f"La propuesta ha cambiado desde el evento que lanzó esta ejecución (era {evento[:7]}, ahora "
+                           f"es {actual[:7]}). No se publica nada: la comprobación del último cambio decide.")
+    return evento
+
+
+def motivo_de_base(propuesta: dict):
+    """Las propuestas solo valen contra `main` (se mira también al editarla: cambiar la base lanza el robot)."""
+    base = (propuesta.get("base") or {}).get("ref")
+    if base != "main":
+        return f"La propuesta va contra `{base}`: el robot solo publica propuestas contra `main`."
+    return None
+
+
+def cuentas_de_la_ejecucion(entorno, autor: str, autor_id: int, id_de_cuenta) -> list:
+    """[(cuenta, id)] que cuentan para el rol: quien abrió la propuesta, quien lanzó el evento (`PR_ACTOR`, p. ej. quien
+    subió el último commit) y quien ha lanzado esta ejecución (`PR_DISPARADOR`: distinto si alguien la relanza).
+    `id_de_cuenta(nombre)` da el id actual de una cuenta por su nombre (None si no existe)."""
+    actor = entorno.get("PR_ACTOR") or autor
+    # Las cuentas van por id: sin el id de quien ha subido el último cambio no se adivina por su nombre (un nombre
+    # se puede soltar y otra cuenta quedárselo).
+    if not (entorno.get("PR_ACTOR_ID") or "").isdigit():
+        raise RuntimeError("Falta `PR_ACTOR_ID` (el id de la cuenta que ha subido el último cambio): revisa el flujo de trabajo.")
+    actor_id = int(entorno["PR_ACTOR_ID"])
+    if actor.lower() == autor.lower() and actor_id != autor_id:
+        actor = f"{actor} (otra cuenta con ese nombre)"
+    cuentas = [(autor, autor_id), (actor, actor_id)]
+    disparador = (entorno.get("PR_DISPARADOR") or "").strip()
+    if disparador and disparador.lower() not in (autor.lower(), actor.lower()):
+        disparador_id = id_de_cuenta(disparador)
+        if not isinstance(disparador_id, int):
+            raise RuntimeError(f"No se encuentra la cuenta `{disparador}`, que ha lanzado esta ejecución.")
+        cuentas.append((disparador, disparador_id))
+    vistas, resultado = set(), []
+    for cuenta, cuenta_id in cuentas:
+        if cuenta_id not in vistas:
+            vistas.add(cuenta_id)
+            resultado.append((cuenta, cuenta_id))
+    return resultado
+
+
+def combinar(todos: list) -> Permisos:
+    """El rol más bajo de las cuentas que han intervenido: nadie gana permisos por subir un commit a la propuesta de
+    otra persona con más rol, ni por relanzar la ejecución de otra. El Dueño no baja a nadie (puede con todo), así que
+    no cuenta salvo que sea el único; así la cuenta de la propuesta sigue siendo una cuando el Dueño la relanza."""
+    sin_dueno = [p for p in todos if not p.es_dueno] or todos[:1]
+    resultado = sin_dueno[0]
+    for otro in sin_dueno[1:]:
+        resultado = resultado.el_menor(otro)
+    return resultado
+
+
 def main() -> int:
     fusionar = "--fusionar" in sys.argv[1:]
     repositorio = os.environ["GITHUB_REPOSITORY"]
@@ -1263,18 +1336,17 @@ def main() -> int:
         return 1
 
     propuesta = api("GET", f"/pulls/{numero}")
-    cabeza = propuesta["head"]["sha"]
+    cabeza = cabeza_del_evento(propuesta, os.environ)
     autor, autor_id = propuesta["user"]["login"], propuesta["user"]["id"]
-    # Cuenta el rol más bajo entre quien abrió la propuesta y quien ha subido el último cambio: así nadie
-    # gana permisos por añadir cambios a la propuesta de otra persona con más rol.
-    actor = os.environ.get("PR_ACTOR") or autor
-    # Las cuentas van por id: sin el id de quien ha subido el último cambio no se adivina por su nombre (un nombre
-    # se puede soltar y otra cuenta quedárselo).
-    if not os.environ.get("PR_ACTOR_ID", "").isdigit():
-        raise RuntimeError("Falta `PR_ACTOR_ID` (el id de la cuenta que ha subido el último cambio): revisa el flujo de trabajo.")
-    actor_id = int(os.environ["PR_ACTOR_ID"])
-    if actor.lower() == autor.lower() and actor_id != autor_id:
-        actor = f"{actor} (otra cuenta con ese nombre)"
+    cuentas = cuentas_de_la_ejecucion(
+        os.environ, autor, autor_id,
+        lambda nombre: (api("GET", f"https://api.github.com/users/{urllib.parse.quote(nombre)}", tolerar=(404,)) or {}).get("id"))
+    base_mal = motivo_de_base(propuesta)
+    if base_mal:
+        texto = f"### ❌ El robot de permisos no puede aceptar esta propuesta\n\n- {base_mal}"
+        comentar(api, numero, texto)
+        resumen(texto)
+        return 1
     equipo = leer_equipo(None)
 
     # Las reglas se leen del mismo commit de `main` con el que se compara la propuesta (recién traído).
@@ -1298,12 +1370,21 @@ def main() -> int:
 
     def de(usuario, cuenta_id):
         return permisos_de(usuario, api, equipo, propietarios, cuenta_id, canales_main, ids_duenos)
-    permisos = de(autor, autor_id)
-    if actor_id != autor_id:
-        permisos = permisos.el_menor(de(actor, actor_id))
+    permisos = combinar([de(cuenta, cuenta_id) for cuenta, cuenta_id in cuentas])
     if canales_roto and not permisos.es_dueno:
         permisos = Permisos(Rol.NINGUNO)
-    quien = f"@{autor}" + (f" (último cambio de @{actor})" if actor_id != autor_id else "")
+    quien = f"@{autor}" + (" (también: " + ", ".join(f"@{c}" for c, _ in cuentas[1:]) + ")" if len(cuentas) > 1 else "")
+
+    def rol_externo(canal, cuenta_id):
+        """El rol que la cuenta tiene en el canal fuera de su archivo: en la fase A, el equipo de GitHub en el canal
+        oficial (lo mismo que `permisos_de`, sin contar el veto: es el rol de a quién se veta o se le quita el veto)."""
+        if canal != canales.CANAL_OFICIAL:
+            return 0
+        nombre = cuenta_de(cuenta_id)
+        if not nombre:
+            return 0
+        respuesta = api("GET", f"/collaborators/{urllib.parse.quote(nombre)}/permission", tolerar=(404,)) or {}
+        return int(ROL_DE_GITHUB.get(respuesta.get("role_name") or respuesta.get("permission"), Rol.NINGUNO))
 
     # La lista de archivos prohibidos se lee de `main` (el mismo commit), nunca de la propuesta.
     try:
@@ -1321,7 +1402,8 @@ def main() -> int:
     else:
         cambios, antes, despues, leer_archivo = leido
         motivos = comprobar(cambios, antes, despues, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete,
-                            leer_archivo=leer_archivo, ids_duenos=frozenset(ids_duenos), cuenta_de=cuenta_de)
+                            leer_archivo=leer_archivo, ids_duenos=frozenset(ids_duenos), cuenta_de=cuenta_de,
+                            rol_externo=rol_externo)
 
     if motivos:
         lista = "\n".join(f"- {m}" for m in motivos)
