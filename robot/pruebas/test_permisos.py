@@ -1,4 +1,4 @@
-"""Pruebas de las reglas del robot.  Uso:  python -m unittest discover -s robot/pruebas"""
+"""Pruebas de las reglas del robot.  Uso:  python -I -m unittest discover -s robot/pruebas -t robot/pruebas"""
 import copy
 import json
 import pathlib
@@ -90,8 +90,7 @@ class Administrador(unittest.TestCase):
             c["juegos"].append({"id": "juego2", "habilitado": True})
             c["launcher"]["versionMinima"] = "0.2.0"
             juego(c).update(pruebas=True, habilitado=False, etiquetas=["beta", "adultos"])
-        archivos = [Cambio("README.md", "M"), Cambio("pruebas/crear-juego-prueba.py", "M"),
-                    Cambio("catalogo/juegos/juego2/banner.jpg", "A", tamano=100)]
+        archivos = [Cambio("catalogo/juegos/juego2/banner.jpg", "A", tamano=100), Cambio("catalogo/otro.json", "A")]
         self.assertEqual([], revisar(ADMIN, cambiar, archivos=archivos))
 
     def test_no_crea_edita_ni_borra_etiquetas_del_catalogo(self):
@@ -165,11 +164,11 @@ class Editor(unittest.TestCase):
                 self.assertIn("el Propietario" if clave == "etiquetas" else "solo la cambia un Administrador", motivos[0])
 
     def test_no_toca_el_robot_ni_otros_archivos(self):
-        for ruta in ("README.md", "equipo.json", "catalogo/otro.json"):
+        for ruta in ("catalogo/otro.json", "catalogo/juegos/otro.json"):
             with self.subTest(ruta):
                 motivos = revisar(EDITOR, archivos=[Cambio(ruta, "M")], subir_version=False)
                 self.assertIn("solo lo puede cambiar un Administrador", motivos[0])
-        for ruta in (".github/workflows/permisos.yml", "robot/permisos.py"):
+        for ruta in (".github/workflows/permisos.yml", "robot/permisos.py", "README.md", "equipo.json"):
             with self.subTest(ruta):
                 motivos = revisar(EDITOR, archivos=[Cambio(ruta, "M")], subir_version=False)
                 self.assertIn("solo lo cambia el Propietario", motivos[0])
@@ -276,7 +275,27 @@ class SoloDelPropietario(unittest.TestCase):
         self.assertIn("(`.github/`)", self.proponer(ADMIN, ".github/workflows/permisos.yml")[0])
         self.assertIn("grupo.archivosProhibidos", self.proponer(ADMIN, "normas/archivos-prohibidos.json")[0])
 
-    def test_lo_demas_fuera_de_catalogo_sigue_siendo_del_administrador(self):
-        for ruta in ("README.md", "pruebas/crear-juego-prueba.py", "robots.txt", "normas.md", "github/x.yml"):
+    # Lista blanca: fuera de `catalogo/` todo es del Propietario. Sobre todo lo que Python cargaría desde la raíz
+    # del `main` descargado (`python -m venv`, `python -m unittest`) con el permiso de escritura del robot.
+    RAIZ_PELIGROSA = ("venv.py", "unittest.py", "ensurepip.py", "sitecustomize.py", "usercustomize.py", "pip.py",
+                      "encodings/__init__.py", "venv/__init__.py", "json.py", "blake3.py", "x.pth", ".gitattributes",
+                      ".gitmodules", ".python-version", "README.md", "pruebas/crear-juego-prueba.py", "robots.txt",
+                      "normas.md", "github/x.yml", "Catalogo/x.json", "CATALOGO/catalogo.json", "catalogo",
+                      "catalogo.json", "otra/catalogo/x.json")
+
+    def test_fuera_de_catalogo_es_del_propietario(self):
+        for permisos in (ADMIN, EDITOR, COLABORADOR):
+            for ruta in self.RAIZ_PELIGROSA:
+                for estado in ("A", "M", "D"):
+                    with self.subTest(rol=permisos.rol_global, ruta=ruta, estado=estado):
+                        motivos = self.proponer(permisos, ruta, estado)
+                        self.assertEqual(1, len(motivos), motivos)
+                        self.assertIn("solo lo cambia el Propietario", motivos[0])
+
+    def test_el_propietario_puede_fuera_de_catalogo(self):
+        for ruta in self.RAIZ_PELIGROSA:
             with self.subTest(ruta=ruta):
-                self.assertEqual([], self.proponer(ADMIN, ruta))
+                self.assertEqual([], self.proponer(self.PROPIETARIO, ruta))
+
+    def test_un_administrador_que_sube_a_la_propuesta_del_propietario_tampoco_deja_codigo_en_la_raiz(self):
+        self.assertIn("solo lo cambia el Propietario", self.proponer(self.PROPIETARIO.el_menor(ADMIN), "venv.py")[0])
