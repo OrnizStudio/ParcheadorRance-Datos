@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from permisos import Cambio, Permisos, Rol, RUTA_CATALOGO, comprobar  # noqa: E402
+import permisos as permisos_mod  # noqa: E402
 
 HASH = "blake3:" + "a" * 64
 BASE = {
@@ -231,6 +232,35 @@ class RolesPorJuego(unittest.TestCase):
     def test_cuenta_el_menor_de_dos_personas(self):
         self.assertEqual(Rol.COLABORADOR, ADMIN.el_menor(COLABORADOR).rol_global)
 
+
+class PythonCompilado(unittest.TestCase):
+    """Ningún `.pyc` ni `__pycache__/` entra en el repositorio, lo proponga quien lo proponga."""
+
+    RUTAS = ("robot/__pycache__/permisos.cpython-313.pyc", "robot/pruebas/__pycache__/test_tmp_inst.cpython-313.pyc",
+             "__pycache__/venv.cpython-312.pyc", "venv.pyc", "catalogo/x.pyc", "catalogo/juegos/juego1/a.PYC",
+             "catalogo/__pycache__/x", "catalogo/juegos/juego1/__PYCACHE__/x.png", "robot/x.pyo")
+
+    def test_nadie_sube_python_compilado(self):
+        for permisos in (PROPIETARIO, ADMIN, EDITOR, COLABORADOR):
+            for ruta in self.RUTAS:
+                for estado in ("A", "M"):
+                    with self.subTest(rol=permisos.rol_global, ruta=ruta, estado=estado):
+                        motivos = revisar(permisos, archivos=[Cambio(ruta, estado, tamano=10)], subir_version=False)
+                        self.assertTrue(any("Python compilado" in m for m in motivos), motivos)
+
+    def test_borrarlos_si_se_puede(self):
+        archivos = [Cambio(r, "D") for r in self.RUTAS]
+        self.assertEqual([], revisar(PROPIETARIO, archivos=archivos, subir_version=False))
+
+    def test_lo_parecido_no_es_compilado(self):
+        for ruta in ("robot/permisos.py", "catalogo/pyc.json", "catalogo/juegos/juego1/pycache.png", "x.pyc.txt"):
+            with self.subTest(ruta=ruta):
+                self.assertFalse(permisos_mod.es_python_compilado(ruta))
+
+    def test_el_repositorio_los_ignora(self):
+        ignorar = (pathlib.Path(__file__).resolve().parents[2] / ".gitignore").read_text(encoding="utf-8").split()
+        self.assertIn("__pycache__/", ignorar)
+        self.assertIn("*.pyc", ignorar)
 
 if __name__ == "__main__":
     unittest.main()

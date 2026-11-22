@@ -117,6 +117,13 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     motivos = []
     if not cambios:
         return ["La propuesta no cambia ningún archivo."]
+    # Python compilado (`.pyc`, `.pyo`, `__pycache__/`): nunca, para nadie, tampoco para el Propietario. Son restos de
+    # ejecutar Python en la copia de trabajo, y Python los carga en lugar del `.py` si los encuentra junto a él. Borrarlos
+    # sí se puede (para limpiar).
+    compilados = [c.ruta for c in cambios if c.estado != "D" and es_python_compilado(c.ruta)]
+    if compilados:
+        return [f"`{ruta}`: es Python compilado (o está en `__pycache__/`). No se suben al repositorio: bórralo de la "
+                "propuesta (ya están en `.gitignore`)." for ruta in compilados]
     if permisos.rol_global == Rol.NINGUNO and not permisos.por_juego:
         return [_SIN_ROL]
 
@@ -468,6 +475,11 @@ SOLO_PROPIETARIO = {
 # `sitecustomize.py`, `.gitattributes`… en la raíz podría acabar ejecutándose con el permiso de escritura del robot.
 # Se compara tal cual, distinguiendo mayúsculas: `Catalogo/` es otra carpeta para git y no vale.
 CARPETA_CATALOGO = "catalogo/"
+
+
+def es_python_compilado(ruta: str) -> bool:
+    partes = ruta.replace("\\", "/").lower().split("/")
+    return "__pycache__" in partes or partes[-1].endswith((".pyc", ".pyo"))
 
 
 def _carpeta_del_propietario(ruta: str):

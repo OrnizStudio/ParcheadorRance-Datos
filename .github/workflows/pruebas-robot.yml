@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+# Que Python no deje `.pyc` en la copia de trabajo (`-I` ignora esta variable: ahí va `-B`).
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
   pruebas:
     runs-on: ubuntu-latest
@@ -18,4 +22,4 @@ jobs:
       - uses: actions/checkout@v4
       # `-I`: sin la carpeta actual (la raíz del repositorio) en sys.path, para que un `unittest.py` o similar en
       # la raíz no se ejecute en lugar de las pruebas. `discover` añade solo robot/pruebas, que es del Propietario.
-      - run: python3 -I -m unittest discover -s robot/pruebas -t robot/pruebas -v
+      - run: python3 -I -B -m unittest discover -s robot/pruebas -t robot/pruebas -v

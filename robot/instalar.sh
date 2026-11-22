@@ -20,7 +20,8 @@ espera_base="${ROBOT_ESPERA_REINTENTO:-20}"  # segundos; las pruebas lo ponen a 
 
 vacia="$(mktemp -d)" || exit 1
 cd "$vacia" || exit 1
-python -I -m venv "$entorno" || exit 1
+export PYTHONDONTWRITEBYTECODE=1  # sin `.pyc` al crear el entorno ni al instalar
+python -I -B -m venv "$entorno" || exit 1
 for intento in $(seq 1 "$intentos"); do
   if "$entorno/bin/pip" install --quiet --disable-pip-version-check --no-deps --only-binary :all: \
        --require-hashes --retries 5 --timeout 60 -r "$requisitos"; then

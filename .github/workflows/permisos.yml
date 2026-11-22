@@ -23,6 +23,10 @@ on:
 
 permissions: {}
 
+# Que Python no deje `.pyc` en la copia de trabajo (`-I` ignora esta variable: ahí va `-B`).
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
 concurrency:
   group: permisos-${{ github.event.pull_request.number }}
   cancel-in-progress: true
