@@ -41,16 +41,17 @@ class InstalarConReintentos(unittest.TestCase):
             falsos.mkdir()
             (falsos / "python").write_text(
                 "#!/usr/bin/env bash\n"
-                '[ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "venv" ] || exit 9\n'
+                '[ "$1" = "-I" ] && [ "$2" = "-B" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ] || exit 9\n'
+                '[ "$PYTHONDONTWRITEBYTECODE" = "1" ] || exit 8\n'
                 f'ls -A > "{carpeta}/donde"\n'
-                'mkdir -p "$4/bin"\n'
-                'cat > "$4/bin/pip" <<FIN\n'
+                'mkdir -p "$5/bin"\n'
+                'cat > "$5/bin/pip" <<FIN\n'
                 "#!/usr/bin/env bash\n"
                 f'echo "\$*" >> "{carpeta}/llamadas"\n'
                 f'n=\$(wc -l < "{carpeta}/llamadas")\n'
                 f'[ "\$n" -gt {fallos} ]\n'
                 "FIN\n"
-                'chmod +x "$4/bin/pip"\n')
+                'chmod +x "$5/bin/pip"\n')
             (falsos / "python").chmod(0o755)
             # Se lanza desde una carpeta con un `venv.py` malicioso, como sería la raíz del `main` descargado.
             checkout = carpeta / "checkout"
@@ -59,7 +60,7 @@ class InstalarConReintentos(unittest.TestCase):
             entorno = dict(os.environ, PATH=f"{falsos}:{os.environ['PATH']}", ROBOT_ESPERA_REINTENTO="0")
             salida = subprocess.run([BASH, str(RAIZ / "instalar.sh"), "venv"], cwd=checkout,
                                     capture_output=True, text=True, env=entorno)
-            self.assertNotEqual(salida.returncode, 9, salida.stderr)
+            self.assertNotIn(salida.returncode, (8, 9), salida.stderr)
             self.assertEqual("", (carpeta / "donde").read_text().strip())  # se llama desde una carpeta vacía, no desde el checkout
             self.assertTrue((checkout / "venv" / "bin" / "pip").exists())  # la carpeta relativa sigue siendo la del checkout
             llamadas = (carpeta / "llamadas").read_text().splitlines()
@@ -99,6 +100,16 @@ class PythonAislado(unittest.TestCase):
                     continue
                 for m in re.finditer(r'(?:^|[\s/"\'])(?:python3?|pip3?)"?((?:\s+-[A-Za-z]+)*)\s+(\S+)', linea):
                     yield f"{nombre}:{n}", m.group(0), m.group(1).split(), m.group(2)
+
+    def test_python_no_deja_pyc(self):
+        for nombre in (".github/workflows/permisos.yml", ".github/workflows/pruebas-robot.yml"):
+            with self.subTest(nombre=nombre):
+                self.assertIn("PYTHONDONTWRITEBYTECODE: '1'", (RAIZ.parent / nombre).read_text(encoding="utf-8"))
+        self.assertIn("export PYTHONDONTWRITEBYTECODE=1", (RAIZ / "instalar.sh").read_text(encoding="utf-8"))
+        for donde, llamada, opciones, siguiente in self.lineas_con_python():
+            if "-I" in opciones:  # `-I` ignora PYTHONDONTWRITEBYTECODE
+                with self.subTest(donde=donde):
+                    self.assertIn("-B", opciones, f"{donde}: {llamada}")
 
     def test_todo_python_m_lleva_I(self):
         vistas = 0
