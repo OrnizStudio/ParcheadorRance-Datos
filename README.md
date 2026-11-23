@@ -79,10 +79,17 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 > - Fuera de `canales/` (el catálogo y lo demás) hace falta rol en el canal oficial.
 > - Fuera del Dueño, nadie publica un archivo de canal que dice lo mismo que en `main` (solo cambia el formato o el
 >   orden). Quien solo puede tocar su propia fila (sin rol, Colaborador o Editor) deja el resto del archivo igual
->   byte a byte, o el archivo entero tal como lo escribe el parcheador.
+>   byte a byte, o el archivo entero tal como lo escribe el parcheador. Su propia fila, tal como la escribe el
+>   parcheador o como estaba, cambiando solo el valor (sin espacios ni escapes de más).
 > - Si la propuesta la tocan varias cuentas (quien la abre no es quien sube el último cambio), no se acepta nada en
->   `canales/`. Cuenta el rol más bajo entre quien la abrió, quien subió el último cambio y quien relanza el robot, y
->   se comprueba el commit del evento: si la propuesta ya tiene otro, el robot para.
+>   `canales/`. Cuenta el rol más bajo entre quien la abrió, quien subió el último cambio, quien relanza el robot,
+>   el autor y el *committer* de cada commit y quien hizo cada subida a la propuesta (las ejecuciones del robot). Si
+>   un commit no es de ninguna cuenta de GitHub, no se acepta. Se comprueba el commit del evento: si la propuesta ya
+>   tiene otro, el robot para.
+> - Una propuesta no puede obligar al robot a preguntar a GitHub sin fin: como mucho 20 filas de miembros o vetos con
+>   cuenta nueva y 30 consultas por ejecución (300 el Dueño). Sin rol solo se mira la fila propia.
+> - El comentario del robot no se puede manipular desde la propuesta: lo que viene de ella va en código, en una sola
+>   línea, recortado y sin enlaces, HTML ni menciones.
 > - El nombre de un canal no usa letras «de estilo» (anchas, matemáticas, en círculo, versalitas). Lo que se parezca
 >   a «Orniz» es solo del Dueño y del canal oficial.
 >

@@ -42,6 +42,14 @@ TIPO_POR_EXTENSION = {".png": "png", ".webp": "webp", ".jpg": "jpeg", ".jpeg": "
 # Topes (docs/canales.md §7.7). Se miran con el tamaño de git, antes de leer nada.
 TOPES = {"canal.json": 16 * 1024, "miembros.json": 128 * 1024, "lista-negra.json": 256 * 1024}
 TOPE_LOGO = 512 * 1024
+# Consultas a GitHub (el nombre de una cuenta por su id, su rol en el canal oficial) que una propuesta puede provocar.
+# Cada una gasta cuota del token del robot: sin tope, una propuesta con cientos de filas lo dejaría sin cuota y sin
+# poder comprobar ninguna otra (tercera revisión, N2). El Dueño tiene más margen (migraciones de una vez).
+TOPE_CONSULTAS = 30
+TOPE_CONSULTAS_DUENO = 300
+# Filas de `miembros.json` o de la lista negra que una propuesta puede añadir o cambiar de cuenta de una vez (sin
+# contar al Dueño). Se mira antes de consultar nada.
+TOPE_FILAS_CON_CUENTA = 20
 TOPE_ARCHIVOS_PROPUESTA = 300
 TOPE_BYTES_PROPUESTA = 20 * 1024 * 1024
 PROFUNDIDAD_MAXIMA = 32
@@ -690,7 +698,7 @@ def _solo_su_fila_en_el_texto(antes: bytes, despues: bytes, objeto_despues, auto
     ini_a, fin_a, _ = filas_a[k]
     if len(en_d) == 1:
         ini_d, fin_d, _ = filas_d[en_d[0]]
-        return a[:ini_a] == d[:ini_d] and a[fin_a:] == d[fin_d:]
+        return a[:ini_a] == d[:ini_d] and a[fin_a:] == d[fin_d:] and _fila_sin_hinchar(a[ini_a:fin_a], d[ini_d:fin_d])
     if en_d:
         return False
     # Sale del canal: su fila desaparece con una de las comas que la separan.
@@ -702,6 +710,36 @@ def _solo_su_fila_en_el_texto(antes: bytes, despues: bytes, objeto_despues, auto
     if len(filas_a) == 1:
         candidatos.append(a[:ini_a] + a[fin_a:])
     return d in candidatos
+
+
+def _fila_sin_hinchar(texto_antes: str, texto_despues: str) -> bool:
+    r"""La fila propia nueva no lleva nada de más (tercera revisión, N5): o es exactamente como la escribe el parcheador
+    (nivel 2: raíz → `miembros` → fila), o es la fila de antes, con su mismo formato, cambiando solo los valores que
+    cambian (cada valor viejo aparece una sola vez en la fila). Así nadie la hincha con espacios o escapes `\u` hasta
+    el tope del archivo."""
+    try:
+        fila_a, fila_d = _DECODIFICADOR.decode(texto_antes), _DECODIFICADOR.decode(texto_despues)
+    except ValueError:
+        return False
+    if not isinstance(fila_a, dict) or not isinstance(fila_d, dict):
+        return False
+    if texto_despues == _valor_app(fila_d, 2):
+        return True
+    if list(fila_a) != list(fila_d):
+        return False
+    texto = texto_antes
+    for clave in fila_a:
+        if fila_a[clave] == fila_d[clave]:
+            continue
+        if not all(isinstance(v, (str, int)) and not isinstance(v, bool) for v in (fila_a[clave], fila_d[clave])):
+            return False
+        viejo, nuevo = (_cadena_app(v) if isinstance(v, str) else str(v) for v in (fila_a[clave], fila_d[clave]))
+        # El valor de esa clave en concreto (`"rol": "editor"` y `"cuenta": "editor"` llevan el mismo texto).
+        patron = re.compile(re.escape(_cadena_app(clave)) + r"(\s*:\s*)" + re.escape(viejo))
+        if len(patron.findall(texto)) != 1:
+            return False
+        texto = patron.sub(lambda m: _cadena_app(clave) + m.group(1) + nuevo, texto)
+    return texto == texto_despues
 
 
 def _diferencias(a: dict, b: dict):
@@ -725,14 +763,23 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
     oficial): con él se sabe el rol real de a quién se veta, igual que lo calcula el robot para los permisos.
     """
     leer = leer or (lambda ruta, lado: None)
-    rol_externo = rol_externo or (lambda canal, cuenta_id: 0)
-    if cuenta_de is not None:
+    quedan = [TOPE_CONSULTAS_DUENO if es_dueno else TOPE_CONSULTAS]
+
+    def con_tope(consultar):
+        """La misma consulta, con lo ya sabido guardado y un tope de consultas nuevas por ejecución."""
         sabidas = {}
 
-        def cuenta_de(cuenta_id, _consultar=cuenta_de):
-            if cuenta_id not in sabidas:
-                sabidas[cuenta_id] = _consultar(cuenta_id)
-            return sabidas[cuenta_id]
+        def consulta(*clave):
+            if clave not in sabidas:
+                if quedan[0] <= 0:
+                    raise DemasiadasConsultas
+                quedan[0] -= 1
+                sabidas[clave] = consultar(*clave)
+            return sabidas[clave]
+        return consulta
+    if cuenta_de is not None:
+        cuenta_de = con_tope(cuenta_de)
+    rol_externo = con_tope(rol_externo) if rol_externo is not None else (lambda canal, cuenta_id: 0)
     motivos = []
     por_canal = {}
     for c in cambios:
@@ -753,9 +800,18 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
 
     for canal, archivos in sorted(por_canal.items()):
         rol = 5 if es_dueno else rol_por_canal.get(canal, 0)
-        motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer, frozenset(ids_duenos), cuenta_de,
-                                       lambda cuenta_id, _c=canal: rol_externo(_c, cuenta_id))
+        try:
+            motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer, frozenset(ids_duenos), cuenta_de,
+                                           lambda cuenta_id, _c=canal: rol_externo(_c, cuenta_id))
+        except DemasiadasConsultas:
+            motivos.append(f"La propuesta cambia demasiadas cuentas de @{canal} a la vez (el robot tendría que consultar "
+                           f"más de {TOPE_CONSULTAS_DUENO if es_dueno else TOPE_CONSULTAS} a GitHub). Divídela en "
+                           "varias más pequeñas.")
     return list(dict.fromkeys(motivos))
+
+
+class DemasiadasConsultas(Exception):
+    """La propuesta pediría más consultas a GitHub de las que se permiten en una ejecución (`TOPE_CONSULTAS`)."""
 
 
 def _leer(c: CambioCanal, lado: str, nombre: str):
@@ -922,13 +978,20 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
     for mid in sorted(set(m_despues) & vetados):
         motivos.append(f"`{ruta}`: `{m_despues[mid].cuenta}` está en la lista negra del canal: no puede ser miembro.")
 
-    # El nombre que acompaña a un id nuevo o cambiado tiene que ser el de esa cuenta (también para el Dueño).
-    for mid, d in sorted(m_despues.items()):
-        a = m_antes.get(mid)
-        if a is None or a.cuenta != d.cuenta:
-            problema = _cuenta_que_no_es(cuenta_de, mid, d.cuenta, f"`{ruta}`")
-            if problema:
-                motivos.append(problema)
+    # El nombre que acompaña a un id nuevo o cambiado tiene que ser el de esa cuenta (también para el Dueño). Se pregunta
+    # a GitHub, así que antes se mira qué filas puede tocar quien propone: sin rol (o con rol bajo) solo la suya, y el
+    # resto ya se rechaza abajo sin preguntar nada (tercera revisión, N2).
+    por_comprobar = [mid for mid, d in sorted(m_despues.items())
+                     if m_antes.get(mid) is None or m_antes[mid].cuenta != d.cuenta]
+    if rol < 5 and (solo_aceptar or rol < 3):
+        por_comprobar = [mid for mid in por_comprobar if mid == autor_id]
+    if rol < 5 and len(por_comprobar) > TOPE_FILAS_CON_CUENTA:
+        return motivos + [f"`{ruta}`: la propuesta añade o cambia {len(por_comprobar)} miembros a la vez y el máximo son "
+                          f"{TOPE_FILAS_CON_CUENTA}. Divídela en varias."]
+    for mid in por_comprobar:
+        problema = _cuenta_que_no_es(cuenta_de, mid, m_despues[mid].cuenta, f"`{ruta}`")
+        if problema:
+            motivos.append(problema)
 
     if rol >= 5:
         return motivos
@@ -1000,6 +1063,12 @@ def _comprobar_lista_negra(ruta, antes, despues, rol, autor_id, ids_duenos, miem
     if rol < 3:
         return motivos + [f"`{ruta}`: la lista negra del canal la cambia un Administrador (tu rol: {NOMBRE_ROL[rol]})."]
     l_antes, _ = leer_lista_negra(antes, ruta)
+    cambiadas = [m for m in l_antes.usuarios.keys() | l_despues.usuarios.keys()
+                 if l_antes.usuarios.get(m) != l_despues.usuarios.get(m)]
+    if rol < 5 and len(cambiadas) > TOPE_FILAS_CON_CUENTA:
+        # Cada veto que cambia pide a GitHub el rol de esa cuenta: se para antes de preguntar nada (N2).
+        return motivos + [f"`{ruta}`: la propuesta pone o quita {len(cambiadas)} vetos a la vez y el máximo son "
+                          f"{TOPE_FILAS_CON_CUENTA}. Divídela en varias."]
 
     def rol_de(cuenta_id) -> int:
         if cuenta_id in ids_duenos:

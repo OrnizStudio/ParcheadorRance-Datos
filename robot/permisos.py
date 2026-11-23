@@ -33,6 +33,7 @@ from __future__ import annotations
 import copy
 import enum
 import fnmatch
+import html
 import json
 import os
 import pathlib
@@ -1231,6 +1232,45 @@ def leer_propuesta(base: str, cabeza: str):
     return cambios, (antes.decode("utf-8", errors="replace") if antes is not None else None), leer(arbol), leer_archivo
 
 
+TOPE_MOTIVOS = 40
+LARGO_MOTIVO = 1500
+LARGO_CODIGO = 200
+_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]+")
+_PROSA = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\\": "\\\\", "[": "\\[", "]": "\\]", "|": "\\|"})
+# Dentro de `<code>` GitHub sigue leyendo Markdown: ahí también se escapan los de énfasis (`__pycache__` no es negrita).
+_CODIGO = str.maketrans({"*": "\\*", "_": "\\_", "~": "\\~"})
+
+
+def _sin_enlaces(texto: str) -> str:
+    texto = texto.translate(_PROSA)
+    # Ni menciones (`@cuenta` avisa a esa persona), ni referencias a propuestas (`#12`), ni enlaces automáticos.
+    texto = re.sub(r"@", "@\u2060", texto)
+    texto = re.sub(r"#(?=\d)", "#\u2060", texto)
+    return texto.replace("://", ":\u2060//").replace("www.", "www\u2060.")
+
+
+def linea_segura(motivo: str) -> str:
+    """Un motivo listo para ir en el comentario, aunque lleve nombres de archivo, claves o cuentas de la propuesta
+    (tercera revisión, N4): en una sola línea y recortado, con lo que va entre acentos graves como `<code>`, y sin HTML,
+    enlaces, imágenes ni menciones en ninguna parte. Si algo de la propuesta trae su propio acento grave, como mucho
+    cambia qué trozo sale en código: nunca se interpreta."""
+    trozos = _CONTROL.sub(" ", str(motivo)).split("`")
+    if len(trozos) % 2 == 0:  # un acento grave suelto: el último trozo es texto normal
+        trozos[-2:] = [trozos[-2] + "ˋ" + trozos[-1]]
+    salida, quedan = [], LARGO_MOTIVO
+    for i, trozo in enumerate(trozos):
+        if quedan <= 0:
+            salida.append("…")
+            break
+        tope = min(quedan, LARGO_CODIGO) if i % 2 else quedan
+        if len(trozo) > tope:
+            trozo = trozo[:tope] + "…"
+        quedan -= len(trozo)
+        seguro = _sin_enlaces(trozo)
+        salida.append(seguro if i % 2 == 0 else "<code>" + seguro.translate(_CODIGO) + "</code>")
+    return "".join(salida)
+
+
 def comentar(api, numero: int, texto: str, solo_si_existe=False) -> None:
     """Un único comentario del robot por propuesta: se crea la primera vez y después se va actualizando."""
     cuerpo = f"{MARCA}\n{texto}"
@@ -1318,6 +1358,102 @@ def cuentas_de_la_ejecucion(entorno, autor: str, autor_id: int, id_de_cuenta) ->
     return resultado
 
 
+# La cuenta con la que GitHub firma los commits hechos en la web o por su API: no es una persona, no cuenta.
+ID_WEB_FLOW = 19864447
+TOPE_COMMITS = 250       # lo más que devuelve GitHub de los commits de una propuesta
+TOPE_EJECUCIONES = 300   # ejecuciones del robot sobre una misma propuesta
+TOPE_CUENTAS = 10        # cuentas distintas que han intervenido
+
+
+class SinSaberQuien(Exception):
+    """No se puede saber con certeza qué cuentas han subido los cambios de la propuesta: se rechaza."""
+
+
+def _cuenta(usuario):
+    return (usuario["login"], usuario["id"]) if isinstance(usuario, dict) and isinstance(usuario.get("id"), int) \
+        and isinstance(usuario.get("login"), str) else None
+
+
+def _paginas(api, ruta: str, tope: int, clave=None) -> list:
+    """Todos los elementos de una lista paginada de la API (de 100 en 100) o SinSaberQuien si hay más de `tope`."""
+    elementos, pagina = [], 1
+    while True:
+        separador = "&" if "?" in ruta else "?"
+        respuesta = api("GET", f"{ruta}{separador}per_page=100&page={pagina}") or ([] if clave is None else {})
+        trozo = respuesta if clave is None else respuesta.get(clave) or []
+        elementos += trozo
+        if len(elementos) > tope:
+            raise SinSaberQuien(f"la propuesta tiene más de {tope} {'commits' if clave is None else 'ejecuciones del robot'}: "
+                                "abre una nueva con los cambios juntos.")
+        if len(trozo) < 100:
+            return elementos
+        pagina += 1
+
+
+def cuentas_de_la_propuesta(api, numero: int, propuesta: dict) -> list:
+    """[(cuenta, id)] de todos los que han subido algo a la propuesta (tercera revisión, N3).
+
+    El `sender` de un evento es quien lo provoca (quien edita el título, la reabre o la marca como lista), no quien
+    subió los commits. Así que cuentan también:
+    - autor y committer de cada commit (sin la firma de GitHub, `web-flow`). Se pueden falsear, pero falsearlos solo
+      añade cuentas, y añadir cuentas solo puede bajar el rol;
+    - quien lanzó cada ejecución del robot sobre esta propuesta (cada `synchronize` es una subida y su `actor` es quien
+      la subió: eso no se puede falsear).
+    Si un commit no está ligado a ninguna cuenta de GitHub, o algo no cuadra, SinSaberQuien.
+    """
+    cuentas = []
+    if int(propuesta.get("commits") or 0) > TOPE_COMMITS:
+        raise SinSaberQuien(f"la propuesta tiene más de {TOPE_COMMITS} commits: abre una nueva con los cambios juntos.")
+    for commit in _paginas(api, f"/pulls/{numero}/commits", TOPE_COMMITS):
+        sha = str(commit.get("sha") or "")[:7]
+        for papel in ("author", "committer"):
+            usuario = commit.get(papel)
+            if isinstance(usuario, dict) and usuario.get("id") == ID_WEB_FLOW:
+                continue
+            cuenta = _cuenta(usuario)
+            if cuenta is None:
+                correo = ((commit.get("commit") or {}).get(papel) or {}).get("email") or "sin correo"
+                raise SinSaberQuien(f"el commit {sha} lleva como {'autor' if papel == 'author' else 'committer'} un "
+                                    f"correo ({correo}) que no es de ninguna cuenta de GitHub. Haz los commits con el "
+                                    "correo de tu cuenta (o desde el parcheador).")
+            cuentas.append(cuenta)
+
+    cabeza = propuesta.get("head") or {}
+    repo = (cabeza.get("repo") or {}).get("full_name")
+    rama = cabeza.get("ref")
+    if not repo or not rama:
+        raise SinSaberQuien("no se sabe de qué copia viene la propuesta (¿se ha borrado?).")
+    creada = str(propuesta.get("created_at") or "")
+    ejecuciones = _paginas(api, "/actions/workflows/permisos.yml/runs?event=pull_request_target&branch="
+                           + urllib.parse.quote(rama, safe=""), TOPE_EJECUCIONES, clave="workflow_runs")
+    propias = [e for e in ejecuciones if ((e.get("head_repository") or {}).get("full_name") == repo
+                                          and str(e.get("created_at") or "") >= creada)]
+    if not propias:
+        raise SinSaberQuien("no aparece ninguna ejecución del robot sobre esta propuesta, así que no se sabe quién ha "
+                            "subido sus cambios.")
+    for ejecucion in propias:
+        for papel in ("actor", "triggering_actor"):
+            cuenta = _cuenta(ejecucion.get(papel))
+            if cuenta is None:
+                raise SinSaberQuien("una ejecución del robot sobre esta propuesta no dice qué cuenta la lanzó.")
+            cuentas.append(cuenta)
+    return cuentas
+
+
+def unir_cuentas(*listas) -> list:
+    """Las cuentas sin repetir (por id), en orden, o SinSaberQuien si son demasiadas."""
+    vistas, resultado = set(), []
+    for lista in listas:
+        for cuenta, cuenta_id in lista:
+            if cuenta_id not in vistas:
+                vistas.add(cuenta_id)
+                resultado.append((cuenta, cuenta_id))
+    if len(resultado) > TOPE_CUENTAS:
+        raise SinSaberQuien(f"han intervenido {len(resultado)} cuentas en la propuesta y el máximo son {TOPE_CUENTAS}: "
+                            "abre una nueva desde una sola cuenta.")
+    return resultado
+
+
 def combinar(todos: list) -> Permisos:
     """El rol más bajo de las cuentas que han intervenido: nadie gana permisos por subir un commit a la propuesta de
     otra persona con más rol, ni por relanzar la ejecución de otra. El Dueño no baja a nadie (puede con todo), así que
@@ -1351,8 +1487,13 @@ def main() -> int:
         os.environ, autor, autor_id,
         lambda nombre: (api("GET", f"https://api.github.com/users/{urllib.parse.quote(nombre)}", tolerar=(404,)) or {}).get("id"))
     base_mal = motivo_de_base(propuesta)
+    if not base_mal:
+        try:
+            cuentas = unir_cuentas(cuentas, cuentas_de_la_propuesta(api, numero, propuesta))
+        except SinSaberQuien as e:
+            base_mal = f"No se puede saber quién ha subido los cambios de esta propuesta: {e}"
     if base_mal:
-        texto = f"### ❌ El robot de permisos no puede aceptar esta propuesta\n\n- {base_mal}"
+        texto = f"### ❌ El robot de permisos no puede aceptar esta propuesta\n\n- {linea_segura(base_mal)}"
         comentar(api, numero, texto)
         resumen(texto)
         return 1
@@ -1415,7 +1556,9 @@ def main() -> int:
                             rol_externo=rol_externo)
 
     if motivos:
-        lista = "\n".join(f"- {m}" for m in motivos)
+        lista = "\n".join(f"- {linea_segura(m)}" for m in motivos[:TOPE_MOTIVOS])
+        if len(motivos) > TOPE_MOTIVOS:
+            lista += f"\n- … y {len(motivos) - TOPE_MOTIVOS} motivos más (corrige estos primero)."
         texto = (f"### ❌ El robot de permisos no puede aceptar esta propuesta\n\n"
                  f"{quien} · rol: **{permisos.rol_global.nombre}**\n\n{lista}\n\n"
                  "Corrige lo indicado y sube el cambio a esta misma propuesta: el robot la vuelve a mirar "

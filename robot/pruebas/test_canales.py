@@ -61,7 +61,7 @@ def permisos(cuenta_id):
     return Permisos(rol, por_canal={"ornizen": rol} if rol else {}, cuenta_id=cuenta_id)
 
 
-def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, extra=(), cuentas=None, estados=None):
+def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, extra=(), cuentas=None, estados=None, cuenta_de=None):
     """`archivos` = {ruta: objeto o bytes o None (borrar)}; `antes` = lo que hay en `main` (por defecto, lo de siempre)."""
     main = {M: b(MIEMBROS), C: b(CANAL), L: b(LISTA)}
     if antes is not None:
@@ -79,7 +79,7 @@ def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, e
         return (main if lado == "antes" else despues).get(ruta)
     nombres = CUENTAS if cuentas is None else cuentas
     return comprobar(cambios, json.dumps(CATALOGO), json.dumps(CATALOGO), permisos(cuenta_id), leer_archivo=leer,
-                     ids_duenos=frozenset({DUENO_ID}), cuenta_de=nombres.get)
+                     ids_duenos=frozenset({DUENO_ID}), cuenta_de=cuenta_de or nombres.get)
 
 
 def miembros(cambiar):
@@ -927,6 +927,216 @@ class SegundaRevision(unittest.TestCase):
                 self.assertTrue(comprobar([Cambio(RUTA_CATALOGO, "M")], json.dumps(CATALOGO), texto, permisos(DUENO_ID)))
         cat, errores = robot.validar_catalogo(json.dumps({**CATALOGO, "versionCatalogo": 2}), CATALOGO)
         self.assertEqual([], errores)
+
+
+class Contador:
+    """Un `cuenta_de` que cuenta cuántas veces se pregunta a GitHub."""
+
+    def __init__(self, nombres=None):
+        self.nombres, self.veces = dict(CUENTAS if nombres is None else nombres), 0
+
+    def __call__(self, cuenta_id):
+        self.veces += 1
+        return self.nombres.get(cuenta_id, f"cuenta{cuenta_id}")
+
+
+def muchas(n, desde=1000, estado="invitado", rol="editor", por=ADMIN_ID):
+    def poner(lista):
+        for i in range(n):
+            fila_nueva = {"id": desde + i, "cuenta": f"cuenta{desde + i}", "rol": rol, "estado": estado}
+            if por is not None:
+                fila_nueva["invitadoPor"] = por
+            lista.append(fila_nueva)
+    return poner
+
+
+class FalsaApi:
+    """La API de GitHub para `cuentas_de_la_propuesta`: commits y ejecuciones del robot."""
+
+    def __init__(self, commits, ejecuciones):
+        self.commits, self.ejecuciones, self.llamadas = commits, ejecuciones, []
+
+    def __call__(self, metodo, ruta, datos=None, tolerar=()):
+        self.llamadas.append(ruta)
+        pagina = int(ruta.rsplit("page=", 1)[1])
+        trozo = slice((pagina - 1) * 100, pagina * 100)
+        if "/commits" in ruta:
+            return self.commits[trozo]
+        return {"workflow_runs": self.ejecuciones[trozo]}
+
+
+def usuario(cuenta_id):
+    return {"login": CUENTAS.get(cuenta_id, f"cuenta{cuenta_id}"), "id": cuenta_id}
+
+
+def commit(autor, committer=robot.ID_WEB_FLOW, sha="abc1234def"):
+    return {"sha": sha, "author": None if autor is None else usuario(autor),
+            "committer": None if committer is None else (
+                {"login": "web-flow", "id": robot.ID_WEB_FLOW} if committer == robot.ID_WEB_FLOW else usuario(committer)),
+            "commit": {"author": {"email": "alguien@example.org"}, "committer": {"email": "noreply@github.com"}}}
+
+
+def ejecucion(actor, disparador=None, repo="copia/ParcheadorRance-Datos", creada="2026-11-23T10:00:00Z"):
+    return {"actor": usuario(actor), "triggering_actor": usuario(disparador or actor),
+            "head_repository": {"full_name": repo}, "created_at": creada}
+
+
+PROPUESTA = {"commits": 1, "created_at": "2026-11-23T09:00:00Z",
+             "head": {"ref": "equipo/colab/cambio", "repo": {"full_name": "copia/ParcheadorRance-Datos"}}}
+
+
+class TerceraRevision(unittest.TestCase):
+    """Tercera revisión de seguridad de la fase A (cada prueba, un hallazgo)."""
+
+    # ── N1: un main con una versión absurda no bloquea a nadie, tampoco al Dueño ──
+    def test_n1_el_dueno_arregla_un_main_envenenado(self):
+        for absurda in ("9" * 30, "9" * 5000, str(2 ** 31 - 1)):
+            with self.subTest(cifras=len(absurda)):
+                antes = '{"esquema": 1, "versionCatalogo": ' + absurda + ', "etiquetas": [], "juegos": []}'
+                motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], antes, json.dumps({**CATALOGO, "versionCatalogo": 31}),
+                                    permisos(DUENO_ID))
+                self.assertEqual([], motivos)
+
+    # ── N2: nadie agota la cuota del robot ──
+    def test_n2_sin_rol_cientos_de_filas_no_consultan_nada_de_mas(self):
+        contador = Contador()
+        nuevo = miembros(lambda m: (fila(m, INVITADO_ID).update(estado="activo"), muchas(596, por=None)(m)))
+        motivos = proponer(INVITADO_ID, {M: nuevo}, cuenta_de=contador)
+        self.assertTrue(motivos)
+        self.assertLessEqual(contador.veces, 1)
+
+    def test_n2_un_colaborador_tampoco(self):
+        contador = Contador()
+        motivos = proponer(COLAB_ID, {M: miembros(muchas(90))}, cuenta_de=contador)
+        self.assertIn("cosa de un Administrador", motivos[0])
+        self.assertEqual(0, contador.veces)
+
+    def test_n2_un_administrador_tiene_un_tope_de_filas(self):
+        contador = Contador()
+        motivos = proponer(ADMIN_ID, {M: miembros(muchas(canales.TOPE_FILAS_CON_CUENTA + 1))}, cuenta_de=contador)
+        self.assertIn(f"el máximo son {canales.TOPE_FILAS_CON_CUENTA}", motivos[0])
+        self.assertEqual(0, contador.veces)
+        contador = Contador()
+        self.assertEqual([], proponer(ADMIN_ID, {M: miembros(muchas(canales.TOPE_FILAS_CON_CUENTA))}, cuenta_de=contador))
+        self.assertEqual(canales.TOPE_FILAS_CON_CUENTA, contador.veces)
+
+    def test_n2_tampoco_con_la_lista_negra(self):
+        lista = copy.deepcopy(LISTA)
+        lista["usuarios"] += [{"id": 5000 + i, "cuenta": f"cuenta{5000 + i}", "motivo": "x", "por": ADMIN_ID}
+                              for i in range(canales.TOPE_FILAS_CON_CUENTA + 1)]
+        contador = Contador()
+        motivos = proponer(ADMIN_ID, {L: lista}, cuenta_de=contador)
+        self.assertIn("vetos a la vez", motivos[0])
+        self.assertEqual(0, contador.veces)
+
+    def test_n2_ni_el_dueno_pasa_del_tope_de_consultas(self):
+        contador = Contador()
+        nuevo = miembros(muchas(canales.TOPE_CONSULTAS_DUENO + 1, estado="activo", rol="colaborador", por=None))
+        motivos = proponer(DUENO_ID, {M: nuevo}, cuenta_de=contador)
+        self.assertTrue(any("demasiadas cuentas" in m for m in motivos), motivos)
+        self.assertEqual(canales.TOPE_CONSULTAS_DUENO, contador.veces)
+
+    # ── N3: cuentan todos los que han subido algo ──
+    def test_n3_un_edited_no_blanquea_commits_ajenos(self):
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID), ejecucion(ADMIN_ID)])
+        cuentas = robot.unir_cuentas([("admin", ADMIN_ID)], robot.cuentas_de_la_propuesta(api, 7, PROPUESTA))
+        self.assertIn(COLAB_ID, [i for _, i in cuentas])
+        rol = robot.combinar([permisos(i) for _, i in cuentas]).rol_global
+        self.assertEqual(Rol.COLABORADOR, rol)
+
+    def test_n3_el_que_sube_cuenta_aunque_falsee_el_autor(self):
+        # El Colaborador sube un commit con el correo del Administrador: cuenta igual por la ejecución de su subida.
+        api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [ejecucion(COLAB_ID)])
+        ids = [i for _, i in robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)]
+        self.assertIn(COLAB_ID, ids)
+        self.assertIn(ADMIN_ID, ids)
+
+    def test_n3_si_no_se_sabe_quien_se_rechaza(self):
+        casos = {
+            "autor sin cuenta": FalsaApi([commit(None)], [ejecucion(COLAB_ID)]),
+            "committer sin cuenta": FalsaApi([commit(COLAB_ID, None)], [ejecucion(COLAB_ID)]),
+            "sin ejecuciones": FalsaApi([commit(COLAB_ID)], []),
+            "ejecuciones de otra copia": FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID, repo="otra/copia")]),
+            "ejecuciones de antes de la propuesta": FalsaApi([commit(COLAB_ID)],
+                                                             [ejecucion(COLAB_ID, creada="2026-11-22T00:00:00Z")]),
+            "ejecución sin actor": FalsaApi([commit(COLAB_ID)], [{**ejecucion(COLAB_ID), "actor": None}]),
+        }
+        for nombre, api in casos.items():
+            with self.subTest(nombre), self.assertRaises(robot.SinSaberQuien):
+                robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)
+        with self.assertRaises(robot.SinSaberQuien):
+            robot.cuentas_de_la_propuesta(FalsaApi([], [ejecucion(COLAB_ID)]), 7, {**PROPUESTA, "head": {"ref": "x", "repo": None}})
+
+    def test_n3_topes(self):
+        with self.assertRaises(robot.SinSaberQuien):
+            robot.cuentas_de_la_propuesta(FalsaApi([], [ejecucion(COLAB_ID)]), 7, {**PROPUESTA, "commits": 251})
+        # Aunque la propuesta diga que tiene pocos, se cuentan los que llegan (paginando).
+        api = FalsaApi([commit(COLAB_ID, sha=f"{i:07x}") for i in range(251)], [ejecucion(COLAB_ID)])
+        with self.assertRaises(robot.SinSaberQuien):
+            robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)
+        self.assertLessEqual(len(api.llamadas), 3)
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)] * 301)
+        with self.assertRaises(robot.SinSaberQuien):
+            robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)
+        with self.assertRaises(robot.SinSaberQuien):
+            robot.unir_cuentas([(f"c{i}", i) for i in range(robot.TOPE_CUENTAS + 1)])
+
+    def test_n3_web_flow_no_es_nadie_y_la_rama_va_escapada(self):
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)])
+        propuesta = {**PROPUESTA, "head": {"ref": "a&b=c#d", "repo": {"full_name": "copia/ParcheadorRance-Datos"}}}
+        cuentas = robot.cuentas_de_la_propuesta(api, 7, propuesta)
+        self.assertNotIn(robot.ID_WEB_FLOW, [i for _, i in cuentas])
+        self.assertIn("branch=a%26b%3Dc%23d&", api.llamadas[-1])
+
+    # ── N4: el comentario no se puede manipular ──
+    def test_n4_nada_de_la_propuesta_se_interpreta(self):
+        malo = ("`catalogo/a`\n\n# Título falso\n[pulsa](https://malo.example) ![x](https://malo.example/p.png) "
+                "<img src=x onerror=alert(1)> @0rnizL #12 www.malo.example\u202e`")
+        linea = robot.linea_segura(f"`{malo}`: la ruta no vale.")
+        self.assertNotIn("\n", linea)
+        self.assertNotIn("<img", linea)
+        self.assertNotIn("](", linea.replace("\\](", ""))
+        self.assertNotIn("https://", linea)
+        self.assertNotIn("www.", linea)
+        self.assertNotIn("@0rnizL", linea)
+        self.assertNotIn("#12", linea)
+        self.assertNotIn("\u202e", linea)
+        self.assertNotIn("`", linea)
+
+    def test_n4_lo_normal_se_sigue_leyendo_bien(self):
+        linea = robot.linea_segura("`canales/ornizen/miembros.json`: tu rol es **Editor**.")
+        self.assertEqual("<code>canales/ornizen/miembros.json</code>: tu rol es **Editor**.", linea)
+
+    def test_n4_recortado(self):
+        linea = robot.linea_segura("`" + "a" * 10000 + "`: " + "b" * 10000)
+        self.assertLess(len(linea), robot.LARGO_MOTIVO + 50)
+        self.assertIn("a" * robot.LARGO_CODIGO + "…</code>", linea)
+
+    def test_n4_en_codigo_tampoco(self):
+        self.assertEqual("<code>&lt;b&gt;@\u2060x &amp;</code>", robot.linea_segura("`<b>@x &`"))
+        # Dentro de <code> GitHub sigue leyendo Markdown: ni enlaces ni negritas.
+        self.assertEqual(r"<code>\_\_pycache\_\_/ \[a\](b) \*x\*</code>", robot.linea_segura("`__pycache__/ [a](b) *x*`"))
+
+    # ── N5: la propia fila no se hincha ──
+    def test_n5_aceptar_con_la_fila_hinchada_no(self):
+        main = {M: canales.escribir_como_la_app(MIEMBROS).encode()}
+        texto = main[M].decode()
+        filas = canales._filas_con_posicion(texto)
+        ini, fin, _ = next(f for f in filas if f[2] == INVITADO_ID)
+        propia = json.loads(texto[ini:fin])
+        propia["estado"] = "activo"
+        canonica = canales._valor_app(propia, 2)
+        hinchadas = {
+            "espacios": canonica.replace(", ", "," + " " * 100000 + " ", 1),
+            "escapes": canonica.replace('"invitada"', '"' + "".join(f"\\u{ord(c):04x}" for c in "invitada") + '"'),
+            "salto de línea": canonica.replace("{ ", "{\n      ", 1),
+        }
+        for nombre, fila_mala in hinchadas.items():
+            with self.subTest(nombre):
+                self.assertEqual(propia, json.loads(fila_mala))
+                motivos = proponer(INVITADO_ID, {M: (texto[:ini] + fila_mala + texto[fin:]).encode()}, antes=main)
+                self.assertIn("tu propia fila", motivos[0])
+        self.assertEqual([], proponer(INVITADO_ID, {M: (texto[:ini] + canonica + texto[fin:]).encode()}, antes=main))
 
 if __name__ == "__main__":
     unittest.main()

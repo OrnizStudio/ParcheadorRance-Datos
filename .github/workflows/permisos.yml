@@ -40,6 +40,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      # Leer las ejecuciones del robot sobre la propuesta: quién ha subido cada cambio (cuentas_de_la_propuesta).
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,6 +88,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Leer las ejecuciones del robot sobre la propuesta: quién ha subido cada cambio (cuentas_de_la_propuesta).
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
