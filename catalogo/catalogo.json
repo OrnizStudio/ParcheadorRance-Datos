@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 27,
+  "versionCatalogo": 28,
   "launcher": {
     "ultimaVersion": "0.2.2",
     "versionMinima": "",
@@ -68,5 +68,6 @@
     { "id": "restauracion", "nombre": "Restauración", "color": "violeta", "descripcion": "Recupera contenido recortado del juego." },
     { "id": "pack", "nombre": "Pack", "color": "gris", "icono": "ia", "descripcion": "Varios mods probados juntos." },
     { "id": "en-pruebas", "nombre": "En pruebas", "color": "ambar", "icono": "aviso", "descripcion": "Versión que aún no es estable." }
-  ]
+  ],
+  "grupo": { "nombre": "canal1" }
 }
