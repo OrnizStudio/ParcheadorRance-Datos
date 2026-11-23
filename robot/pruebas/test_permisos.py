@@ -72,7 +72,7 @@ class General(unittest.TestCase):
 
     def test_paquete_sin_https_o_con_hash_malo(self):
         def cambiar(c):
-            juego(c)["parche"]["paquetes"][0].update(url="http://example.org/p.zip", hash="sha1:123")
+            juego(c)["parche"]["paquetes"][0].update(url="http://example.org/p.zip", hash="sha1:12")
         self.assertEqual(2, len(revisar(ADMIN, cambiar)))
 
     def test_enlace_simbolico(self):
@@ -162,7 +162,8 @@ class Editor(unittest.TestCase):
             with self.subTest(clave):
                 motivos = revisar(EDITOR, lambda c: c.update({clave: valor}))
                 self.assertEqual(1, len(motivos), motivos)
-                self.assertIn("el Propietario" if clave == "etiquetas" else "solo la cambia un Administrador", motivos[0])
+                esperado = {"etiquetas": "el Propietario", "esquema": "solo entiende el 1"}  # esquema: lo para lector_app
+                self.assertIn(esperado.get(clave, "solo la cambia un Administrador"), motivos[0])
 
     def test_no_toca_el_robot_ni_otros_archivos(self):
         for ruta in ("README.md", "equipo.json", "catalogo/otro.json"):
@@ -200,7 +201,7 @@ class Colaborador(unittest.TestCase):
             "parche.paquetes": lambda c: juego(c)["parche"]["paquetes"][0].update(tamano=11),
             "edición nueva": lambda c: juego(c)["ediciones"].append({"id": "gog"}),
             "edición quitada": lambda c: juego(c)["ediciones"].clear(),
-            "huella": lambda c: juego(c)["ediciones"][0].update(huella=[{"ruta": "a"}]),
+            "huella": lambda c: juego(c)["ediciones"][0].update(huella=[{"ruta": "a", "tamano": 1, "hashParcial": HASH, "hash": HASH}]),
             "habilitado": lambda c: juego(c).update(habilitado=False),
             "crear o quitar": lambda c: juego(c).pop("parche"),
         }

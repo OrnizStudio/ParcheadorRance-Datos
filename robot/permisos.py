@@ -40,6 +40,9 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import lector_app  # noqa: E402  (el catálogo tal como lo lee el parcheador)
+
 RUTA_CATALOGO = "catalogo/catalogo.json"
 CARPETA_JUEGOS = "catalogo/juegos/"
 TAMANO_MAXIMO_CATALOGO = 8 * 1024 * 1024  # el mismo tope que aplica el parcheador al descargarlo
@@ -138,33 +141,27 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     return motivos
 
 
-def validar_catalogo(texto, cat_antes):
-    """Comprobaciones que valen para cualquier rol: que el catálogo se pueda leer y publicar."""
-    if texto is None:
+def validar_catalogo(datos, cat_antes):
+    """Comprobaciones que valen para cualquier rol: que el catálogo se pueda leer y publicar.
+
+    `datos` son los bytes del archivo (o su texto, en las pruebas). Lo que la app no puede leer no se acepta
+    nunca (ver `lector_app.py`): un catálogo ilegible o con un `versionCatalogo` absurdo congelaría el catálogo de
+    todos los parcheadores.
+    """
+    if datos is None:
         return None, ["No se puede borrar `catalogo/catalogo.json`: sin él el parcheador no tiene catálogo."]
-    if len(texto.encode("utf-8")) > TAMANO_MAXIMO_CATALOGO:
+    tamano = len(datos) if isinstance(datos, (bytes, bytearray)) else len(datos.encode("utf-8", "surrogatepass"))
+    if tamano > TAMANO_MAXIMO_CATALOGO:
         return None, ["`catalogo.json` pesa más de 8 MB y el parcheador no lo descargaría."]
     try:
-        cat = json.loads(texto)
-    except json.JSONDecodeError as e:
-        return None, [f"`catalogo.json` no es un JSON válido (línea {e.lineno}, columna {e.colno}): {e.msg}. "
-                      "Suele ser una coma o una comilla de más o de menos."]
-    if not isinstance(cat, dict):
-        return None, ["`catalogo.json` tiene que ser un objeto `{ … }`."]
-
-    errores = []
-    if not _es_entero(cat.get("esquema")) or cat["esquema"] < 1:
-        errores.append("Falta `esquema` (un número entero, hoy `1`).")
-    version = cat.get("versionCatalogo")
-    if not _es_entero(version):
-        errores.append("Falta `versionCatalogo` (un número entero).")
-    elif isinstance(cat_antes, dict) and _es_entero(cat_antes.get("versionCatalogo")) \
-            and version <= cat_antes["versionCatalogo"]:
-        errores.append(
-            f"`versionCatalogo` tiene que subir: ahora vale {cat_antes['versionCatalogo']} y la propuesta "
-            f"lo deja en {version}. Si no sube, los parcheadores de los usuarios no se enteran del cambio. "
-            f"Ponlo a {cat_antes['versionCatalogo'] + 1} (si otra propuesta se ha publicado antes que la "
-            "tuya, actualiza la tuya y vuelve a subirlo).")
+        cat = lector_app.leer(datos)
+    except lector_app.JsonIlegible as e:
+        return None, [f"`catalogo.json` {e}." + (" Suele ser una coma o una comilla de más o de menos." if e.sintaxis else "")]
+    errores = lector_app.errores_de_la_app(cat)
+    if errores:
+        return None, errores
+    version_antes = cat_antes.get("versionCatalogo") if isinstance(cat_antes, dict) else None
+    errores = lector_app.errores_de_version(cat["versionCatalogo"], version_antes)
 
     juegos = cat.get("juegos", [])
     if not isinstance(juegos, list) or not all(isinstance(j, dict) for j in juegos):
@@ -838,7 +835,7 @@ def _leer_json(texto):
         return None
     try:
         return json.loads(texto)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):  # JSONDecodeError, enteros de miles de cifras, anidación absurda
         return None
 
 
@@ -988,11 +985,14 @@ def leer_propuesta(numero: int, cabeza: str):
             tamano = int(git("cat-file", "-s", f"{arbol}:{ruta}").stdout.decode().strip())
         cambios.append(Cambio(ruta, estado[0], modo_nuevo, tamano))
 
-    def texto(revision):
+    def leer(revision):
         salida = git("show", f"{revision}:{RUTA_CATALOGO}", comprobar_salida=False)
-        return salida.stdout.decode("utf-8", errors="replace") if salida.returncode == 0 else None
+        return salida.stdout if salida.returncode == 0 else None
 
-    return cambios, texto("origin/main"), texto(arbol)
+    # `main` se lee con tolerancia (solo sirve para comparar); la propuesta, en bytes: `validar_catalogo` exige
+    # UTF-8 estricto, como el parcheador.
+    antes = leer("origin/main")
+    return cambios, (antes.decode("utf-8", errors="replace") if antes is not None else None), leer(arbol)
 
 
 def comentar(api, numero: int, texto: str, solo_si_existe=False) -> None:
