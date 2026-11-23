@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 28,
+  "versionCatalogo": 29,
   "launcher": {
     "ultimaVersion": "0.2.2",
     "versionMinima": "",
@@ -54,7 +54,8 @@
           { "edicion": "unica", "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/prueba-0.1.0/prueba-unica-0.1.0.zip", "tamano": 20931, "hash": "blake3:08ca910a35a60ef4d03a88794e0fdc3784ab4015a4942adbe09b6beac8c6bece" }
         ]
       },
-      "etiquetas": ["adultos"]
+      "etiquetas": ["adultos"],
+      "tituloOriginal": "TestGameTwo"
     }
   ],
   "etiquetas": [
