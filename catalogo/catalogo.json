@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 26,
+  "versionCatalogo": 27,
   "launcher": {
-    "ultimaVersion": "0.2.1",
+    "ultimaVersion": "0.2.2",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Versión en inglés: el idioma se elige en Ajustes (por defecto, el de Windows)", "Detección de la edición más tolerante: cada edición puede ignorar archivos que cambian en cada usuario (configuración, caché)", "Modo equipo: Métricas nueva, con cifras clave, evolución y descargas por versión", "Modo equipo: crear y borrar lo mismo antes de subirlo se anula, y varias ediciones seguidas se juntan en un solo cambio", "Cuadros de texto centrados y a la misma altura que los botones", "Arreglos: «Buscando…» que no terminaba, «Parcheada» antes de tener la copia de seguridad y textos largos que se salían"],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.2.1/ParcheadorOrnizen-0.2.1-win-x64.zip",
-    "tamano": 23563082,
-    "hash": "blake3:13feb8c8efbfc714e55b8b08c454c66cee5d333d2884f6de6c3162acb9c90190"
+    "novedades": ["Modo equipo nuevo, estilo panel de administración: tablas con buscador, pestañas y menú «⋯» por fila", "Menú separado: CANAL (lo de tu grupo) y PROGRAMA (solo el Propietario: versiones del parcheador y etiquetas globales)", "Historial, Miembros, Juegos y Versiones rediseñados; el perfil con tus pendientes, tus cambios y tus juegos", "Arreglos: avisos de la cola que llevaban a la sección equivocada y pequeños fallos al cambiar de idioma"],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.2.2/ParcheadorOrnizen-0.2.2-win-x64.zip",
+    "tamano": 23792324,
+    "hash": "blake3:3f97073cace0a845a37165dcb14b6303cd7588b09fd718f6b29ed34dcd2e7d0e"
   },
   "juegos": [
     {
