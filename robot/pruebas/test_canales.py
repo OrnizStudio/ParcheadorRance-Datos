@@ -467,7 +467,7 @@ class ListaNegraDelCanal(unittest.TestCase):
 
     def test_sus_archivos_cuentan_en_los_parches_del_catalogo(self):
         juego = {"id": "j", "ediciones": [{"id": "e", "huella": [], "huellasParcheadas": [
-            {"version": "1", "archivos": [{"ruta": "datos/firma.SIG"}]}]}]}
+            {"version": "1", "archivos": [{"ruta": "datos/firma.SIG", "tamano": 1, "hashParcial": "blake3:" + "a" * 64, "hash": "blake3:" + "a" * 64}]}]}]}
         despues = dict(CATALOGO, versionCatalogo=2, juegos=[juego])
 
         def leer(ruta, lado):
