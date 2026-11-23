@@ -116,7 +116,8 @@ Cómo funciona:
   modelo): UTF-8 estricto, sin caracteres partidos (un `\ud800` suelto), sin claves repetidas, cada campo con el
   tipo que espera la app y `esquema` 1. `versionCatalogo` sube como mucho 1000 de una vez y nunca pasa de
   1 073 741 823: un catálogo ilegible o un número que no cabe en el parcheador dejaría a todos sin catálogos nuevos.
-  Si `main` ya tuviera un número fuera de ese rango, cualquier propuesta puede devolverlo a uno normal.
+  Si `main` ya tuviera un número fuera de ese rango, o un `catalogo.json` que no se puede leer, solo el Propietario
+  toca el catálogo hasta arreglarlo, y la versión como mucho a 536 870 912 (el número de rescate).
 - Un borrador (*draft*) se comprueba pero no se publica hasta marcarlo como listo.
 - Los Colaboradores no pueden crear ramas aquí: proponen desde una copia propia del repositorio (*fork*).
   Los Editores sí pueden crear ramas (necesitan escritura para subir paquetes a las Releases).

@@ -21,6 +21,11 @@ INT64 = (-(2 ** 63), 2 ** 63 - 1)
 # 2 147 483 647); el tope deja mucho margen por debajo para que nunca se acerque. Una propuesta normal sube 1.
 SALTO_MAXIMO_VERSION = 1000
 VERSION_MAXIMA = 2 ** 30 - 1
+# Desde un `main` con una versión absurda solo la arregla quien manda en todo el repositorio, y como mucho hasta aquí
+# (es la versión de rescate del Modo equipo, `VersionesCatalogo.Rescate`): muy lejos del tope, para que el arreglo no
+# deje a nadie la puerta abierta para volver a congelarlo (cuarta revisión, 2.4).
+VERSION_RESCATE = 2 ** 29
+QUIEN_RESCATA = "el Dueño del programa"
 
 # El lector de la app (System.Text.Json) no pasa de 64 niveles de anidación.
 PROFUNDIDAD_MAXIMA = 64
@@ -342,12 +347,12 @@ def errores_de_la_app(cat) -> list:
     return errores[:20]
 
 
-def errores_de_version(version, version_antes) -> list:
+def errores_de_version(version, version_antes, puede_rescatar=False) -> list:
     """`versionCatalogo` tiene que subir, poco y sin acercarse al tope del `int` de la app.
 
     `version_antes` es la de `main` (None si no hay o no se puede leer). Si la de `main` ya es absurda (fuera de
-    1…VERSION_MAXIMA), cualquiera puede devolverla a un valor normal: es la forma de arreglarlo, y los parcheadores
-    nuevos aceptan bajar desde una versión absurda.
+    1…VERSION_MAXIMA), solo quien `puede_rescatar` la devuelve a un valor normal, como mucho VERSION_RESCATE: los
+    parcheadores nuevos aceptan bajar desde una versión absurda.
     """
     if not _es_entero(version):
         return ["Falta `versionCatalogo` (un número entero)."]
@@ -355,6 +360,12 @@ def errores_de_version(version, version_antes) -> list:
         return [f"`versionCatalogo` vale {version} y tiene que estar entre 1 y {VERSION_MAXIMA}: un número más alto "
                 "dejaría a los parcheadores sin poder recibir catálogos nuevos."]
     if not _es_entero(version_antes) or not 1 <= version_antes <= VERSION_MAXIMA:
+        if not puede_rescatar:
+            return [f"`versionCatalogo` de `main` no es un número normal ({_corta(version_antes)}). Arreglarlo lo hace "
+                    f"solo {QUIEN_RESCATA}: hasta entonces no se acepta ningún cambio del catálogo."]
+        if version > VERSION_RESCATE:
+            return [f"Para arreglar `versionCatalogo` ponlo como mucho a {VERSION_RESCATE} (es el número de rescate: "
+                    "queda por encima de cualquier versión normal anterior y lejos del tope)."]
         return []
     if version <= version_antes:
         return [f"`versionCatalogo` tiene que subir: ahora vale {version_antes} y la propuesta lo deja en {version}. "

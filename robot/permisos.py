@@ -180,8 +180,14 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     cat_antes = _leer_json(antes)
     cat_despues = None
     toca_catalogo = any(c.ruta == RUTA_CATALOGO for c in cambios)
+    manda = _manda_en_todo(permisos)
+    if toca_catalogo and not isinstance(cat_antes, dict) and not manda:
+        # Sin el catálogo de `main` no se puede comparar campo a campo qué cambia: hasta que lo arregle quien manda en
+        # todo, nadie más lo toca (cuarta revisión, 2.5).
+        return [f"El `{RUTA_CATALOGO}` de `main` no se puede leer, así que no se puede comprobar qué cambias. Hasta que "
+                f"lo arregle {lector_app.QUIEN_RESCATA}, solo él puede cambiar el catálogo."]
     if toca_catalogo:
-        cat_despues, errores = validar_catalogo(despues, cat_antes)
+        cat_despues, errores = validar_catalogo(despues, cat_antes, puede_rescatar=manda)
         motivos += errores
         if cat_despues is not None:
             # Para todos los roles, también Administradores y Propietario: no hay excepción posible.
@@ -238,7 +244,12 @@ def _prohibidos_del_canal(leer_archivo) -> list:
     return resultado
 
 
-def validar_catalogo(datos, cat_antes):
+def _manda_en_todo(permisos: Permisos) -> bool:
+    """Quien puede con todo el repositorio: el único que arregla un catálogo de `main` roto o con versión absurda."""
+    return permisos.es_dueno
+
+
+def validar_catalogo(datos, cat_antes, puede_rescatar=False):
     """Comprobaciones que valen para cualquier rol: que el catálogo se pueda leer y publicar.
 
     `datos` son los bytes del archivo (o su texto, en las pruebas). Lo que la app no puede leer no se acepta
@@ -258,7 +269,7 @@ def validar_catalogo(datos, cat_antes):
     if errores:
         return None, errores
     version_antes = cat_antes.get("versionCatalogo") if isinstance(cat_antes, dict) else None
-    errores = lector_app.errores_de_version(cat["versionCatalogo"], version_antes)
+    errores = lector_app.errores_de_version(cat["versionCatalogo"], version_antes, puede_rescatar)
 
     juegos = cat.get("juegos", [])
     if not isinstance(juegos, list) or not all(isinstance(j, dict) for j in juegos):

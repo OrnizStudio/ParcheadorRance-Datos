@@ -29,7 +29,7 @@ BASE = {
 }
 ADMIN = Permisos(Rol.ADMINISTRADOR)
 COLABORADOR = Permisos(Rol.COLABORADOR)
-PROPIETARIO = Permisos(Rol.PROPIETARIO)
+MANDA = Permisos(max(Rol))  # quien puede con todo el repositorio (en main, el Propietario; en canales, el Dueño)
 
 
 def con(cambiar, version=31):
@@ -39,8 +39,8 @@ def con(cambiar, version=31):
     return cat
 
 
-def motivos_de(datos, antes=None):
-    return validar_catalogo(datos, BASE if antes is None else antes)[1]
+def motivos_de(datos, antes=None, puede_rescatar=False):
+    return validar_catalogo(datos, BASE if antes is None else antes, puede_rescatar)[1]
 
 
 def juego(c):
@@ -72,18 +72,32 @@ class Version(unittest.TestCase):
             with self.subTest(v=v):
                 self.assertTrue(motivos_de(json.dumps(con(lambda c: None, v)), antes))
 
-    def test_desde_una_version_absurda_se_puede_volver_a_lo_normal(self):
-        # main ya envenenado (de antes de este arreglo): cualquiera puede devolverlo a un valor normal, incluso bajando.
+    def test_desde_una_version_absurda_solo_rescata_quien_manda_y_poco(self):
+        # main ya envenenado (de antes de este arreglo): solo quien manda en todo lo devuelve a un valor normal, incluso
+        # bajando, y como mucho al de rescate (cuarta revisión, 2.4): nadie aprovecha el arreglo para volver a congelarlo.
         for absurda in (2 ** 31 - 1, 2 ** 31, 10 ** 29, 0, "31", None):
             with self.subTest(absurda=absurda):
                 antes = con(lambda c: c.update(versionCatalogo=absurda))
-                self.assertEqual([], motivos_de(json.dumps(con(lambda c: None, 31)), antes))
-                self.assertEqual([], motivos_de(json.dumps(con(lambda c: None, 1)), antes))
+                for v in (1, 31, lector_app.VERSION_RESCATE):
+                    self.assertEqual([], motivos_de(json.dumps(con(lambda c: None, v)), antes, puede_rescatar=True))
+                    self.assertIn("Arreglarlo lo hace solo", motivos_de(json.dumps(con(lambda c: None, v)), antes)[0])
+                for v in (lector_app.VERSION_RESCATE + 1, lector_app.VERSION_MAXIMA):
+                    self.assertIn("como mucho a", motivos_de(json.dumps(con(lambda c: None, v)), antes, True)[0])
+
+    def test_main_ilegible_solo_lo_toca_quien_manda(self):
+        # Sin catálogo legible en main no se pueden comprobar los permisos campo a campo (cuarta revisión, 2.5).
+        for antes in ('{"esquema": 1, "versionCatalogo": ' + "9" * 5000 + "}", "\ufeff" + json.dumps(BASE),
+                      "no es JSON", "[1, 2]", None):
+            with self.subTest(antes=str(antes)[:20]):
+                for quien in (ADMIN, COLABORADOR):
+                    motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], antes, json.dumps(con(lambda c: None, 31)), quien)
+                    self.assertEqual(1, len(motivos), motivos)
+                    self.assertIn("no se puede leer", motivos[0])
 
     def test_main_ilegible_no_bloquea(self):
         # Un main con un número de 5000 cifras no tumba al robot: se lee como «no hay antes».
         antes = '{"esquema": 1, "versionCatalogo": ' + "9" * 5000 + "}"
-        motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], antes, json.dumps(con(lambda c: None, 31)), PROPIETARIO)
+        motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], antes, json.dumps(con(lambda c: None, 31)), MANDA)
         self.assertEqual([], motivos)
 
     def test_no_es_un_entero(self):
@@ -239,7 +253,7 @@ class EnLaPropuesta(unittest.TestCase):
 
     def test_tampoco_el_propietario(self):
         motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], json.dumps(BASE),
-                            json.dumps(con(lambda c: None, 2 ** 31 - 1)), PROPIETARIO)
+                            json.dumps(con(lambda c: None, 2 ** 31 - 1)), MANDA)
         self.assertTrue(motivos)
 
 
