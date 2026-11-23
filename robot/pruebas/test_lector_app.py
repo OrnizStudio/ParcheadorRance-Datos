@@ -29,7 +29,7 @@ BASE = {
 }
 ADMIN = Permisos(Rol.ADMINISTRADOR)
 COLABORADOR = Permisos(Rol.COLABORADOR)
-PROPIETARIO = Permisos(Rol.PROPIETARIO)
+MANDA = Permisos(max(Rol))  # quien puede con todo el repositorio (en main, el Propietario; en canales, el Dueño)
 
 
 def con(cambiar, version=31):
@@ -97,7 +97,7 @@ class Version(unittest.TestCase):
     def test_main_ilegible_no_bloquea(self):
         # Un main con un número de 5000 cifras no tumba al robot: se lee como «no hay antes».
         antes = '{"esquema": 1, "versionCatalogo": ' + "9" * 5000 + "}"
-        motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], antes, json.dumps(con(lambda c: None, 31)), PROPIETARIO)
+        motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], antes, json.dumps(con(lambda c: None, 31)), MANDA)
         self.assertEqual([], motivos)
 
     def test_no_es_un_entero(self):
@@ -253,7 +253,7 @@ class EnLaPropuesta(unittest.TestCase):
 
     def test_tampoco_el_propietario(self):
         motivos = comprobar([Cambio(RUTA_CATALOGO, "M")], json.dumps(BASE),
-                            json.dumps(con(lambda c: None, 2 ** 31 - 1)), PROPIETARIO)
+                            json.dumps(con(lambda c: None, 2 ** 31 - 1)), MANDA)
         self.assertTrue(motivos)
 
 
