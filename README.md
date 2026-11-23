@@ -83,11 +83,14 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 >   parcheador o como estaba, cambiando solo el valor (sin espacios ni escapes de más).
 > - Si la propuesta la tocan varias cuentas (quien la abre no es quien sube el último cambio), no se acepta nada en
 >   `canales/`. Cuenta el rol más bajo entre quien la abrió, quien subió el último cambio, quien relanza el robot,
->   el autor y el *committer* de cada commit y quien hizo cada subida a la propuesta (las ejecuciones del robot). Si
->   el robot se lanza por algo que no es una subida (editarla, reabrirla, marcarla como lista) y no vio subir el
->   último commit, no se acepta: hay que subir uno nuevo, o que el Dueño relance la comprobación. Un commit que no es
->   de ninguna cuenta de GitHub no se acepta, salvo que todo lo haya subido el Dueño. Solo se menciona (`@`) a quien
->   abrió la propuesta. Se comprueba el commit del evento: si la propuesta ya tiene otro, el robot para.
+>   el autor y el *committer* de cada commit y quien hizo cada subida a la propuesta. Las subidas las sigue el robot
+>   hacia atrás, de la cabeza a cuando se abrió la propuesta, con el nombre de sus propias ejecuciones (propuesta,
+>   acción y commit de antes). Si falta una (se subió con la propuesta cerrada, se borró su comprobación…), no se
+>   acepta, y subir otro commit encima no lo arregla: hay que abrir una propuesta nueva desde una rama con solo tus
+>   commits, o que el Dueño **relance** la comprobación (así responde de lo que hay; reabrirla o editarla no vale).
+>   Un commit que no es de ninguna cuenta de GitHub no se acepta, salvo que todo lo haya subido el Dueño. Solo se
+>   menciona (`@`) a quien abrió la propuesta. Se comprueba el commit del evento: si la propuesta ya tiene otro, el
+>   robot para.
 > - Una propuesta no puede obligar al robot a preguntar a GitHub sin fin: como mucho 20 filas de miembros o vetos con
 >   cuenta nueva y 90 consultas por ejecución (300 el Dueño): las 20 filas siempre caben. Sin rol solo se mira la fila propia.
 > - El comentario del robot no se puede manipular desde la propuesta: lo que viene de ella va en código, en una sola
