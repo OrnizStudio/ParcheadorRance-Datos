@@ -26,6 +26,7 @@ BASE = {
 }
 ADMIN, EDITOR, COLABORADOR, NADIE = (Permisos(r) for r in (Rol.ADMINISTRADOR, Rol.EDITOR, Rol.COLABORADOR, Rol.NINGUNO))
 PROPIETARIO = Permisos(Rol.PROPIETARIO)
+MANDA = PROPIETARIO  # quien puede con todo el repositorio (en la fase A, el Dueño del programa)
 
 
 def catalogo(cambiar=None, subir_version=True):
@@ -81,7 +82,9 @@ class General(unittest.TestCase):
         self.assertIn("enlaces simbólicos", motivos[0])
 
     def test_primer_catalogo_sin_uno_anterior(self):
-        self.assertEqual([], comprobar([Cambio(RUTA_CATALOGO, "A")], None, json.dumps(BASE), ADMIN))
+        # Crear el catálogo desde cero es cosa de quien manda en todo (no hay nada con qué comparar).
+        self.assertEqual([], comprobar([Cambio(RUTA_CATALOGO, "A")], None, json.dumps(BASE), MANDA))
+        self.assertIn("no se puede leer", comprobar([Cambio(RUTA_CATALOGO, "A")], None, json.dumps(BASE), ADMIN)[0])
 
 
 class Administrador(unittest.TestCase):
