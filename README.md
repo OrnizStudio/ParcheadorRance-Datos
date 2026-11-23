@@ -84,10 +84,12 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 > - Si la propuesta la tocan varias cuentas (quien la abre no es quien sube el último cambio), no se acepta nada en
 >   `canales/`. Cuenta el rol más bajo entre quien la abrió, quien subió el último cambio, quien relanza el robot,
 >   el autor y el *committer* de cada commit y quien hizo cada subida a la propuesta (las ejecuciones del robot). Si
->   un commit no es de ninguna cuenta de GitHub, no se acepta. Se comprueba el commit del evento: si la propuesta ya
->   tiene otro, el robot para.
+>   el robot se lanza por algo que no es una subida (editarla, reabrirla, marcarla como lista) y no vio subir el
+>   último commit, no se acepta: hay que subir uno nuevo, o que el Dueño relance la comprobación. Un commit que no es
+>   de ninguna cuenta de GitHub no se acepta, salvo que todo lo haya subido el Dueño. Solo se menciona (`@`) a quien
+>   abrió la propuesta. Se comprueba el commit del evento: si la propuesta ya tiene otro, el robot para.
 > - Una propuesta no puede obligar al robot a preguntar a GitHub sin fin: como mucho 20 filas de miembros o vetos con
->   cuenta nueva y 30 consultas por ejecución (300 el Dueño). Sin rol solo se mira la fila propia.
+>   cuenta nueva y 90 consultas por ejecución (300 el Dueño): las 20 filas siempre caben. Sin rol solo se mira la fila propia.
 > - El comentario del robot no se puede manipular desde la propuesta: lo que viene de ella va en código, en una sola
 >   línea, recortado y sin enlaces, HTML ni menciones.
 > - El nombre de un canal no usa letras «de estilo» (anchas, matemáticas, en círculo, versalitas). Lo que se parezca
@@ -116,7 +118,7 @@ Cómo funciona:
   modelo): UTF-8 estricto, sin caracteres partidos (un `\ud800` suelto), sin claves repetidas, cada campo con el
   tipo que espera la app y `esquema` 1. `versionCatalogo` sube como mucho 1000 de una vez y nunca pasa de
   1 073 741 823: un catálogo ilegible o un número que no cabe en el parcheador dejaría a todos sin catálogos nuevos.
-  Si `main` ya tuviera un número fuera de ese rango, o un `catalogo.json` que no se puede leer, solo el Propietario
+  Si `main` ya tuviera un número fuera de ese rango, o un `catalogo.json` que no se puede leer, solo el Dueño
   toca el catálogo hasta arreglarlo, y la versión como mucho a 536 870 912 (el número de rescate).
 - Un borrador (*draft*) se comprueba pero no se publica hasta marcarlo como listo.
 - Los Colaboradores no pueden crear ramas aquí: proponen desde una copia propia del repositorio (*fork*).

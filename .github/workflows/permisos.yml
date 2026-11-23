@@ -72,6 +72,8 @@ jobs:
           # de `sender` al relanzarla): también cuenta para el rol más bajo.
           PR_CABEZA: ${{ github.event.pull_request.head.sha }}
           PR_DISPARADOR: ${{ github.triggering_actor }}
+          # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
+          PR_ACCION: ${{ github.event.action }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py'
 
   fusionar:
@@ -122,4 +124,6 @@ jobs:
           # de `sender` al relanzarla): también cuenta para el rol más bajo.
           PR_CABEZA: ${{ github.event.pull_request.head.sha }}
           PR_DISPARADOR: ${{ github.triggering_actor }}
+          # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
+          PR_ACCION: ${{ github.event.action }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'

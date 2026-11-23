@@ -61,7 +61,7 @@ def permisos(cuenta_id):
     return Permisos(rol, por_canal={"ornizen": rol} if rol else {}, cuenta_id=cuenta_id)
 
 
-def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, extra=(), cuentas=None, estados=None, cuenta_de=None):
+def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, extra=(), cuentas=None, estados=None, cuenta_de=None, rol_externo=None):
     """`archivos` = {ruta: objeto o bytes o None (borrar)}; `antes` = lo que hay en `main` (por defecto, lo de siempre)."""
     main = {M: b(MIEMBROS), C: b(CANAL), L: b(LISTA)}
     if antes is not None:
@@ -79,7 +79,7 @@ def proponer(cuenta_id, archivos: dict, antes: dict | None = None, modos=None, e
         return (main if lado == "antes" else despues).get(ruta)
     nombres = CUENTAS if cuentas is None else cuentas
     return comprobar(cambios, json.dumps(CATALOGO), json.dumps(CATALOGO), permisos(cuenta_id), leer_archivo=leer,
-                     ids_duenos=frozenset({DUENO_ID}), cuenta_de=cuenta_de or nombres.get)
+                     ids_duenos=frozenset({DUENO_ID}), cuenta_de=cuenta_de or nombres.get, rol_externo=rol_externo)
 
 
 def miembros(cambiar):
@@ -950,18 +950,25 @@ def muchas(n, desde=1000, estado="invitado", rol="editor", por=ADMIN_ID):
     return poner
 
 
+CABEZA = "c" * 40
+REPO = "copia/ParcheadorRance-Datos"
+
+
 class FalsaApi:
-    """La API de GitHub para `cuentas_de_la_propuesta`: commits y ejecuciones del robot."""
+    """La API de GitHub para `cuentas_de_la_propuesta`: commits y ejecuciones del robot (de la más nueva a la más vieja)."""
 
     def __init__(self, commits, ejecuciones):
         self.commits, self.ejecuciones, self.llamadas = commits, ejecuciones, []
 
     def __call__(self, metodo, ruta, datos=None, tolerar=()):
         self.llamadas.append(ruta)
-        pagina = int(ruta.rsplit("page=", 1)[1])
+        pagina = int(ruta.rsplit("page=", 1)[1]) if "page=" in ruta else 1
         trozo = slice((pagina - 1) * 100, pagina * 100)
         if "/commits" in ruta:
             return self.commits[trozo]
+        if "head_sha=" in ruta:
+            sha = ruta.split("head_sha=", 1)[1].split("&", 1)[0]
+            return {"workflow_runs": [e for e in self.ejecuciones if e["head_sha"] == sha][:100]}
         return {"workflow_runs": self.ejecuciones[trozo]}
 
 
@@ -969,20 +976,30 @@ def usuario(cuenta_id):
     return {"login": CUENTAS.get(cuenta_id, f"cuenta{cuenta_id}"), "id": cuenta_id}
 
 
-def commit(autor, committer=robot.ID_WEB_FLOW, sha="abc1234def"):
-    return {"sha": sha, "author": None if autor is None else usuario(autor),
-            "committer": None if committer is None else (
+def commit(autor, committer=None, sha=CABEZA):
+    committer = robot.ID_WEB_FLOW if committer is None else committer
+    return {"sha": sha, "author": None if autor == "nadie" else usuario(autor),
+            "committer": None if committer == "nadie" else (
                 {"login": "web-flow", "id": robot.ID_WEB_FLOW} if committer == robot.ID_WEB_FLOW else usuario(committer)),
             "commit": {"author": {"email": "alguien@example.org"}, "committer": {"email": "noreply@github.com"}}}
 
 
-def ejecucion(actor, disparador=None, repo="copia/ParcheadorRance-Datos", creada="2026-11-23T10:00:00Z"):
-    return {"actor": usuario(actor), "triggering_actor": usuario(disparador or actor),
-            "head_repository": {"full_name": repo}, "created_at": creada}
+_IDS = iter(range(1000, 10 ** 9))
+
+
+def ejecucion(actor, disparador=None, repo=REPO, creada="2026-11-23T10:00:00Z", sha=CABEZA, id_=None,
+              ruta=".github/workflows/permisos.yml", evento="pull_request_target"):
+    return {"id": id_ or next(_IDS), "actor": usuario(actor), "triggering_actor": usuario(disparador or actor),
+            "head_repository": {"full_name": repo}, "created_at": creada, "head_sha": sha, "path": ruta, "event": evento}
 
 
 PROPUESTA = {"commits": 1, "created_at": "2026-11-23T09:00:00Z",
-             "head": {"ref": "equipo/colab/cambio", "repo": {"full_name": "copia/ParcheadorRance-Datos"}}}
+             "head": {"ref": "equipo/colab/cambio", "repo": {"full_name": REPO}}}
+
+
+def quienes(api, accion="synchronize", propuesta=PROPUESTA, actual=None, disparador=None, actuales=()):
+    return robot.cuentas_de_la_propuesta(api, 7, propuesta, CABEZA, accion, actual,
+                                         lambda i: i == DUENO_ID, disparador, actuales)
 
 
 class TerceraRevision(unittest.TestCase):
@@ -1036,57 +1053,127 @@ class TerceraRevision(unittest.TestCase):
         self.assertTrue(any("demasiadas cuentas" in m for m in motivos), motivos)
         self.assertEqual(canales.TOPE_CONSULTAS_DUENO, contador.veces)
 
-    # ── N3: cuentan todos los que han subido algo ──
+    # ── N3 (y cuarta revisión 2.1, 2.2, L8): cuentan todos los que han subido algo ──
     def test_n3_un_edited_no_blanquea_commits_ajenos(self):
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID), ejecucion(ADMIN_ID)])
-        cuentas = robot.unir_cuentas([("admin", ADMIN_ID)], robot.cuentas_de_la_propuesta(api, 7, PROPUESTA))
+        # El Colaborador sube (su ejecución) y el Administrador edita el título (la ejecución actual).
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, id_=2), ejecucion(COLAB_ID, id_=1)])
+        cuentas = robot.unir_cuentas([("admin", ADMIN_ID)], quienes(api, "edited", actual=2))
         self.assertIn(COLAB_ID, [i for _, i in cuentas])
-        rol = robot.combinar([permisos(i) for _, i in cuentas]).rol_global
-        self.assertEqual(Rol.COLABORADOR, rol)
+        self.assertEqual(Rol.COLABORADOR, robot.combinar([permisos(i) for _, i in cuentas]).rol_global)
 
     def test_n3_el_que_sube_cuenta_aunque_falsee_el_autor(self):
-        # El Colaborador sube un commit con el correo del Administrador: cuenta igual por la ejecución de su subida.
-        api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [ejecucion(COLAB_ID)])
-        ids = [i for _, i in robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)]
+        # El Colaborador sube un commit con el correo del Administrador: cuenta igual, por la ejecución de su subida.
+        api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [ejecucion(COLAB_ID, id_=1)])
+        ids = [i for _, i in quienes(api, actual=1, actuales=[("colab", COLAB_ID)])]
         self.assertIn(COLAB_ID, ids)
         self.assertIn(ADMIN_ID, ids)
 
+    def test_2_1_sin_ejecucion_de_la_subida_se_rechaza(self):
+        # Reabierta (o base cambiada, o ejecución borrada): el robot no vio subir la cabeza. Solo está la actual.
+        for accion in ("reopened", "edited", "ready_for_review"):
+            with self.subTest(accion=accion):
+                api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [ejecucion(ADMIN_ID, id_=5)])
+                with self.assertRaises(robot.SinSaberQuien) as error:
+                    quienes(api, accion, actual=5)
+                self.assertIn("Sube un commit nuevo", str(error.exception))
+        # Las ejecuciones con esa cabeza de otra copia o de otro flujo no valen.
+        for otra in (ejecucion(COLAB_ID, repo="otra/copia"), ejecucion(COLAB_ID, ruta=".github/workflows/otro.yml"),
+                     ejecucion(COLAB_ID, evento="pull_request")):
+            with self.subTest(otra=otra["path"] + otra["event"] + otra["head_repository"]["full_name"]):
+                with self.assertRaises(robot.SinSaberQuien):
+                    quienes(FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, id_=5), otra]), "reopened", actual=5)
+
+    def test_2_1_el_dueno_puede_relanzarla(self):
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID, DUENO_ID, id_=5)])
+        self.assertIn(COLAB_ID, [i for _, i in quienes(api, "reopened", actual=5, disparador=DUENO_ID)])
+        with self.assertRaises(robot.SinSaberQuien):
+            quienes(api, "reopened", actual=5, disparador=ADMIN_ID)
+
+    def test_2_1_con_la_subida_vista_vale(self):
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, id_=6), ejecucion(COLAB_ID, id_=5)])
+        self.assertIn(COLAB_ID, [i for _, i in quienes(api, "reopened", actual=6)])
+
+    def test_2_2_otras_copias_y_ramas_iguales_no_cuentan_ni_bloquean(self):
+        ajenas = [ejecucion(VETADO_ID, repo="otra/copia", sha=f"{i:040x}") for i in range(950)]
+        api = FalsaApi([commit(COLAB_ID)], ajenas + [ejecucion(COLAB_ID, id_=1)])
+        ids = [i for _, i in quienes(api, actual=1)]
+        self.assertNotIn(VETADO_ID, ids)
+        # Ni las de esta copia con commits que no son de la propuesta, ni las de antes de abrirla.
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(VETADO_ID, sha="d" * 40),
+                                            ejecucion(VETADO_ID, creada="2026-11-22T00:00:00Z"), ejecucion(COLAB_ID)])
+        self.assertNotIn(VETADO_ID, [i for _, i in quienes(api)])
+        # Se para al llegar a las de antes de abrir la propuesta: no pide más páginas.
+        viejas = [ejecucion(COLAB_ID, creada="2026-11-20T00:00:00Z") for _ in range(500)]
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)] + viejas)
+        quienes(api)
+        self.assertEqual(1, sum("branch=" in r for r in api.llamadas))
+
+    def test_2_2_tope_de_paginas(self):
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID, repo="otra/copia")] * 1001)
+        with self.assertRaises(robot.SinSaberQuien) as error:
+            quienes(api)
+        self.assertIn("otro nombre", str(error.exception))
+
     def test_n3_si_no_se_sabe_quien_se_rechaza(self):
         casos = {
-            "autor sin cuenta": FalsaApi([commit(None)], [ejecucion(COLAB_ID)]),
-            "committer sin cuenta": FalsaApi([commit(COLAB_ID, None)], [ejecucion(COLAB_ID)]),
-            "sin ejecuciones": FalsaApi([commit(COLAB_ID)], []),
-            "ejecuciones de otra copia": FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID, repo="otra/copia")]),
-            "ejecuciones de antes de la propuesta": FalsaApi([commit(COLAB_ID)],
-                                                             [ejecucion(COLAB_ID, creada="2026-11-22T00:00:00Z")]),
+            "autor sin cuenta": FalsaApi([commit("nadie")], [ejecucion(COLAB_ID)]),
+            "committer sin cuenta": FalsaApi([commit(COLAB_ID, "nadie")], [ejecucion(COLAB_ID)]),
             "ejecución sin actor": FalsaApi([commit(COLAB_ID)], [{**ejecucion(COLAB_ID), "actor": None}]),
         }
         for nombre, api in casos.items():
             with self.subTest(nombre), self.assertRaises(robot.SinSaberQuien):
-                robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)
+                quienes(api, actuales=[("colab", COLAB_ID)])
         with self.assertRaises(robot.SinSaberQuien):
-            robot.cuentas_de_la_propuesta(FalsaApi([], [ejecucion(COLAB_ID)]), 7, {**PROPUESTA, "head": {"ref": "x", "repo": None}})
+            quienes(FalsaApi([], [ejecucion(COLAB_ID)]), propuesta={**PROPUESTA, "head": {"ref": "x", "repo": None}})
+
+    def test_l8_correos_sin_cuenta_valen_si_todo_lo_subio_el_dueno(self):
+        # `publicar-version.ps1` desde otro equipo: el commit no es de ninguna cuenta, pero lo sube el Dueño.
+        api = FalsaApi([commit("nadie", "nadie")], [ejecucion(DUENO_ID, id_=1)])
+        self.assertEqual([("0rnizL", DUENO_ID)] * 3, quienes(api, actual=1, actuales=[("0rnizL", DUENO_ID)]))
+        # …pero no si alguien más ha subido algo a la propuesta.
+        api = FalsaApi([commit("nadie", "nadie"), commit(COLAB_ID, sha="e" * 40)],
+                       [ejecucion(DUENO_ID, id_=2), ejecucion(COLAB_ID, sha="e" * 40, id_=1)])
+        with self.assertRaises(robot.SinSaberQuien):
+            quienes(api, actual=2, actuales=[("0rnizL", DUENO_ID)])
+        # …ni si la última subida no la ha hecho el Dueño (aunque el resto, sí).
+        api = FalsaApi([commit("nadie", "nadie")], [ejecucion(COLAB_ID, id_=1)])
+        with self.assertRaises(robot.SinSaberQuien):
+            quienes(api, actual=1, actuales=[("colab", COLAB_ID)])
 
     def test_n3_topes(self):
         with self.assertRaises(robot.SinSaberQuien):
-            robot.cuentas_de_la_propuesta(FalsaApi([], [ejecucion(COLAB_ID)]), 7, {**PROPUESTA, "commits": 251})
+            quienes(FalsaApi([], [ejecucion(COLAB_ID)]), propuesta={**PROPUESTA, "commits": 251})
         # Aunque la propuesta diga que tiene pocos, se cuentan los que llegan (paginando).
-        api = FalsaApi([commit(COLAB_ID, sha=f"{i:07x}") for i in range(251)], [ejecucion(COLAB_ID)])
+        api = FalsaApi([commit(COLAB_ID, sha=f"{i:040x}") for i in range(251)], [ejecucion(COLAB_ID)])
         with self.assertRaises(robot.SinSaberQuien):
-            robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)
-        self.assertLessEqual(len(api.llamadas), 3)
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)] * 301)
-        with self.assertRaises(robot.SinSaberQuien):
-            robot.cuentas_de_la_propuesta(api, 7, PROPUESTA)
+            quienes(api)
+        self.assertLessEqual(sum("/commits" in r for r in api.llamadas), 3)
         with self.assertRaises(robot.SinSaberQuien):
             robot.unir_cuentas([(f"c{i}", i) for i in range(robot.TOPE_CUENTAS + 1)])
 
     def test_n3_web_flow_no_es_nadie_y_la_rama_va_escapada(self):
         api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)])
-        propuesta = {**PROPUESTA, "head": {"ref": "a&b=c#d", "repo": {"full_name": "copia/ParcheadorRance-Datos"}}}
-        cuentas = robot.cuentas_de_la_propuesta(api, 7, propuesta)
+        propuesta = {**PROPUESTA, "head": {"ref": "a&b=c#d", "repo": {"full_name": REPO}}}
+        cuentas = quienes(api, propuesta=propuesta)
         self.assertNotIn(robot.ID_WEB_FLOW, [i for _, i in cuentas])
-        self.assertIn("branch=a%26b%3Dc%23d&", api.llamadas[-1])
+        self.assertIn("branch=a%26b%3Dc%23d&", next(r for r in api.llamadas if "branch=" in r))
+
+    def test_2_3_solo_se_menciona_a_quien_abrio_la_propuesta(self):
+        texto = pathlib.Path(robot.__file__).read_text(encoding="utf-8")
+        self.assertIn('", ".join(_sin_enlaces(c) for c, _ in cuentas[1:])', texto)
+        self.assertNotIn('", ".join(f"@{c}"', texto)
+
+    def test_vetos_hasta_el_maximo_no_dan_demasiadas_consultas(self):
+        # 20 vetos con cuenta (el máximo anunciado) caben en el tope de consultas, también quitando vetos de otros.
+        lista = copy.deepcopy(LISTA)
+        lista["usuarios"] += [{"id": 5000 + i, "cuenta": f"cuenta{5000 + i}", "motivo": "x", "por": ADMIN_ID}
+                              for i in range(canales.TOPE_FILAS_CON_CUENTA - 1)]
+        consultas = []
+        motivos = proponer(ADMIN_ID, {L: lista}, cuenta_de=lambda i: consultas.append(i) or CUENTAS.get(i, f"cuenta{i}"),
+                           rol_externo=lambda canal, i: consultas.append(("rol", i)) or 0)
+        self.assertEqual([], motivos)
+        self.assertGreater(len(consultas), 30)  # con el tope de antes (30) salía «demasiadas cuentas»
+        self.assertGreaterEqual(canales.TOPE_CONSULTAS, 4 * canales.TOPE_FILAS_CON_CUENTA)
 
     # ── N4: el comentario no se puede manipular ──
     def test_n4_nada_de_la_propuesta_se_interpreta(self):

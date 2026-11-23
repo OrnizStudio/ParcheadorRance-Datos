@@ -45,7 +45,9 @@ TOPE_LOGO = 512 * 1024
 # Consultas a GitHub (el nombre de una cuenta por su id, su rol en el canal oficial) que una propuesta puede provocar.
 # Cada una gasta cuota del token del robot: sin tope, una propuesta con cientos de filas lo dejaría sin cuota y sin
 # poder comprobar ninguna otra (tercera revisión, N2). El Dueño tiene más margen (migraciones de una vez).
-TOPE_CONSULTAS = 30
+# Cada fila puede costar hasta 4 (el nombre y el rol de la cuenta, y los de quien puso el veto): el tope de consultas
+# cubre siempre el máximo de filas, para que nunca salga «demasiadas cuentas» por debajo de él.
+TOPE_CONSULTAS = 4 * 20 + 10
 TOPE_CONSULTAS_DUENO = 300
 # Filas de `miembros.json` o de la lista negra que una propuesta puede añadir o cambiar de cuenta de una vez (sin
 # contar al Dueño). Se mira antes de consultar nada.
