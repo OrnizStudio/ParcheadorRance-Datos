@@ -217,6 +217,25 @@ class Tipos(unittest.TestCase):
         del sin["esquema"]
         self.assertIn("obligatorio", motivos_de(json.dumps(sin))[0])
 
+    def test_texto_obligatorio_a_null(self):
+        # La app rechaza el catálogo entero con un `null` en un texto obligatorio (cuarta revisión, 2.6): el robot igual.
+        casos = {
+            "juegos › id": lambda c: juego(c).update(id=None),
+            "edición › id": lambda c: edicion(c).update(id=None),
+            "huella › ruta": lambda c: edicion(c)["huella"][0].update(ruta=None),
+            "opción › id": lambda c: juego(c)["opciones"][0].update(id=None),
+            "valor › id": lambda c: juego(c)["opciones"][0]["valores"][0].update(id=None),
+            "paquete › edicion": lambda c: juego(c)["parche"]["paquetes"][0].update(edicion=None),
+            "paquete › url": lambda c: juego(c)["parche"]["paquetes"][0].update(url=None),
+            "huella parcheada › version": lambda c: edicion(c).update(
+                huellasParcheadas=[{"version": None, "archivos": []}]),
+            "etiqueta › id": lambda c: c.update(etiquetas=[{"id": None}]),
+        }
+        for nombre, cambiar in casos.items():
+            with self.subTest(nombre):
+                self.assertRechaza(cambiar)
+        self.assertRechaza(lambda c: juego(c)["parche"]["paquetes"][0].update(edicion=None), "no puede ser `null`")
+
     def test_esquema(self):
         for v in (0, 2, -1):
             with self.subTest(v=v):

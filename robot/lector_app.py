@@ -255,6 +255,10 @@ def _tipo(valor, tipo, donde, errores):
                 if obligatorio:
                     errores.append(f"{donde} no tiene `{campo}`, que es obligatorio.")
                 continue
+            if obligatorio and valor[campo] is None:
+                # La app no admite `null` en un campo obligatorio (cuarta revisión, 2.6).
+                errores.append(f"{donde} › `{campo}` no puede ser `null`: es obligatorio.")
+                continue
             _tipo(valor[campo], subtipo, f"{donde} › `{campo}`", errores)
         return
     if tipo == "enum":
