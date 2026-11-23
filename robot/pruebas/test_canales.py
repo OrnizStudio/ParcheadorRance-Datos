@@ -1246,6 +1246,11 @@ class TerceraRevision(unittest.TestCase):
         # …ni si la última subida no la ha hecho el Dueño (aunque el resto, sí).
         with self.assertRaises(robot.SinSaberQuien):
             quienes(FalsaApi([commit("nadie", "nadie")], [abierta(DUENO_ID)]), actuales=[("colab", COLAB_ID)])
+        # …ni si la propuesta la abrió otro, aunque el Dueño la relance (L8-g).
+        relanzada = ejecucion(ADMIN_ID, "opened", id_=5, intento=2, disparador=DUENO_ID)
+        with self.assertRaises(robot.SinSaberQuien):
+            quienes(FalsaApi([commit("nadie", "nadie")], [], actual=relanzada), "opened", actual=5, intento="2",
+                    actuales=[("admin", ADMIN_ID), ("0rnizL", DUENO_ID)])
         # …ni si el Dueño reabre o edita su propuesta con un commit sin cuenta que el robot no vio subir (L8-e).
         with self.assertRaises(robot.SinSaberQuien):
             quienes(FalsaApi([commit(DUENO_ID), commit("nadie", "nadie")], [abierta(DUENO_ID, sha=OCULTO)]),

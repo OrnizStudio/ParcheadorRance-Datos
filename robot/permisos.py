@@ -1511,6 +1511,8 @@ def cuentas_de_la_propuesta(api, numero: int, propuesta: dict, cabeza: str, acci
       eslabón falta (se subió con la propuesta cerrada, se borró la ejecución, es de antes del `run-name`…), nadie
       sabe quién subió ese commit y se rechaza: subir otro encima no lo arregla. Solo vale que el Dueño **relance**
       esta ejecución (un relanzamiento de verdad, comprobado en la API): responde de lo que hay en la propuesta.
+    - **quien abrió la propuesta y quien lanza esta ejecución** (`actores_actuales`): cuentan como subidores en
+      `opened` y `synchronize` y al relanzar, también para L8.
     - **autor y committer de cada commit** (sin la firma de GitHub, `web-flow`). Se pueden falsear, pero falsearlos
       solo añade cuentas, y eso solo puede bajar el rol. Un commit cuyo correo no es de ninguna cuenta se rechaza,
       salvo que todo lo haya subido el Dueño (L8: `publicar-version.ps1` desde otro equipo o con otro correo).
@@ -1631,7 +1633,7 @@ def main() -> int:
     try:
         cuentas = unir_cuentas(cuentas, cuentas_de_la_propuesta(
             api, numero, propuesta, cabeza, (os.environ.get("PR_ACCION") or "").strip(), os.environ.get("GITHUB_RUN_ID"),
-            lambda cuenta_id: cuenta_id in ids_duenos, cuentas[1:], (os.environ.get("PR_ANTES") or "").strip(),
+            lambda cuenta_id: cuenta_id in ids_duenos, cuentas, (os.environ.get("PR_ANTES") or "").strip(),
             os.environ.get("GITHUB_RUN_ATTEMPT"), desde_cuando_hay_nombres(base)))
     except SinSaberQuien as e:
         return rechazar(f"No se puede saber quién ha subido los cambios de esta propuesta: {e}")
