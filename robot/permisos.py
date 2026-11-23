@@ -31,6 +31,7 @@ Solo usa la biblioteca estándar de Python. Nunca ejecuta nada de la propuesta: 
 from __future__ import annotations
 
 import copy
+import datetime
 import enum
 import fnmatch
 import html
@@ -1372,11 +1373,17 @@ def cuentas_de_la_ejecucion(entorno, autor: str, autor_id: int, id_de_cuenta) ->
 # La cuenta con la que GitHub firma los commits hechos en la web o por su API: no es una persona, no cuenta.
 ID_WEB_FLOW = 19864447
 TOPE_COMMITS = 250       # lo más que devuelve GitHub de los commits de una propuesta
-TOPE_PAGINAS_EJECUCIONES = 10  # de 100 en 100: las ejecuciones del robot desde que se abrió la propuesta
+TOPE_SUBIDAS = 100       # subidas a la propuesta que el robot sigue hacia atrás, de la cabeza a cuando se abrió
+TOPE_PAGINAS_POR_COMMIT = 2  # de 100 en 100: las ejecuciones del robot con un mismo commit
 TOPE_CUENTAS = 10        # cuentas distintas que han intervenido
 FLUJO_DEL_ROBOT = ".github/workflows/permisos.yml"
 # Los eventos en los que quien lanza la ejecución es quien ha subido la cabeza de la propuesta.
 ACCIONES_DE_SUBIDA = ("opened", "synchronize")
+# El nombre de cada ejecución del robot (`run-name` en permisos.yml): número de la propuesta, acción del evento y
+# commit sobre el que se subió la cabeza (`before`, solo en `synchronize`). Lo escribe GitHub con los datos del evento
+# y el flujo de `main`: nadie puede ponérselo a mano a la ejecución de otro.
+NOMBRE_DE_EJECUCION = re.compile(r"Robot de permisos · #([0-9]+) · ([a-z_]+) · antes (ninguno|[0-9a-f]{40})")
+SHA_COMPLETO = re.compile(r"[0-9a-f]{40}")
 
 
 class SinSaberQuien(Exception):
@@ -1415,19 +1422,95 @@ def _actores(ejecucion: dict) -> list:
     return cuentas
 
 
+def desde_cuando_hay_nombres(base: str) -> str:
+    """Cuándo llegó a `main` el `run-name` del robot (UTC, como `created_at`). Las ejecuciones de antes llevan como
+    nombre el título de la propuesta, que se puede escribir a mano: no valen como prueba de una subida. Se mira la
+    fusión en `main` (primer padre), no el commit de la rama, que es más antiguo. Sin `run-name`, ninguna vale."""
+    salida = git("log", "-1", "--no-patch", "--first-parent", "--diff-merges=first-parent", "-S", "run-name:", "--format=%ct", base,
+                 "--", FLUJO_DEL_ROBOT).stdout.decode().strip()
+    if not salida.isdigit():
+        return "9999-12-31T23:59:59Z"
+    return datetime.datetime.fromtimestamp(int(salida), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _subidas_con(api, sha: str, numero: int, repo: str, desde: str, guardadas: dict) -> list:
+    """[(acción, antes, ejecución)]: las ejecuciones del robot de esta propuesta que vieron subir `sha` (`opened` o
+    `synchronize`, por su nombre). Pagina; si hay más de las que caben, para (cuarta revisión… quinta, punto 4)."""
+    if sha not in guardadas:
+        subidas, filtro = [], urllib.parse.quote(">=" + desde, safe="")
+        for pagina in range(1, TOPE_PAGINAS_POR_COMMIT + 2):
+            trozo = (api("GET", f"/actions/workflows/{FLUJO_DEL_ROBOT.rsplit('/', 1)[1]}/runs?event=pull_request_target"
+                                f"&head_sha={sha}&created={filtro}&per_page=100&page={pagina}") or {}).get("workflow_runs") or []
+            if pagina > TOPE_PAGINAS_POR_COMMIT:
+                if trozo:
+                    raise SinSaberQuien(f"hay más de {TOPE_PAGINAS_POR_COMMIT * 100} comprobaciones del robot con el commit "
+                                        f"{sha[:7]}: cierra esta propuesta y abre una nueva desde una rama con solo tus commits.")
+                break
+            for ejecucion in trozo:
+                nombre = NOMBRE_DE_EJECUCION.fullmatch(str(ejecucion.get("display_title") or ""))
+                if nombre and int(nombre[1]) == numero and nombre[2] in ACCIONES_DE_SUBIDA \
+                        and ejecucion.get("head_sha") == sha and str(ejecucion.get("created_at") or "") >= desde \
+                        and _del_robot_y_de_esta_copia(ejecucion, repo):
+                    subidas.append((nombre[2], nombre[3], ejecucion))
+            if len(trozo) < 100:
+                break
+        guardadas[sha] = subidas
+    return guardadas[sha]
+
+
+def _cadena_de_subidas(api, sha: str, numero: int, repo: str, desde: str):
+    """Sigue las subidas hacia atrás desde `sha` hasta la que abrió la propuesta: cada `synchronize` dice quién subió
+    qué commit y sobre cuál. Devuelve (actores de todas las subidas vistas, None) si llega a `opened`, o
+    (actores, commit que nadie vio subir) si la cadena se rompe."""
+    pendientes, vistos, actores, guardadas, roto, abierta = [sha], set(), [], {}, None, False
+    while pendientes:
+        actual = pendientes.pop()
+        if actual in vistos:
+            continue
+        vistos.add(actual)
+        if len(vistos) > TOPE_SUBIDAS:
+            raise SinSaberQuien(f"la propuesta tiene más de {TOPE_SUBIDAS} subidas: cierra esta y abre una nueva con los "
+                                "cambios juntos.")
+        subidas = _subidas_con(api, actual, numero, repo, desde, guardadas)
+        if not subidas and roto is None:
+            roto = actual
+        for accion, antes, ejecucion in subidas:
+            actores += _actores(ejecucion)
+            if accion == "opened":
+                abierta = True
+            elif antes != "ninguno":
+                pendientes.append(antes)
+    return actores, (None if abierta else roto or sha)
+
+
+def _relanzada_por_el_dueno(api, ejecucion_actual, intento, numero: int, cabeza: str, repo: str, es_dueno) -> bool:
+    """Si esta ejecución es un relanzamiento de verdad (intento 2 o más) hecho por el Dueño, sobre la misma cabeza:
+    relanzarla es responder de lo que hay en la propuesta (quinta revisión, punto 1). Se comprueba en la API, no solo
+    en el entorno."""
+    if not (str(intento or "").isdigit() and int(intento) > 1 and str(ejecucion_actual or "").isdigit()):
+        return False
+    ejecucion = api("GET", f"/actions/runs/{int(ejecucion_actual)}") or {}
+    nombre = NOMBRE_DE_EJECUCION.fullmatch(str(ejecucion.get("display_title") or ""))
+    disparador = _cuenta(ejecucion.get("triggering_actor"))
+    return isinstance(ejecucion.get("run_attempt"), int) and ejecucion["run_attempt"] > 1 \
+        and ejecucion.get("head_sha") == cabeza and _del_robot_y_de_esta_copia(ejecucion, repo) \
+        and nombre is not None and int(nombre[1]) == numero \
+        and disparador is not None and es_dueno(disparador[1])
+
+
 def cuentas_de_la_propuesta(api, numero: int, propuesta: dict, cabeza: str, accion: str, ejecucion_actual,
-                            es_dueno, disparador_id=None, actores_actuales=()) -> list:
-    """[(cuenta, id)] de todos los que han subido algo a la propuesta (tercera revisión N3, cuarta 2.1, 2.2 y L8).
+                            es_dueno, actores_actuales=(), antes=None, intento=None, desde="") -> list:
+    """[(cuenta, id)] de todos los que han subido algo a la propuesta (tercera revisión N3, cuarta 2.1, 2.2 y L8,
+    quinta 1–4).
 
     El `sender` de `edited`, `reopened` o `ready_for_review` es quien pulsa, no quien subió los commits. Cuentan:
-    - **quien subió la cabeza.** En `opened` y `synchronize` es quien lanza esta ejecución (ya cuenta). En cualquier
-      otro evento tiene que haber una ejecución anterior del robot con esa misma cabeza (`head_sha`): sus actores
-      cuentan. Si no la hay (la propuesta se reabrió tras subir algo estando cerrada, se cambió la base, se borró la
-      ejecución…), no se sabe quién subió la cabeza y se rechaza: hay que subir un commit nuevo, o que el Dueño
-      relance esta ejecución (relanzarla es dar la cara por ella).
-    - **quien subió cada commit anterior**: los actores de las ejecuciones del robot desde que se abrió la propuesta,
-      de esta misma copia y con la cabeza en uno de sus commits (se filtra antes de contar: las de otras copias o
-      ramas con el mismo nombre no cuentan ni bloquean).
+    - **quien subió cada commit**, siguiendo la cadena de subidas hacia atrás: la cabeza la subió quien lanza un
+      `opened` o `synchronize` (esta ejecución) o, en cualquier otro evento, quien lanzó la ejecución que vio subirla.
+      Cada `synchronize` dice sobre qué commit se subió (`before`), y así hasta la que abrió la propuesta. Las
+      ejecuciones se reconocen por su nombre (`run-name`: propuesta, acción y `before`), que pone GitHub. Si un
+      eslabón falta (se subió con la propuesta cerrada, se borró la ejecución, es de antes del `run-name`…), nadie
+      sabe quién subió ese commit y se rechaza: subir otro encima no lo arregla. Solo vale que el Dueño **relance**
+      esta ejecución (un relanzamiento de verdad, comprobado en la API): responde de lo que hay en la propuesta.
     - **autor y committer de cada commit** (sin la firma de GitHub, `web-flow`). Se pueden falsear, pero falsearlos
       solo añade cuentas, y eso solo puede bajar el rol. Un commit cuyo correo no es de ninguna cuenta se rechaza,
       salvo que todo lo haya subido el Dueño (L8: `publicar-version.ps1` desde otro equipo o con otro correo).
@@ -1437,10 +1520,9 @@ def cuentas_de_la_propuesta(api, numero: int, propuesta: dict, cabeza: str, acci
     if not repo or not rama:
         raise SinSaberQuien("no se sabe de qué copia viene la propuesta (¿se ha borrado?).")
 
-    cuentas, sin_cuenta, shas = [], [], set()
+    cuentas, sin_cuenta = [], []
     for commit in _commits(api, numero, propuesta):
         sha = str(commit.get("sha") or "")
-        shas.add(sha)
         for papel in ("author", "committer"):
             usuario = commit.get(papel)
             if isinstance(usuario, dict) and usuario.get("id") == ID_WEB_FLOW:
@@ -1453,37 +1535,25 @@ def cuentas_de_la_propuesta(api, numero: int, propuesta: dict, cabeza: str, acci
             else:
                 cuentas.append(cuenta)
 
-    # Quien subió la cabeza.
-    actual = str(ejecucion_actual or "")
-    con_esta_cabeza = [e for e in (api("GET", f"/actions/runs?head_sha={cabeza}&per_page=100") or {}).get(
-        "workflow_runs") or [] if _del_robot_y_de_esta_copia(e, repo) and str(e.get("id")) != actual]
-    subidores = []
-    if accion not in ACCIONES_DE_SUBIDA:
-        if not con_esta_cabeza and not (disparador_id is not None and es_dueno(disparador_id)):
+    # Quien subió cada commit: la cadena de subidas, desde la cabeza (o desde el `before` de esta subida).
+    desde = max(str(propuesta.get("created_at") or ""), desde or "")
+    if accion == "opened":
+        subidores, roto = list(actores_actuales), None
+    elif accion == "synchronize":
+        if not SHA_COMPLETO.fullmatch(antes or ""):
+            raise SinSaberQuien("no se sabe sobre qué commit se ha subido la cabeza (falta `PR_ANTES`): revisa el flujo.")
+        subidores, roto = _cadena_de_subidas(api, antes, numero, repo, desde)
+        subidores += list(actores_actuales)
+    else:
+        subidores, roto = _cadena_de_subidas(api, cabeza, numero, repo, desde)
+    if roto is not None:
+        if not _relanzada_por_el_dueno(api, ejecucion_actual, intento, numero, cabeza, repo, es_dueno):
             raise SinSaberQuien(
-                f"esta comprobación la ha lanzado un «{accion}», y el robot no ha visto subir el commit "
-                f"{cabeza[:7]} (no hay ninguna comprobación anterior suya). Sube un commit nuevo a la propuesta o "
-                "pide al Dueño del programa que relance esta comprobación.")
-        for ejecucion in con_esta_cabeza:
-            subidores += _actores(ejecucion)
-
-    # Quien subió los commits anteriores: las ejecuciones desde que se abrió la propuesta (de la más nueva a la más
-    # vieja; se para al llegar a antes de abrirla).
-    creada = str(propuesta.get("created_at") or "")
-    for pagina in range(1, TOPE_PAGINAS_EJECUCIONES + 2):
-        if pagina > TOPE_PAGINAS_EJECUCIONES:
-            raise SinSaberQuien(f"hay más de {TOPE_PAGINAS_EJECUCIONES * 100} comprobaciones del robot en ramas llamadas "
-                                f"`{rama}` desde que se abrió la propuesta: ábrela de nuevo desde una rama con otro nombre.")
-        trozo = (api("GET", "/actions/runs?event=pull_request_target&branch=" + urllib.parse.quote(rama, safe="")
-                     + f"&per_page=100&page={pagina}") or {}).get("workflow_runs") or []
-        for ejecucion in trozo:
-            if str(ejecucion.get("created_at") or "") >= creada and ejecucion.get("head_sha") in shas \
-                    and _del_robot_y_de_esta_copia(ejecucion, repo):
-                subidores += _actores(ejecucion)
-        if len(trozo) < 100 or any(str(e.get("created_at") or "") < creada for e in trozo):
-            break
-
-    if accion in ACCIONES_DE_SUBIDA:
+                f"el robot no ha visto subir el commit {roto[:7]} a esta propuesta (se subió con ella cerrada, se borró "
+                "su comprobación o es de antes de que el robot las nombrara), así que no sabe quién lo subió, y subir "
+                "otro encima no lo arregla. Cierra esta propuesta y abre una nueva desde una rama con solo tus commits, "
+                "o pide al Dueño del programa que relance esta comprobación (relanzarla es responder de lo que hay en "
+                "ella).")
         subidores += list(actores_actuales)
     # L8: un correo sin cuenta no dice quién es, pero da igual si todo lo que hay en la propuesta lo ha subido el Dueño
     # (comprobado por las ejecuciones, que no se falsean): él responde de lo que sube.
@@ -1558,12 +1628,11 @@ def main() -> int:
         raise RuntimeError(f"No se puede leer `{RUTA_PROPIETARIO}` de `main`: {error}")
 
     # Todos los que han subido algo a la propuesta (ver `cuentas_de_la_propuesta`).
-    disparador_id = next((i for c, i in cuentas if c.lower() == (os.environ.get("PR_DISPARADOR") or "").strip().lower()),
-                         None)
     try:
         cuentas = unir_cuentas(cuentas, cuentas_de_la_propuesta(
             api, numero, propuesta, cabeza, (os.environ.get("PR_ACCION") or "").strip(), os.environ.get("GITHUB_RUN_ID"),
-            lambda cuenta_id: cuenta_id in ids_duenos, disparador_id, cuentas[1:]))
+            lambda cuenta_id: cuenta_id in ids_duenos, cuentas[1:], (os.environ.get("PR_ANTES") or "").strip(),
+            os.environ.get("GITHUB_RUN_ATTEMPT"), desde_cuando_hay_nombres(base)))
     except SinSaberQuien as e:
         return rechazar(f"No se puede saber quién ha subido los cambios de esta propuesta: {e}")
     # Si los miembros de `main` no se pueden leer, nadie tiene rol salvo el Dueño, que es quien lo arregla (si

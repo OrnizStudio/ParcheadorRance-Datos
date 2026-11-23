@@ -15,6 +15,9 @@
 #   sí vale: pone en sys.path solo `robot/`, que es del Propietario. Además, fuera de `catalogo/` todo es del
 #   Propietario (permisos.py, CARPETA_CATALOGO), así que nadie más puede dejar código en la raíz.
 name: Robot de permisos
+# El nombre de cada ejecución: propuesta, acción y commit sobre el que se subió la cabeza. El robot lo lee para seguir
+# quién subió cada commit (permisos.py, cuentas_de_la_propuesta): no cambiarlo sin cambiar NOMBRE_DE_EJECUCION.
+run-name: "Robot de permisos · #${{ github.event.pull_request.number }} · ${{ github.event.action }} · antes ${{ github.event.before || 'ninguno' }}"
 
 on:
   pull_request_target:
@@ -74,6 +77,8 @@ jobs:
           PR_DISPARADOR: ${{ github.triggering_actor }}
           # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
           PR_ACCION: ${{ github.event.action }}
+          # synchronize: el commit sobre el que se ha subido la cabeza (el robot tiene que haberlo visto subir).
+          PR_ANTES: ${{ github.event.before }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py'
 
   fusionar:
@@ -126,4 +131,6 @@ jobs:
           PR_DISPARADOR: ${{ github.triggering_actor }}
           # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
           PR_ACCION: ${{ github.event.action }}
+          # synchronize: el commit sobre el que se ha subido la cabeza (el robot tiene que haberlo visto subir).
+          PR_ANTES: ${{ github.event.before }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'

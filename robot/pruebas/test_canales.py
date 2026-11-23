@@ -6,9 +6,11 @@ import copy
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from unittest import mock
 
 RAIZ = pathlib.Path(__file__).resolve().parents[2]
@@ -955,10 +957,11 @@ REPO = "copia/ParcheadorRance-Datos"
 
 
 class FalsaApi:
-    """La API de GitHub para `cuentas_de_la_propuesta`: commits y ejecuciones del robot (de la más nueva a la más vieja)."""
+    """La API de GitHub para `cuentas_de_la_propuesta`: commits y ejecuciones del robot (de la más nueva a la más vieja)
+    y, si se relanza, la ejecución actual."""
 
-    def __init__(self, commits, ejecuciones):
-        self.commits, self.ejecuciones, self.llamadas = commits, ejecuciones, []
+    def __init__(self, commits, ejecuciones, actual=None):
+        self.commits, self.ejecuciones, self.actual, self.llamadas = commits, ejecuciones, actual, []
 
     def __call__(self, metodo, ruta, datos=None, tolerar=()):
         self.llamadas.append(ruta)
@@ -966,10 +969,15 @@ class FalsaApi:
         trozo = slice((pagina - 1) * 100, pagina * 100)
         if "/commits" in ruta:
             return self.commits[trozo]
-        if "head_sha=" in ruta:
+        if ruta.startswith("/actions/runs/"):
+            return self.actual if self.actual and str(self.actual["id"]) == ruta.rsplit("/", 1)[1] else None
+        if ruta.startswith("/actions/workflows/permisos.yml/runs?") and "head_sha=" in ruta:
             sha = ruta.split("head_sha=", 1)[1].split("&", 1)[0]
-            return {"workflow_runs": [e for e in self.ejecuciones if e["head_sha"] == sha][:100]}
-        return {"workflow_runs": self.ejecuciones[trozo]}
+            desde = urllib.parse.unquote(ruta.split("created=", 1)[1].split("&", 1)[0])
+            assert desde.startswith(">="), ruta
+            return {"workflow_runs": [e for e in self.ejecuciones
+                                      if e["head_sha"] == sha and e["created_at"] >= desde[2:]][trozo]}
+        raise AssertionError(ruta)
 
 
 def usuario(cuenta_id):
@@ -985,21 +993,36 @@ def commit(autor, committer=None, sha=CABEZA):
 
 
 _IDS = iter(range(1000, 10 ** 9))
+ABIERTA = "a" * 40   # la cabeza con la que se abrió la propuesta
+OCULTO = "b" * 40    # un commit que el robot no vio subir
 
 
-def ejecucion(actor, disparador=None, repo=REPO, creada="2026-11-23T10:00:00Z", sha=CABEZA, id_=None,
-              ruta=".github/workflows/permisos.yml", evento="pull_request_target"):
+def ejecucion(actor, accion="synchronize", antes=ABIERTA, sha=CABEZA, disparador=None, numero=7, repo=REPO,
+              creada="2026-11-23T10:00:00Z", id_=None, ruta=".github/workflows/permisos.yml", evento="pull_request_target",
+              titulo=None, intento=1):
+    """Una ejecución del robot como la devuelve GitHub, con el nombre de `run-name` (o `titulo`, como las de antes)."""
+    nombre = f"Robot de permisos · #{numero} · {accion} · antes {antes if accion == 'synchronize' else 'ninguno'}"
     return {"id": id_ or next(_IDS), "actor": usuario(actor), "triggering_actor": usuario(disparador or actor),
-            "head_repository": {"full_name": repo}, "created_at": creada, "head_sha": sha, "path": ruta, "event": evento}
+            "head_repository": {"full_name": repo}, "created_at": creada, "head_sha": sha, "path": ruta, "event": evento,
+            "display_title": nombre if titulo is None else titulo, "run_attempt": intento}
+
+
+def abierta(actor=ADMIN_ID, sha=ABIERTA):
+    return ejecucion(actor, "opened", sha=sha)
 
 
 PROPUESTA = {"commits": 1, "created_at": "2026-11-23T09:00:00Z",
              "head": {"ref": "equipo/colab/cambio", "repo": {"full_name": REPO}}}
 
 
-def quienes(api, accion="synchronize", propuesta=PROPUESTA, actual=None, disparador=None, actuales=()):
-    return robot.cuentas_de_la_propuesta(api, 7, propuesta, CABEZA, accion, actual,
-                                         lambda i: i == DUENO_ID, disparador, actuales)
+def quienes(api, accion="synchronize", antes=ABIERTA, propuesta=PROPUESTA, actual=None, intento=None, actuales=(),
+            desde=""):
+    return robot.cuentas_de_la_propuesta(api, 7, propuesta, CABEZA, accion, actual, lambda i: i == DUENO_ID, actuales,
+                                         antes, intento, desde)
+
+
+def ids(cuentas):
+    return [i for _, i in cuentas]
 
 
 class TerceraRevision(unittest.TestCase):
@@ -1053,110 +1076,234 @@ class TerceraRevision(unittest.TestCase):
         self.assertTrue(any("demasiadas cuentas" in m for m in motivos), motivos)
         self.assertEqual(canales.TOPE_CONSULTAS_DUENO, contador.veces)
 
-    # ── N3 (y cuarta revisión 2.1, 2.2, L8): cuentan todos los que han subido algo ──
+    # ── N3 (cuarta revisión 2.1, 2.2, L8; quinta 1–4): cuentan todos los que han subido algo ──
     def test_n3_un_edited_no_blanquea_commits_ajenos(self):
-        # El Colaborador sube (su ejecución) y el Administrador edita el título (la ejecución actual).
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, id_=2), ejecucion(COLAB_ID, id_=1)])
+        # El Administrador abre, el Colaborador sube (su ejecución) y el Administrador edita el título (la actual).
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, "edited", id_=2), ejecucion(COLAB_ID), abierta()])
         cuentas = robot.unir_cuentas([("admin", ADMIN_ID)], quienes(api, "edited", actual=2))
-        self.assertIn(COLAB_ID, [i for _, i in cuentas])
+        self.assertIn(COLAB_ID, ids(cuentas))
         self.assertEqual(Rol.COLABORADOR, robot.combinar([permisos(i) for _, i in cuentas]).rol_global)
 
     def test_n3_el_que_sube_cuenta_aunque_falsee_el_autor(self):
         # El Colaborador sube un commit con el correo del Administrador: cuenta igual, por la ejecución de su subida.
-        api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [ejecucion(COLAB_ID, id_=1)])
-        ids = [i for _, i in quienes(api, actual=1, actuales=[("colab", COLAB_ID)])]
-        self.assertIn(COLAB_ID, ids)
-        self.assertIn(ADMIN_ID, ids)
+        api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [abierta()])
+        cuentas = ids(quienes(api, actuales=[("colab", COLAB_ID)]))
+        self.assertIn(COLAB_ID, cuentas)
+        self.assertIn(ADMIN_ID, cuentas)
 
-    def test_2_1_sin_ejecucion_de_la_subida_se_rechaza(self):
-        # Reabierta (o base cambiada, o ejecución borrada): el robot no vio subir la cabeza. Solo está la actual.
-        for accion in ("reopened", "edited", "ready_for_review"):
+    def test_5_1_sin_ver_subir_la_cabeza_se_rechaza(self):
+        # Reabierta (o base cambiada, o ejecución borrada): nadie vio subir la cabeza. Que haya ejecuciones con esa
+        # cabeza que no son subidas (la del `reopened` rechazado, por ejemplo) no basta.
+        for accion in ("reopened", "edited", "ready_for_review", ""):
             with self.subTest(accion=accion):
-                api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [ejecucion(ADMIN_ID, id_=5)])
+                api = FalsaApi([commit(ADMIN_ID, ADMIN_ID)], [ejecucion(ADMIN_ID, "reopened", id_=5),
+                                                              ejecucion(ADMIN_ID, "edited"), abierta(sha=OCULTO)])
                 with self.assertRaises(robot.SinSaberQuien) as error:
                     quienes(api, accion, actual=5)
-                self.assertIn("Sube un commit nuevo", str(error.exception))
-        # Las ejecuciones con esa cabeza de otra copia o de otro flujo no valen.
-        for otra in (ejecucion(COLAB_ID, repo="otra/copia"), ejecucion(COLAB_ID, ruta=".github/workflows/otro.yml"),
-                     ejecucion(COLAB_ID, evento="pull_request")):
-            with self.subTest(otra=otra["path"] + otra["event"] + otra["head_repository"]["full_name"]):
+                self.assertIn("Cierra esta propuesta", str(error.exception))
+                self.assertIn(CABEZA[:7], str(error.exception))
+        # Las subidas con esa cabeza de otra copia, otro flujo, otro evento, otra propuesta, de antes de abrirla o de
+        # antes del `run-name` (con el título de la propuesta como nombre, aunque lo imite) no valen.
+        imitado = f"Robot de permisos · #7 · synchronize · antes {ABIERTA}"
+        for nombre, otra in {"otra copia": ejecucion(COLAB_ID, repo="otra/copia"),
+                             "otro flujo": ejecucion(COLAB_ID, ruta=".github/workflows/otro.yml"),
+                             "evento pull_request": ejecucion(COLAB_ID, evento="pull_request"),
+                             "otra propuesta": ejecucion(COLAB_ID, numero=8),
+                             "antes de abrirla": ejecucion(COLAB_ID, creada="2026-11-23T08:00:00Z"),
+                             "título a mano": ejecucion(COLAB_ID, titulo=imitado + " "),
+                             "sin nombre": ejecucion(COLAB_ID, titulo="Canales fase A"),
+                             "otra cabeza": ejecucion(COLAB_ID, sha=OCULTO)}.items():
+            with self.subTest(nombre):
                 with self.assertRaises(robot.SinSaberQuien):
-                    quienes(FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, id_=5), otra]), "reopened", actual=5)
+                    quienes(FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, "reopened", id_=5), otra, abierta()]),
+                            "reopened", actual=5)
+        with self.subTest("de antes del run-name en main"), self.assertRaises(robot.SinSaberQuien):
+            quienes(FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID), abierta()]), "reopened",
+                    desde="2026-11-24T00:00:00Z")
 
-    def test_2_1_el_dueno_puede_relanzarla(self):
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID, DUENO_ID, id_=5)])
-        self.assertIn(COLAB_ID, [i for _, i in quienes(api, "reopened", actual=5, disparador=DUENO_ID)])
-        with self.assertRaises(robot.SinSaberQuien):
-            quienes(api, "reopened", actual=5, disparador=ADMIN_ID)
+    def test_5_1_con_la_subida_vista_vale(self):
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, "reopened", id_=6), ejecucion(COLAB_ID), abierta()])
+        self.assertIn(COLAB_ID, ids(quienes(api, "reopened", actual=6)))
+        # ready_for_review de un borrador que abrió el mismo Editor y nadie más tocó.
+        api = FalsaApi([commit(EDITOR_ID)], [abierta(EDITOR_ID, sha=CABEZA)])
+        self.assertEqual({EDITOR_ID}, set(ids(quienes(api, "ready_for_review"))))
 
-    def test_2_1_con_la_subida_vista_vale(self):
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(ADMIN_ID, id_=6), ejecucion(COLAB_ID, id_=5)])
-        self.assertIn(COLAB_ID, [i for _, i in quienes(api, "reopened", actual=6)])
+    def test_5_1_el_dueno_solo_responde_si_relanza_de_verdad(self):
+        # Propuesta del Dueño; un Editor ha subido la cabeza sin que el robot lo viera (autor: el Dueño, falseado).
+        subidas = [abierta(DUENO_ID)]
+        relanzada = ejecucion(DUENO_ID, "reopened", id_=5, intento=2)
+        dueno = [("0rnizL", DUENO_ID)]
+        # El Dueño reabre, edita o marca como lista: no blanquea nada (N3-f, N3-f3).
+        for accion in ("reopened", "edited", "ready_for_review"):
+            with self.subTest(accion=accion), self.assertRaises(robot.SinSaberQuien):
+                quienes(FalsaApi([commit(DUENO_ID, DUENO_ID)], subidas, actual=relanzada), accion, actual=5,
+                        intento="1", actuales=dueno)
+        # Relanzarla de verdad, sí: intento 2 o más según la API, por el Dueño y con la misma cabeza.
+        api = FalsaApi([commit(DUENO_ID, DUENO_ID)], subidas, actual=relanzada)
+        self.assertIn(DUENO_ID, ids(quienes(api, "reopened", actual=5, intento="2", actuales=dueno)))
+        self.assertIn("/actions/runs/5", api.llamadas)
+        falsos = {"el entorno dice 2 y la API 1": {**relanzada, "run_attempt": 1},
+                  "lo relanza un Administrador": {**relanzada, "triggering_actor": usuario(ADMIN_ID)},
+                  "otra cabeza": {**relanzada, "head_sha": OCULTO},
+                  "otra propuesta": {**relanzada, "display_title": relanzada["display_title"].replace("#7", "#8")},
+                  "otra copia": {**relanzada, "head_repository": {"full_name": "otra/copia"}},
+                  "no se encuentra": None}
+        for nombre, actual in falsos.items():
+            with self.subTest(nombre), self.assertRaises(robot.SinSaberQuien):
+                quienes(FalsaApi([commit(DUENO_ID, DUENO_ID)], subidas, actual=actual), "reopened", actual=5,
+                        intento="2", actuales=dueno)
+        # Al relanzar la propuesta de un Administrador, el Administrador sigue contando.
+        api = FalsaApi([commit(ADMIN_ID)], [abierta()], actual=ejecucion(ADMIN_ID, "reopened", id_=5, intento=2,
+                                                                        disparador=DUENO_ID))
+        self.assertIn(ADMIN_ID, ids(quienes(api, "reopened", actual=5, intento="2",
+                                            actuales=[("admin", ADMIN_ID), ("0rnizL", DUENO_ID)])))
 
-    def test_2_2_otras_copias_y_ramas_iguales_no_cuentan_ni_bloquean(self):
-        ajenas = [ejecucion(VETADO_ID, repo="otra/copia", sha=f"{i:040x}") for i in range(950)]
-        api = FalsaApi([commit(COLAB_ID)], ajenas + [ejecucion(COLAB_ID, id_=1)])
-        ids = [i for _, i in quienes(api, actual=1)]
-        self.assertNotIn(VETADO_ID, ids)
-        # Ni las de esta copia con commits que no son de la propuesta, ni las de antes de abrirla.
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(VETADO_ID, sha="d" * 40),
-                                            ejecucion(VETADO_ID, creada="2026-11-22T00:00:00Z"), ejecucion(COLAB_ID)])
-        self.assertNotIn(VETADO_ID, [i for _, i in quienes(api)])
-        # Se para al llegar a las de antes de abrir la propuesta: no pide más páginas.
-        viejas = [ejecucion(COLAB_ID, creada="2026-11-20T00:00:00Z") for _ in range(500)]
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)] + viejas)
-        quienes(api)
-        self.assertEqual(1, sum("branch=" in r for r in api.llamadas))
-
-    def test_2_2_tope_de_paginas(self):
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID, repo="otra/copia")] * 1001)
+    def test_5_2_subir_otro_commit_encima_no_blanquea(self):
+        # N3-h: el commit OCULTO lo subió otro con la propuesta cerrada; tras el rechazo, el Administrador sube encima.
+        rechazada = ejecucion(ADMIN_ID, "reopened", sha=OCULTO)
+        api = FalsaApi([commit(ADMIN_ID), commit(ADMIN_ID)], [rechazada, abierta()])
         with self.assertRaises(robot.SinSaberQuien) as error:
-            quienes(api)
-        self.assertIn("otro nombre", str(error.exception))
+            quienes(api, "synchronize", antes=OCULTO, actuales=[("admin", ADMIN_ID)])
+        self.assertIn(OCULTO[:7], str(error.exception))
+        # Ni subiendo dos veces: la subida rechazada de en medio no hace bueno lo de debajo.
+        medio = "d" * 40
+        api = FalsaApi([commit(ADMIN_ID)] * 3, [ejecucion(ADMIN_ID, antes=OCULTO, sha=medio), rechazada, abierta()])
+        with self.assertRaises(robot.SinSaberQuien):
+            quienes(api, "synchronize", antes=medio, actuales=[("admin", ADMIN_ID)])
+        # Y sin `before` (flujo sin PR_ANTES) tampoco.
+        for antes in (None, "", "zzz", ABIERTA[:7]):
+            with self.subTest(antes=antes), self.assertRaises(robot.SinSaberQuien):
+                quienes(FalsaApi([commit(ADMIN_ID)], [abierta()]), "synchronize", antes=antes)
+
+    def test_5_2_la_cadena_entera_cuenta_y_no_da_vueltas(self):
+        # Abre el Administrador, sube el Colaborador, sube el Editor y luego se rehace con force-push encima de la
+        # primera: cuentan todos los que subieron algo por el camino; una vuelta a una cabeza ya vista no se repite.
+        b, d = "1" * 40, "2" * 40
+        api = FalsaApi([commit(ADMIN_ID)], [ejecucion(ADMIN_ID, antes=d), ejecucion(EDITOR_ID, antes=b, sha=d),
+                                            ejecucion(COLAB_ID, antes=ABIERTA, sha=b),
+                                            ejecucion(VETADO_ID, antes=d, sha=ABIERTA), abierta()])
+        cuentas = set(ids(quienes(api, "edited")))
+        self.assertTrue({ADMIN_ID, EDITOR_ID, COLAB_ID, VETADO_ID} <= cuentas)
+        self.assertEqual(4, sum("head_sha=" in r for r in api.llamadas))
+
+    def test_5_3_y_4_las_ajenas_no_esconden_la_buena_y_el_tope_pasa_de_largo(self):
+        tope = robot.TOPE_PAGINAS_POR_COMMIT * 100
+        # Con el mismo commit: tope − 1 ejecuciones de otras copias y la buena al final (en la última página).
+        ajenas = [ejecucion(VETADO_ID, repo="otra/copia") for _ in range(tope - 1)]
+        api = FalsaApi([commit(COLAB_ID)], ajenas + [ejecucion(COLAB_ID), abierta()])
+        cuentas = ids(quienes(api, "reopened"))
+        self.assertIn(COLAB_ID, cuentas)
+        self.assertNotIn(VETADO_ID, cuentas)
+        # Con el tope justo sigue valiendo; con una más, para (y lo dice).
+        ajenas = [ejecucion(VETADO_ID, repo="otra/copia") for _ in range(tope)]
+        api = FalsaApi([commit(COLAB_ID)], ajenas + [ejecucion(COLAB_ID), abierta()])
+        with self.assertRaises(robot.SinSaberQuien) as error:
+            quienes(api, "reopened")
+        self.assertIn(f"más de {tope}", str(error.exception))
+        # Las de antes de abrir la propuesta no llegan (las filtra GitHub con `created`) ni gastan el tope.
+        viejas = [ejecucion(VETADO_ID, creada="2026-11-20T00:00:00Z") for _ in range(5000)]
+        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)] + viejas + [abierta()])
+        self.assertNotIn(VETADO_ID, ids(quienes(api, "reopened")))
+        self.assertEqual(2, sum("head_sha=" in r for r in api.llamadas))
+
+    def test_5_tope_de_subidas(self):
+        cadena, antes = [], ABIERTA
+        for i in range(robot.TOPE_SUBIDAS):
+            sha = f"{i + 1:040x}"
+            cadena.append(ejecucion(COLAB_ID, antes=antes, sha=sha))
+            antes = sha
+        api = FalsaApi([commit(COLAB_ID)], cadena + [abierta()])
+        with self.assertRaises(robot.SinSaberQuien) as error:
+            quienes(api, "synchronize", antes=antes)
+        self.assertIn(f"más de {robot.TOPE_SUBIDAS} subidas", str(error.exception))
+        api = FalsaApi([commit(COLAB_ID)], cadena[1:] + [ejecucion(COLAB_ID, "opened", sha=cadena[0]["head_sha"])])
+        self.assertIn(COLAB_ID, ids(quienes(api, "synchronize", antes=antes)))
 
     def test_n3_si_no_se_sabe_quien_se_rechaza(self):
         casos = {
-            "autor sin cuenta": FalsaApi([commit("nadie")], [ejecucion(COLAB_ID)]),
-            "committer sin cuenta": FalsaApi([commit(COLAB_ID, "nadie")], [ejecucion(COLAB_ID)]),
-            "ejecución sin actor": FalsaApi([commit(COLAB_ID)], [{**ejecucion(COLAB_ID), "actor": None}]),
+            "autor sin cuenta": FalsaApi([commit("nadie")], [abierta(COLAB_ID)]),
+            "committer sin cuenta": FalsaApi([commit(COLAB_ID, "nadie")], [abierta(COLAB_ID)]),
+            "ejecución sin actor": FalsaApi([commit(COLAB_ID)], [{**abierta(COLAB_ID), "actor": None}]),
         }
         for nombre, api in casos.items():
             with self.subTest(nombre), self.assertRaises(robot.SinSaberQuien):
                 quienes(api, actuales=[("colab", COLAB_ID)])
         with self.assertRaises(robot.SinSaberQuien):
-            quienes(FalsaApi([], [ejecucion(COLAB_ID)]), propuesta={**PROPUESTA, "head": {"ref": "x", "repo": None}})
+            quienes(FalsaApi([], [abierta()]), propuesta={**PROPUESTA, "head": {"ref": "x", "repo": None}})
 
     def test_l8_correos_sin_cuenta_valen_si_todo_lo_subio_el_dueno(self):
+        dueno = [("0rnizL", DUENO_ID)]
         # `publicar-version.ps1` desde otro equipo: el commit no es de ninguna cuenta, pero lo sube el Dueño.
-        api = FalsaApi([commit("nadie", "nadie")], [ejecucion(DUENO_ID, id_=1)])
-        self.assertEqual([("0rnizL", DUENO_ID)] * 3, quienes(api, actual=1, actuales=[("0rnizL", DUENO_ID)]))
+        self.assertEqual({DUENO_ID}, set(ids(quienes(FalsaApi([commit("nadie", "nadie")], []), "opened",
+                                                     actuales=dueno))))
+        self.assertEqual({DUENO_ID}, set(ids(quienes(FalsaApi([commit("nadie", "nadie")], [abierta(DUENO_ID)]),
+                                                     actuales=dueno))))
         # …pero no si alguien más ha subido algo a la propuesta.
         api = FalsaApi([commit("nadie", "nadie"), commit(COLAB_ID, sha="e" * 40)],
-                       [ejecucion(DUENO_ID, id_=2), ejecucion(COLAB_ID, sha="e" * 40, id_=1)])
+                       [ejecucion(COLAB_ID, sha="e" * 40), abierta(DUENO_ID)])
         with self.assertRaises(robot.SinSaberQuien):
-            quienes(api, actual=2, actuales=[("0rnizL", DUENO_ID)])
+            quienes(api, antes="e" * 40, actuales=dueno)
         # …ni si la última subida no la ha hecho el Dueño (aunque el resto, sí).
-        api = FalsaApi([commit("nadie", "nadie")], [ejecucion(COLAB_ID, id_=1)])
         with self.assertRaises(robot.SinSaberQuien):
-            quienes(api, actual=1, actuales=[("colab", COLAB_ID)])
+            quienes(FalsaApi([commit("nadie", "nadie")], [abierta(DUENO_ID)]), actuales=[("colab", COLAB_ID)])
+        # …ni si el Dueño reabre o edita su propuesta con un commit sin cuenta que el robot no vio subir (L8-e).
+        with self.assertRaises(robot.SinSaberQuien):
+            quienes(FalsaApi([commit(DUENO_ID), commit("nadie", "nadie")], [abierta(DUENO_ID, sha=OCULTO)]),
+                    "reopened", actuales=dueno)
 
     def test_n3_topes(self):
         with self.assertRaises(robot.SinSaberQuien):
-            quienes(FalsaApi([], [ejecucion(COLAB_ID)]), propuesta={**PROPUESTA, "commits": 251})
+            quienes(FalsaApi([], [abierta()]), propuesta={**PROPUESTA, "commits": 251})
         # Aunque la propuesta diga que tiene pocos, se cuentan los que llegan (paginando).
-        api = FalsaApi([commit(COLAB_ID, sha=f"{i:040x}") for i in range(251)], [ejecucion(COLAB_ID)])
+        api = FalsaApi([commit(COLAB_ID, sha=f"{i:040x}") for i in range(251)], [abierta()])
         with self.assertRaises(robot.SinSaberQuien):
             quienes(api)
         self.assertLessEqual(sum("/commits" in r for r in api.llamadas), 3)
         with self.assertRaises(robot.SinSaberQuien):
             robot.unir_cuentas([(f"c{i}", i) for i in range(robot.TOPE_CUENTAS + 1)])
 
-    def test_n3_web_flow_no_es_nadie_y_la_rama_va_escapada(self):
-        api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)])
-        propuesta = {**PROPUESTA, "head": {"ref": "a&b=c#d", "repo": {"full_name": REPO}}}
-        cuentas = quienes(api, propuesta=propuesta)
-        self.assertNotIn(robot.ID_WEB_FLOW, [i for _, i in cuentas])
-        self.assertIn("branch=a%26b%3Dc%23d&", next(r for r in api.llamadas if "branch=" in r))
+    def test_n3_web_flow_no_es_nadie(self):
+        api = FalsaApi([commit(COLAB_ID)], [abierta(COLAB_ID)])
+        self.assertNotIn(robot.ID_WEB_FLOW, ids(quienes(api, actuales=[("colab", COLAB_ID)])))
+
+    def test_5_el_nombre_del_flujo_es_el_que_lee_el_robot(self):
+        flujo = (pathlib.Path(robot.__file__).parent.parent / robot.FLUJO_DEL_ROBOT).read_text(encoding="utf-8")
+        plantilla = next(l for l in flujo.splitlines() if l.startswith("run-name:")).split(":", 1)[1].strip().strip('"')
+        for accion, antes in (("synchronize", CABEZA), ("opened", None), ("edited", None)):
+            nombre = (plantilla.replace("${{ github.event.pull_request.number }}", "7")
+                      .replace("${{ github.event.action }}", accion)
+                      .replace("${{ github.event.before || 'ninguno' }}", antes or "ninguno"))
+            with self.subTest(accion=accion):
+                self.assertNotIn("${{", nombre)
+                self.assertTrue(robot.NOMBRE_DE_EJECUCION.fullmatch(nombre), nombre)
+        self.assertEqual(2, flujo.count("PR_ANTES: ${{ github.event.before }}"))
+
+    def test_5_desde_cuando_hay_nombres_es_la_fusion_en_main(self):
+        # Las ejecuciones de antes de que el `run-name` llegara a `main` no valen: cuenta la fusión, no el commit.
+        with tempfile.TemporaryDirectory() as carpeta:
+            def g(*a, fecha="2026-01-01T00:00:00Z"):
+                subprocess.run(["git", *a], cwd=carpeta, check=True, capture_output=True,
+                               env={**os.environ, "GIT_AUTHOR_DATE": fecha, "GIT_COMMITTER_DATE": fecha})
+            g("init", "-q", "-b", "main")
+            g("config", "user.email", "a@b.c")
+            g("config", "user.name", "x")
+            flujo = pathlib.Path(carpeta, robot.FLUJO_DEL_ROBOT)
+            flujo.parent.mkdir(parents=True)
+            flujo.write_text("name: Robot de permisos\n", encoding="utf-8")
+            g("add", "-A")
+            g("commit", "-qm", "sin nombre")
+            antes = os.getcwd()
+            os.chdir(carpeta)
+            try:
+                self.assertEqual("9999-12-31T23:59:59Z", robot.desde_cuando_hay_nombres("HEAD"))
+                g("checkout", "-q", "-b", "rama")
+                flujo.write_text("name: Robot de permisos\nrun-name: x\n", encoding="utf-8")
+                g("commit", "-qam", "con nombre", fecha="2026-02-01T00:00:00Z")
+                g("checkout", "-q", "main")
+                g("merge", "-q", "--no-ff", "-m", "fusión", "rama", fecha="2026-03-01T10:20:30Z")
+                self.assertEqual("2026-03-01T10:20:30Z", robot.desde_cuando_hay_nombres("HEAD"))
+            finally:
+                os.chdir(antes)
 
     def test_2_3_solo_se_menciona_a_quien_abrio_la_propuesta(self):
         texto = pathlib.Path(robot.__file__).read_text(encoding="utf-8")
