@@ -1,6 +1,6 @@
 {
   "esquema": 1,
-  "versionCatalogo": 29,
+  "versionCatalogo": 30,
   "launcher": {
     "ultimaVersion": "0.2.2",
     "versionMinima": "",
@@ -56,6 +56,17 @@
       },
       "etiquetas": ["adultos"],
       "tituloOriginal": "TestGameTwo"
+    },
+    {
+      "id": "sengoku-rance",
+      "habilitado": false,
+      "orden": 10,
+      "titulo": "Sengoku Rance",
+      "tituloCorto": "Sengoku Rance",
+      "tituloOriginal": "SengokuRance",
+      "estado": "proximamente",
+      "sinopsis": "",
+      "ediciones": []
     }
   ],
   "etiquetas": [
