@@ -873,7 +873,8 @@ class SegundaRevision(unittest.TestCase):
             with self.subTest(nombre):
                 cambios = [Cambio(r, "M", "100644", 10) for r in archivos]
                 motivos = comprobar(cambios, json.dumps(CATALOGO), json.dumps(CATALOGO), varias,
-                                    leer_archivo=lambda r, lado, a=archivos: b(a[r] if lado == "despues" else {M: MIEMBROS, L: LISTA}[r]),
+                                    leer_archivo=lambda r, lado, a=archivos: (b(a[r] if lado == "despues" else {M: MIEMBROS, L: LISTA}[r])
+                                                                           if r in (M, L) else None),
                                     ids_duenos=frozenset({DUENO_ID}), cuenta_de=CUENTAS.get)
                 self.assertEqual(1, len(motivos))
                 self.assertIn("la han tocado varias cuentas", motivos[0])

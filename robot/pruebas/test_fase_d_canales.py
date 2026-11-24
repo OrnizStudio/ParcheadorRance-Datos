@@ -26,10 +26,21 @@ LISTA_ES = f"canales/{OTRO}/lista-negra.json"
 HASH_MALO = "blake3:" + "c" * 64
 
 
+def canal_json(canal=OTRO, nombre="Rance en Español", paquetes=(REPO_ES,), verificado=False):
+    """Un `canal.json` completo, como lo escribe el parcheador."""
+    objeto = {"esquema": 1, "id": canal, "nombre": nombre, "descripcion": "", "contacto": {"issues": True},
+              "paquetes": list(paquetes), "adultos": True, "normasAceptadas": 0, "creado": "2026-11-21",
+              "estado": "activo", "oculto": False}
+    if verificado:
+        objeto["verificacion"] = {"verificado": True, "desde": "2026-11-21", "motivo": "Grupo conocido.",
+                                  "historial": [{"fecha": "2026-11-21", "accion": "verificar",
+                                                 "motivo": "Grupo conocido.", "por": 1}]}
+    return objeto
+
+
 def main_con_dos_canales():
     archivos = main_migrado()
-    archivos[f"canales/{OTRO}/canal.json"] = particion.texto_json(
-        {"esquema": 1, "id": OTRO, "nombre": "Rance en Español", "paquetes": [REPO_ES]})
+    archivos[f"canales/{OTRO}/canal.json"] = particion.texto_json(canal_json())
     archivos[PARCHE_ES] = archivos[PARCHE].replace(URL.encode(), URL_ES.encode())
     return archivos
 
@@ -134,14 +145,14 @@ class ListaNegraDelCanal(unittest.TestCase):
         main[LISTA_ES] = particion.texto_json(self.lista())
         p = Propuesta(main).cambiar(PARCHE_ES, version_nueva(huella=HASH_MALO.upper().replace("BLAKE3", "blake3")))
         motivos = juzgar(p, de({OTRO: Rol.EDITOR}))
-        self.assertTrue(any("lista negra de @rance_es" in m and "Minero" in m for m in motivos), motivos)
+        self.assertTrue(any("lista negra (de @rance_es: Minero" in m for m in motivos), motivos)
 
     def test_la_huella_vetada_en_la_misma_propuesta_tambien_cuenta(self):
         p = (Propuesta(main_con_dos_canales())
              .cambiar(PARCHE_ES, version_nueva(huella=HASH_MALO)))
         p.poner(LISTA_ES, self.lista())
         motivos = juzgar(p, de({OTRO: Rol.ADMINISTRADOR}))
-        self.assertTrue(any("lista negra de @rance_es" in m for m in motivos), motivos)
+        self.assertTrue(any("lista negra (de @rance_es" in m for m in motivos), motivos)
 
     def test_la_lista_de_otro_canal_no_afecta(self):
         main = main_con_dos_canales()

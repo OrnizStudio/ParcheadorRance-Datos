@@ -49,6 +49,7 @@ import zipfile
 from dataclasses import dataclass, field
 
 import canales
+import listas
 import lector_app  # el catálogo tal como lo lee el parcheador
 import particion
 import sueltos
@@ -136,7 +137,8 @@ class Cambio:
 
 
 def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None,
-              ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, leer_sueltos=None, hoy=None) -> list:
+              ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, leer_sueltos=None, hoy=None,
+              cuentas=()) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
@@ -147,6 +149,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     lo que cambia en `canales/`. `ids_duenos` son los ids del Dueño (nadie los veta) y `cuenta_de(id)` el nombre actual
     de una cuenta en GitHub (para que nadie ponga el nombre de otra persona junto a un id). `leer_sueltos(lado)` da
     {ruta: bytes} con los archivos sueltos del catálogo (y los `canal.json`) en `main` o tras la propuesta (fase B).
+    `cuentas` son los ids de todas las cuentas que han tocado la propuesta: si una está en la lista negra general, no
+    se acepta (fase D).
     """
     motivos = []
     if not cambios:
@@ -160,6 +164,28 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                 "propuesta (ya están en `.gitignore`)." for ruta in compilados]
     de_canales = [c for c in cambios if c.ruta.startswith(canales.CARPETA_CANALES)]
     de_sueltos = [c for c in cambios if sueltos.de_los_sueltos(c.ruta)]
+    leer = leer_archivo or (lambda ruta, lado: None)
+
+    def leer_main(ruta):
+        return leer(ruta, "antes")
+    # Lista negra general (fase D, docs/canales.md §3.1). El Dueño está por encima de cualquier veto.
+    try:
+        if not permisos.es_dueno:
+            for cuenta in dict.fromkeys(c for c in (permisos.cuenta_id, *cuentas) if c is not None):
+                if motivo := listas.veto_de_cuenta(cuenta, leer_main, hoy):
+                    return [f"La cuenta {cuenta} está en la lista negra del programa ({motivo}): el robot no acepta "
+                            "propuestas suyas."]
+        bloqueados = listas.canales_vetados(leer_main)
+    except listas.ListaIlegible as error:
+        if not permisos.es_dueno:
+            return [str(error)]
+        bloqueados = {}
+    if not permisos.es_dueno:
+        for c in de_canales:
+            arroba = canales.canal_de_la_ruta(c.ruta)[0]
+            if arroba in bloqueados:
+                return [f"@{arroba} está bloqueado por el Dueño del programa ({bloqueados[arroba]}): su carpeta ya no "
+                        "se cambia."]
     # Fase D: el canal cuyos parches toca la propuesta. Una de otro canal que no es el oficial solo cambia su carpeta
     # (lo central se pide aparte) y se juzga entera con el rol del autor en ese canal; dos canales a la vez ya los
     # rechaza `canales.comprobar_canales`.
@@ -189,19 +215,52 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                     "permisos de ejecución ni cambios de tipo)."]
     motivos += _comprobar_tamanos(cambios, permisos)
 
+    main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
+    info = _canales_de(main_sueltos)
+    try:
+        reservados = listas.reservados(leer_main)
+    except listas.ListaIlegible as error:
+        if not permisos.es_dueno:
+            return [str(error)]
+        reservados = list(canales.RESERVADOS)
+
+    def nombre_parecido(canal, nombre):
+        existentes, verificados = {}, set()
+        for otro, (nombre_otro, verificado, anteriores) in info.items():
+            if otro == canal:
+                continue
+            for texto in (otro, nombre_otro, *anteriores):
+                if (e := canales.esqueleto(texto)):
+                    existentes.setdefault(e, f"@{otro} ({nombre_otro})")
+                    if verificado:
+                        verificados.add(e)
+        for bloqueado in bloqueados:
+            if bloqueado != canal and (e := canales.esqueleto(bloqueado)):
+                existentes.setdefault(e, f"@{bloqueado}")
+        return listas.parecido(nombre, [r for r in reservados if not (canal == canales.CANAL_OFICIAL
+                                                                      and r in canales.RESERVADOS)],
+                               existentes, verificados)
+
+    def veto_general(cuenta_id):
+        try:
+            return listas.veto_de_cuenta(cuenta_id, leer_main, hoy)
+        except listas.ListaIlegible:
+            return "la lista negra de esa cuenta no se puede leer"
+
     if de_canales:
-        leer = leer_archivo or (lambda ruta, lado: None)
         motivos += canales.comprobar_canales(
             [canales.CambioCanal(c.ruta, c.estado, c.tamano, leer(c.ruta, "antes"),
                                  None if c.estado == "D" else leer(c.ruta, "despues")) for c in de_canales],
             {k: int(v) for k, v in permisos.por_canal.items()}, permisos.cuenta_id, permisos.es_dueno, leer,
-            ids_duenos, cuenta_de, rol_externo)
+            ids_duenos, cuenta_de, rol_externo, veto_general, nombre_parecido)
+    # La lista negra general y los nombres reservados: solo los cambia el Dueño, y con reglas que valen también para él.
+    motivos += listas.comprobar_normas([(c.ruta, c.estado) for c in cambios], leer, frozenset(ids_duenos),
+                                       frozenset(c for c, (_, verificado, _) in info.items() if verificado))
 
     toca_catalogo = any(c.ruta == RUTA_CATALOGO for c in cambios)
     manda = _manda_en_todo(permisos)
 
     # ── Fase B: la fuente del catálogo son los archivos sueltos y `catalogo.json` lo regenera el robot.
-    main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
     migrado = sueltos.migrado(main_sueltos)
     if migrado and toca_catalogo and not permisos.es_dueno:
         return [ACTUALIZA_EL_PARCHEADOR]
@@ -231,8 +290,18 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                                      rol_por_canal, permisos.cuenta_id, permisos.es_dueno, hoy)
         motivos += sueltos.comprobar_paquetes([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
                                               sueltos.paquetes_de_los_canales(main_sueltos), permisos.es_dueno)
+        del_canal_huellas = _huellas_del_canal(leer_archivo, canal)
+
+        def vetada(de_canal, huella):
+            if de_canal is not None and huella in del_canal_huellas:
+                return f"de @{de_canal}: {del_canal_huellas[huella]}"
+            try:
+                general = listas.huella_vetada(huella, leer_main)
+            except listas.ListaIlegible:
+                return "su trozo de la lista negra no se puede leer"
+            return f"del programa: {general}" if general else None
         motivos += sueltos.comprobar_huellas([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
-                                             {canal: _huellas_del_canal(leer_archivo, canal)}, permisos.es_dueno)
+                                             vetada, permisos.es_dueno)
         try:
             particion.juntar(main_sueltos, 1)
         except particion.ErrorParticion as error:
@@ -304,6 +373,26 @@ def _comprobar_tamanos(cambios, permisos: Permisos) -> list:
         if c.modo == "100755":
             motivos.append(f"`{c.ruta}`: en el repositorio de datos no van archivos ejecutables (quítale el permiso de ejecución).")
     return motivos
+
+
+def _canales_de(archivos_main: dict) -> dict:
+    """{@: (nombre, verificado, [@ anteriores])} de los `canal.json` de `main` (los ilegibles, con lo que se pueda)."""
+    resultado = {}
+    for ruta, datos in archivos_main.items():
+        partes = ruta.split("/")
+        if len(partes) != 3 or partes[0] != "canales" or partes[2] != "canal.json":
+            continue
+        try:
+            canal = json.loads(datos)
+        except (ValueError, RecursionError):
+            canal = None
+        canal = canal if isinstance(canal, dict) else {}
+        verificacion = canal.get("verificacion")
+        anteriores = [a.get("id") for a in canal.get("idAnteriores") or [] if isinstance(a, dict)
+                      and isinstance(a.get("id"), str)]
+        resultado[partes[1]] = (canal.get("nombre") if isinstance(canal.get("nombre"), str) else partes[1],
+                                isinstance(verificacion, dict) and verificacion.get("verificado") is True, anteriores)
+    return resultado
 
 
 def _canal_de_los_parches(de_sueltos) -> str:
@@ -1339,8 +1428,9 @@ def leer_propuesta(base: str, cabeza: str):
         if tamano.returncode != 0:
             return None
         nombre = ruta.rsplit("/", 1)[-1]
-        if int(tamano.stdout.decode().strip()) > canales.TOPES.get(nombre, canales.TOPE_LOGO):
-            return b" " * (canales.TOPES.get(nombre, canales.TOPE_LOGO) + 1)  # basta para que se rechace por tamaño
+        tope = listas.TOPE_TROZO if listas.es_de_normas(ruta) else canales.TOPES.get(nombre, canales.TOPE_LOGO)
+        if int(tamano.stdout.decode().strip()) > tope:
+            return b" " * (tope + 1)  # basta para que se rechace por tamaño
         return git("cat-file", "blob", f"{revision}:{ruta}").stdout  # también los logos: se mira qué son de verdad
 
     guardados = {}
@@ -1875,7 +1965,8 @@ def main() -> int:
         cambios, antes, despues, leer_archivo, leer_sueltos = leido
         motivos = comprobar(cambios, antes, despues, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete,
                             leer_archivo=leer_archivo, ids_duenos=frozenset(ids_duenos), cuenta_de=cuenta_de,
-                            rol_externo=rol_externo, leer_sueltos=leer_sueltos)
+                            rol_externo=rol_externo, leer_sueltos=leer_sueltos,
+                            cuentas=[i for _, i in cuentas if i is not None])
 
     if motivos:
         lista = "\n".join(f"- {linea_segura(m)}" for m in motivos[:TOPE_MOTIVOS])
