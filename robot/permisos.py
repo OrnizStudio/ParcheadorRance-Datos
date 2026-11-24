@@ -56,6 +56,7 @@ import particion
 import sueltos
 
 RUTA_CATALOGO = "catalogo/catalogo.json"
+RUTA_CANALES_MAIN = "catalogo/canales.json"
 # Lo más que puede ocupar el `grupo` de `programa/parcheador.json` que cambia un Administrador (JSON compacto).
 TOPE_GRUPO = 4096
 # Fase B: desde la migración, `catalogo.json` lo escribe el robot (trabajo `publicar`) a partir de los archivos sueltos.
@@ -286,6 +287,10 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     migrado = sueltos.migrado(main_sueltos)
     if migrado and toca_catalogo and not permisos.es_dueno:
         return [ACTUALIZA_EL_PARCHEADOR]
+    # Fase D: `catalogo/canales.json` lo escribe el robot con el catálogo (de él sale la lista blanca de la app).
+    if any(c.ruta == RUTA_CANALES_MAIN for c in cambios) and not permisos.es_dueno:
+        return [f"`{RUTA_CANALES_MAIN}` lo escribe el robot a partir de los `canal.json` de `main`: no se cambia a "
+                "mano. Cambia el `canal.json` de tu canal."]
     # El `grupo` del catálogo vive en `programa/parcheador.json` desde la migración, pero hasta la fase D (que lo pasa a
     # `canal.json`) lo sigue cambiando un Administrador desde Ajustes del canal, como antes. Solo `grupo`: el resto de
     # `programa/` es del Dueño.

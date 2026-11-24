@@ -178,5 +178,65 @@ class ConGit(unittest.TestCase):
             trabajo.tearDown()
 
 
+class CanalesEnMain(unittest.TestCase):
+    """D4b: `catalogo/canales.json` en `main`, con el catálogo y su misma versión (de él sale la lista blanca)."""
+
+    def catalogo(self):
+        return particion.texto_json(todo_el_modelo())
+
+    def test_se_escribe_con_el_catalogo_y_su_version(self):
+        import publicar
+        archivos = base()
+        archivos["canales/rance_es/canal.json"] = canal_json("rance_es", paquetes=["rance-es/parches"])
+        cambios = publicar.regenerados(archivos, self.catalogo(), None)
+        version = json.loads(cambios["catalogo/catalogo.json"])["versionCatalogo"]
+        canales = json.loads(cambios[publicar.RUTA_CANALES_MAIN])
+        self.assertEqual(version, canales["versionCatalogo"])
+        self.assertEqual({"id": "rance_es", "estado": "activo", "verificado": False, "paquetes": ["rance-es/parches"],
+                          "adultos": True}, next(c for c in canales["canales"] if c["id"] == "rance_es"))
+        self.assertEqual(sorted(c["id"] for c in canales["canales"]), [c["id"] for c in canales["canales"]])
+        # Otra vez con lo escrito: nada que hacer.
+        self.assertIsNone(publicar.regenerados(archivos, cambios["catalogo/catalogo.json"],
+                                               cambios[publicar.RUTA_CANALES_MAIN]))
+
+    def test_si_solo_cambia_un_canal_el_catalogo_sube_de_version(self):
+        import publicar
+        archivos = base()
+        antes = publicar.regenerados(archivos, self.catalogo(), None)
+        archivos["canales/rance_es/canal.json"] = canal_json("rance_es", paquetes=["otro/repo"])
+        despues = publicar.regenerados(archivos, antes["catalogo/catalogo.json"], antes[publicar.RUTA_CANALES_MAIN])
+        v_antes = json.loads(antes["catalogo/catalogo.json"])["versionCatalogo"]
+        self.assertEqual(v_antes + 1, json.loads(despues["catalogo/catalogo.json"])["versionCatalogo"])
+        self.assertEqual(v_antes + 1, json.loads(despues[publicar.RUTA_CANALES_MAIN])["versionCatalogo"])
+
+    def test_un_canal_vetado_sale_bloqueado(self):
+        import publicar
+        archivos = base()
+        archivos[listas.RUTA_CANALES] = particion.texto_json({"esquema": 1, "canales": [
+            {"id": "rance_es", "esqueleto": "rancees", "motivo": "Malware", "fecha": "2026-11-20"}]})
+        canales = json.loads(publicar.regenerados(archivos, self.catalogo(), None)[publicar.RUTA_CANALES_MAIN])
+        self.assertEqual("bloqueado", next(c for c in canales["canales"] if c["id"] == "rance_es")["estado"])
+
+    def test_cinco_mil_canales_caben(self):
+        import publicar
+        archivos = sueltos_de()
+        for i in range(5000):
+            cid = f"c{i:04d}"
+            archivos[f"canales/{cid}/canal.json"] = canal_json(
+                cid, paquetes=[f"grupo-de-traduccion-{i}/repositorio-de-parches-{j}" for j in range(3)])
+        datos = publicar.regenerados(archivos, self.catalogo(), None)[publicar.RUTA_CANALES_MAIN]
+        self.assertLess(len(datos), publicar.TOPE_CANALES_MAIN)
+
+    def test_a_mano_no_se_cambia(self):
+        from permisos import Cambio, Permisos, Rol, comprobar
+        archivos = sueltos_de()
+        lados = {"antes": archivos, "despues": dict(archivos, **{"catalogo/canales.json": b"{}"})}
+        for rol in (Rol.ADMINISTRADOR, Rol.PROPIETARIO):
+            motivos = comprobar([Cambio("catalogo/canales.json", "A", tamano=2)], None, None,
+                                Permisos(rol, por_canal={"ornizen": rol}, cuenta_id=5),
+                                leer_archivo=lambda r, lado: lados[lado].get(r), leer_sueltos=lambda lado: lados[lado])
+            self.assertTrue(any("lo escribe el robot" in m for m in motivos), motivos)
+
+
 if __name__ == "__main__":
     unittest.main()

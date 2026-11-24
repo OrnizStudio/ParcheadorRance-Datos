@@ -5,7 +5,9 @@ Tras cada fusión en `main` (y a mano, o cuando el Dueño sube algo directamente
 1. **Regenera `catalogo/catalogo.json`** (esquema 1, el que leen las ≤0.2.x) juntando los archivos sueltos de `main`
    (`particion.juntar`), con `versionCatalogo` + 1, si lo que dice ha cambiado. Lo hace con una propuesta propia
    (rama `robot/catalogo`) que se aprueba y se fusiona sola: su contenido sale entero de `main`, así que no hay nada
-   que juzgar. Como las propuestas que abre GitHub Actions no lanzan flujos de trabajo, el propio trabajo deja la
+   que juzgar. Desde la fase D, en la misma propuesta y con la misma `versionCatalogo`, **`catalogo/canales.json`**:
+   de cada canal, lo que la app necesita para fiarse de él (`estado`, `verificado`, `paquetes`, `adultos`). Está en
+   `main`, que está protegida, así que de él sale la lista blanca de descargas de cada canal; `publicado` no. Como las propuestas que abre GitHub Actions no lanzan flujos de trabajo, el propio trabajo deja la
    comprobación `permisos` en verde en ese commit antes de fusionarla.
 2. **Escribe la rama `publicado`**: `indice.json` y el índice por juego de Programa › Juegos originales,
    `programa/juegos/<xx>.json` (256 trozos por el SHA-256 del id). Desde la fase C, también lo que lee la app 0.3.0:
@@ -51,8 +53,49 @@ class ErrorPublicar(RuntimeError):
 
 # ───────────────────────────────────────── El catálogo de las ≤0.2.x ─────────────────────────────────────────
 
-def catalogo_regenerado(archivos: dict, catalogo_main: bytes | None):
-    """Los bytes del `catalogo.json` nuevo, o None si el de `main` ya dice lo mismo (sin contar la versión).
+RUTA_CANALES_MAIN = permisos.RUTA_CANALES_MAIN
+# 5 000 canales con 3 repositorios de nombre largo caben de sobra; la app tiene el mismo tope.
+TOPE_CANALES_MAIN = 2 * 1024 * 1024
+
+
+def canales_para_main(archivos: dict) -> list:
+    """Las entradas de `catalogo/canales.json`: cada canal con un `canal.json` válido en `main`, ordenados por id."""
+    entradas, _ = canales_publicados(archivos)
+    return [{"id": cid, "estado": c["estado"], "verificado": c["verificado"], "paquetes": c["paquetes"],
+             "adultos": c["adultos"]} for cid, c in sorted(entradas.items())]
+
+
+def _canales_de_main(datos):
+    """(versionCatalogo, canales) del `catalogo/canales.json` de `main`, o (None, None) si no hay o no se lee."""
+    objeto = _objeto(datos) if datos is not None else None
+    if objeto is None:
+        return None, None
+    return objeto.get("versionCatalogo"), objeto.get("canales")
+
+
+def regenerados(archivos: dict, catalogo_main: bytes | None, canales_main: bytes | None):
+    """{ruta: bytes} de lo que hay que dejar en `main` (`catalogo.json` y `catalogo/canales.json`, siempre los dos y
+    con la misma versión), o None si ya dicen lo mismo. Si solo cambian los canales, el catálogo sube de versión igual:
+    la app usa `canales.json` solo si su versión es la del catálogo que tiene."""
+    canales = canales_para_main(archivos)
+    version_canales, canales_antes = _canales_de_main(canales_main)
+    catalogo = catalogo_regenerado(archivos, catalogo_main)
+    if catalogo is None:
+        version = lector_app.leer(catalogo_main).get("versionCatalogo")
+        if canales_antes == canales and version_canales == version:
+            return None
+        catalogo = catalogo_regenerado(archivos, catalogo_main, forzar=True)
+    version = json.loads(catalogo)["versionCatalogo"]
+    datos = _json({"esquema": 1, "versionCatalogo": version, "canales": canales})
+    if len(datos) > TOPE_CANALES_MAIN:
+        raise ErrorPublicar(f"`{RUTA_CANALES_MAIN}` pesaría {len(datos) / 1048576:.1f} MB y el máximo son "
+                            f"{TOPE_CANALES_MAIN // 1048576} MB.")
+    return {permisos.RUTA_CATALOGO: catalogo, RUTA_CANALES_MAIN: datos}
+
+
+def catalogo_regenerado(archivos: dict, catalogo_main: bytes | None, forzar: bool = False):
+    """Los bytes del `catalogo.json` nuevo, o None si el de `main` ya dice lo mismo (sin contar la versión) y no se
+    pide `forzar` (subir la versión igual).
 
     ErrorPublicar si los archivos no se pueden juntar, si el resultado no lo puede leer la app o si la versión de
     `main` no deja subir una más (eso lo arregla el Dueño a mano)."""
@@ -68,7 +111,8 @@ def catalogo_regenerado(archivos: dict, catalogo_main: bytes | None):
         nuevo = particion.juntar(archivos, version + 1)
     except particion.ErrorParticion as error:
         raise ErrorPublicar(f"Los archivos del catálogo de `main` no se pueden juntar: {error}") from None
-    if isinstance(actual, dict) and particion.mismo_catalogo(dict(actual, versionCatalogo=0), dict(nuevo, versionCatalogo=0)):
+    if not forzar and isinstance(actual, dict) and particion.mismo_catalogo(dict(actual, versionCatalogo=0),
+                                                                           dict(nuevo, versionCatalogo=0)):
         return None
     errores = lector_app.errores_de_la_app(nuevo)
     if errores:
@@ -465,14 +509,16 @@ def _arbol(archivos: dict) -> str:
     return _git("mktree", "-z", entrada=b"").decode().strip()
 
 
-def _arbol_con(base: str, ruta: str, datos: bytes) -> str:
-    """El árbol de `base` con `ruta` cambiado por `datos`, con un índice de git aparte (no toca el de trabajo)."""
+def _arbol_con(base: str, cambios: dict) -> str:
+    """El árbol de `base` con cada `ruta` de `cambios` cambiada por sus bytes, con un índice de git aparte (no toca el
+    de trabajo)."""
     carpeta_git = os.path.abspath(_git("rev-parse", "--git-dir").decode().strip())
     indice = dict(os.environ, GIT_INDEX_FILE=os.path.join(carpeta_git, "publicar-index"))
     try:
         _git("read-tree", base, entorno=indice)
-        sha = _git("hash-object", "-w", "--stdin", entrada=datos).decode().strip()
-        _git("update-index", "--add", "--cacheinfo", f"100644,{sha},{ruta}", entorno=indice)
+        for ruta, datos in sorted(cambios.items()):
+            sha = _git("hash-object", "-w", "--stdin", entrada=datos).decode().strip()
+            _git("update-index", "--add", "--cacheinfo", f"100644,{sha},{ruta}", entorno=indice)
         return _git("write-tree", entorno=indice).decode().strip()
     finally:
         try:
@@ -565,11 +611,15 @@ def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
         archivos = permisos.archivos_sueltos(base)
         if not sueltos.migrado(archivos):
             return base
-        datos = catalogo_regenerado(archivos, _leer_de_git(base, permisos.RUTA_CATALOGO))
-        if datos is None:
+        vetados = _leer_de_git(base, listas.RUTA_CANALES)
+        if vetados is not None:
+            archivos[listas.RUTA_CANALES] = vetados
+        cambios = regenerados(archivos, _leer_de_git(base, permisos.RUTA_CATALOGO),
+                              _leer_de_git(base, RUTA_CANALES_MAIN))
+        if cambios is None:
             return base
-        arbol = _arbol_con(base, permisos.RUTA_CATALOGO, datos)
-        version = json.loads(datos)["versionCatalogo"]
+        arbol = _arbol_con(base, cambios)
+        version = json.loads(cambios[permisos.RUTA_CATALOGO])["versionCatalogo"]
         commit = _commit(arbol, f"Catálogo para las ≤0.2.x regenerado (versión {version})", [base])
         _git("push", "--quiet", "--force", remoto, f"{commit}:refs/heads/{RAMA_CATALOGO}", entorno=entorno)
         propuesta = _propuesta_del_catalogo(api, version)

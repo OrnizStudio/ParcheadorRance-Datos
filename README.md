@@ -15,6 +15,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | [`juegos/`](juegos/) | **Lo central de cada juego** (desde la fase B de los canales): `juegos/<juego>/juego.json` (títulos, sinopsis, imágenes, detección, quién lo dio de alta) y `juegos/<juego>/ediciones/<edición>.json` (nombre, huella, tiendas, lanzamiento). |
 | `canales/<canal>/` | Cada canal: `canal.json`, `miembros.json`, `lista-negra.json` y **`parches/<juego>.json`**, su parche de ese juego (visible, estado de la traducción, opciones, versiones, huellas parcheadas…). |
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo** que descarga el parcheador al abrirse (esquema 1). Desde la fase B **no se edita a mano**: lo escribe el robot juntando `juegos/` y `canales/ornizen/parches/`, `normas/etiquetas.json` y `programa/parcheador.json`. |
+| `catalogo/canales.json` | **Los canales para la app** (fase D): de cada canal, `id`, `estado`, `verificado`, `paquetes` (sus repositorios de paquetes: la lista blanca de descargas) y `adultos`. Lo escribe el robot con el catálogo y con su misma `versionCatalogo`; la app solo lo usa si la versión coincide. **No se edita a mano**: una propuesta que lo cambie se rechaza, salvo si la hace el Dueño. Tope: 2 MB (5 000 canales caben de sobra). |
 | Rama [`publicado`](../../tree/publicado) | Lo que genera el robot para el parcheador y el Modo equipo: `indice.json`, el índice por juego de Programa › Juegos originales y, desde la 0.3.0, los juegos, canales, logos y etiquetas en trozos. No se toca a mano. |
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
 | [Releases](../../releases) | Las versiones del propio parcheador y los **paquetes de parche** publicados hasta la fase B (`<juego>-<edición>-<versión>.zip`). Desde la fase B, los paquetes nuevos van a las Releases de [`OrnizStudio/Ornizen-Parches`](https://github.com/OrnizStudio/Ornizen-Parches) (`canal.json` → `paquetes`); los ya publicados se quedan aquí. |
@@ -294,8 +295,9 @@ Lo que comprueba el robot además de las reglas de siempre (`robot/sueltos.py`):
 El trabajo `publicar` (`robot/publicar.py`) corre tras cada fusión del robot y en `publicar.yml`: en cada subida
 directa a `main`, a mano y una vez al día. Hace dos cosas:
 
-- **Regenera el catálogo** si lo que dicen los archivos ha cambiado. Lo deja en la rama `robot/catalogo` y abre su
-  propuesta. Como las propuestas que abre GitHub Actions no lanzan el robot, el propio trabajo marca `permisos` en
+- **Regenera el catálogo** si lo que dicen los archivos ha cambiado, y con él `catalogo/canales.json` (los dos con
+  la misma `versionCatalogo`; si solo cambian los canales, el catálogo sube de versión igual). Un canal de la lista
+  negra general de canales sale `bloqueado`. Lo deja en la rama `robot/catalogo` y abre su propuesta. Como las propuestas que abre GitHub Actions no lanzan el robot, el propio trabajo marca `permisos` en
   verde en ese commit: su contenido sale entero de `main`. Después la fusiona.
 - **Escribe la rama `publicado`**, un único commit sin historia. En los trozos, `xx` son los dos primeros caracteres
   hexadecimales del SHA-256 del id (del juego o del canal): 256 trozos como mucho.

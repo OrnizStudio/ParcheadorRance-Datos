@@ -194,7 +194,10 @@ class TrabajoEntero(unittest.TestCase):
     def test_migrado_regenera_publica_y_la_segunda_vez_no_hace_nada(self):
         catalogo = todo_el_modelo()
         archivos = sueltos_de(catalogo)
-        self.subir_main({**archivos, "catalogo/catalogo.json": particion.texto_json(catalogo)})
+        canales_main = publicar._json({"esquema": 1, "versionCatalogo": catalogo["versionCatalogo"],
+                                       "canales": publicar.canales_para_main(archivos)})
+        self.subir_main({**archivos, "catalogo/catalogo.json": particion.texto_json(catalogo),
+                         publicar.RUTA_CANALES_MAIN: canales_main})
         # Sin cambios en lo que dice: no hay propuesta, pero sí la primera rama `publicado`.
         api, avisos, escrito = self.correr()
         self.assertFalse([c for c in api.llamadas if c[0] == "PUT"])
@@ -213,6 +216,8 @@ class TrabajoEntero(unittest.TestCase):
         self.assertEqual(("permisos", "success"), (check["name"], check["conclusion"]))
         nuevo = json.loads(self.del_remoto("main", "catalogo/catalogo.json"))
         self.assertEqual(32, nuevo["versionCatalogo"])
+        # `catalogo/canales.json` va en la misma propuesta y con la misma versión.
+        self.assertEqual(32, json.loads(self.del_remoto("main", publicar.RUTA_CANALES_MAIN))["versionCatalogo"])
         self.assertEqual("Rance X (nuevo)", next(j for j in nuevo["juegos"] if j["id"] == "rance-x")["titulo"])
         self.assertTrue(escrito)
         self.assertEqual(32, json.loads(self.del_remoto("publicado", "indice.json"))["versionCatalogo"])
