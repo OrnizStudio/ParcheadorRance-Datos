@@ -149,6 +149,13 @@ def indice_por_juego(archivos: dict) -> dict:
                     if fecha and (ultima is None or fecha > ultima["fecha"]):
                         ultima = {"version": v.get("version") if isinstance(v.get("version"), str) else None,
                                   "fecha": fecha, "edicion": ed.get("id")}
+            antiguo = parche.get("parche")
+            if versiones == 0 and isinstance(antiguo, dict) and isinstance(antiguo.get("version"), str):
+                # Parche de los de antes de las versiones (un solo bloque `parche`): la app lo cuenta como una
+                # versión publicada, y el índice igual, para que la fila y el detalle digan lo mismo.
+                versiones, publicas = 1, 1
+                fecha = _fecha(antiguo.get("fecha"))
+                ultima = {"version": antiguo["version"], "fecha": fecha, "edicion": None} if fecha else None
             total_versiones += versiones
             if ultima and (ultima_total is None or ultima["fecha"] > ultima_total):
                 ultima_total = ultima["fecha"]

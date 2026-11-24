@@ -243,3 +243,21 @@ class TrabajoEntero(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParcheAntiguo(unittest.TestCase):
+    def test_un_parche_sin_versiones_cuenta_como_una(self):
+        archivos = {
+            "juegos/viejo/juego.json": b'{"esquema": 1, "id": "viejo", "titulo": "Viejo", "ediciones": ["u"]}',
+            "juegos/viejo/ediciones/u.json": b'{"esquema": 1, "id": "u", "nombre": "U"}',
+            "canales/ornizen/parches/viejo.json": b'{"esquema": 1, "juego": "viejo", "parche": {"version": "0.1.0", '
+                                                  b'"fecha": "2026-11-17"}, "ediciones": [{"id": "u"}]}',
+        }
+        entrada = publicar.indice_por_juego(archivos)["viejo"]
+        self.assertEqual(1, entrada["parches"][0]["versiones"])
+        self.assertEqual(1, entrada["parches"][0]["publicas"])
+        self.assertEqual("0.1.0", entrada["parches"][0]["ultima"]["version"])
+        self.assertEqual(1, entrada["totales"]["versiones"])
+        # Sin `version` no cuenta (no es un parche).
+        archivos["canales/ornizen/parches/viejo.json"] = b'{"esquema": 1, "juego": "viejo", "parche": {}, "ediciones": []}'
+        self.assertEqual(0, publicar.indice_por_juego(archivos)["viejo"]["totales"]["versiones"])
