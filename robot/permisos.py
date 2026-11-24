@@ -1374,7 +1374,8 @@ def cuentas_de_la_ejecucion(entorno, autor: str, autor_id: int, id_de_cuenta) ->
 ID_WEB_FLOW = 19864447
 TOPE_COMMITS = 250       # lo más que devuelve GitHub de los commits de una propuesta
 TOPE_SUBIDAS = 100       # subidas a la propuesta que el robot sigue hacia atrás, de la cabeza a cuando se abrió
-TOPE_PAGINAS_POR_COMMIT = 2  # de 100 en 100: las ejecuciones del robot con un mismo commit
+TOPE_PAGINAS_POR_COMMIT = 10  # de 100 en 100: lo que se lee de las ejecuciones del robot con un mismo commit
+TOPE_SUBIDAS_POR_COMMIT = 200  # subidas de esta propuesta con un mismo commit (contadas después de filtrar)
 TOPE_CUENTAS = 10        # cuentas distintas que han intervenido
 FLUJO_DEL_ROBOT = ".github/workflows/permisos.yml"
 # Los eventos en los que quien lanza la ejecución es quien ha subido la cabeza de la propuesta.
@@ -1384,10 +1385,21 @@ ACCIONES_DE_SUBIDA = ("opened", "synchronize")
 # y el flujo de `main`: nadie puede ponérselo a mano a la ejecución de otro.
 NOMBRE_DE_EJECUCION = re.compile(r"Robot de permisos · #([0-9]+) · ([a-z_]+) · antes (ninguno|[0-9a-f]{40})")
 SHA_COMPLETO = re.compile(r"[0-9a-f]{40}")
+# La línea exacta de `permisos.yml` que da ese nombre. Si el flujo de `main` no la tiene, ninguna ejecución vale.
+RUN_NAME = ('run-name: "Robot de permisos · #${{ github.event.pull_request.number }} · ${{ github.event.action }} · '
+            "antes ${{ github.event.before || 'ninguno' }}\"")
 
 
 class SinSaberQuien(Exception):
     """No se puede saber con certeza qué cuentas han subido los cambios de la propuesta: se rechaza."""
+
+
+class DemasiadasEjecuciones(SinSaberQuien):
+    """Un commit tiene más ejecuciones del robot de las que se leen: ese eslabón de la cadena no se puede comprobar."""
+
+    def __init__(self, sha: str, motivo: str):
+        super().__init__(motivo)
+        self.sha = sha
 
 
 def _cuenta(usuario):
@@ -1425,7 +1437,15 @@ def _actores(ejecucion: dict) -> list:
 def desde_cuando_hay_nombres(base: str) -> str:
     """Cuándo llegó a `main` el `run-name` del robot (UTC, como `created_at`). Las ejecuciones de antes llevan como
     nombre el título de la propuesta, que se puede escribir a mano: no valen como prueba de una subida. Se mira la
-    fusión en `main` (primer padre), no el commit de la rama, que es más antiguo. Sin `run-name`, ninguna vale."""
+    fusión en `main` (primer padre), no el commit de la rama, que es más antiguo. Si el flujo de `main` no tiene
+    exactamente el `run-name` que lee el robot (alguien lo quitó o lo cambió), ninguna vale (sexta revisión, punto 2):
+    `git log -S` daría la fecha del commit que lo quita."""
+    try:
+        flujo = (archivo_de_git(base, FLUJO_DEL_ROBOT, 256 * 1024) or b"").decode("utf-8")
+    except (OSError, ValueError, UnicodeDecodeError, subprocess.CalledProcessError):
+        flujo = ""
+    if RUN_NAME not in flujo.splitlines():
+        return "9999-12-31T23:59:59Z"
     salida = git("log", "-1", "--no-patch", "--first-parent", "--diff-merges=first-parent", "-S", "run-name:", "--format=%ct", base,
                  "--", FLUJO_DEL_ROBOT).stdout.decode().strip()
     if not salida.isdigit():
@@ -1435,7 +1455,9 @@ def desde_cuando_hay_nombres(base: str) -> str:
 
 def _subidas_con(api, sha: str, numero: int, repo: str, desde: str, guardadas: dict) -> list:
     """[(acción, antes, ejecución)]: las ejecuciones del robot de esta propuesta que vieron subir `sha` (`opened` o
-    `synchronize`, por su nombre). Pagina; si hay más de las que caben, para (cuarta revisión… quinta, punto 4)."""
+    `synchronize`, por su nombre). Filtra primero y cuenta después (sexta revisión, punto 1): las ejecuciones de otras
+    copias o propuestas con el mismo commit no cuentan para el tope de subidas. Solo si hay tantas que no se pueden
+    leer (más de TOPE_PAGINAS_POR_COMMIT páginas), ese commit no se puede comprobar: DemasiadasEjecuciones."""
     if sha not in guardadas:
         subidas, filtro = [], urllib.parse.quote(">=" + desde, safe="")
         for pagina in range(1, TOPE_PAGINAS_POR_COMMIT + 2):
@@ -1443,8 +1465,11 @@ def _subidas_con(api, sha: str, numero: int, repo: str, desde: str, guardadas: d
                                 f"&head_sha={sha}&created={filtro}&per_page=100&page={pagina}") or {}).get("workflow_runs") or []
             if pagina > TOPE_PAGINAS_POR_COMMIT:
                 if trozo:
-                    raise SinSaberQuien(f"hay más de {TOPE_PAGINAS_POR_COMMIT * 100} comprobaciones del robot con el commit "
-                                        f"{sha[:7]}: cierra esta propuesta y abre una nueva desde una rama con solo tus commits.")
+                    raise DemasiadasEjecuciones(sha, (
+                        f"el commit {sha[:7]} tiene más de {TOPE_PAGINAS_POR_COMMIT * 100} comprobaciones del robot (casi "
+                        "todas de otras copias o propuestas) y el robot no puede leerlas todas para ver quién lo subió. "
+                        "Abre una propuesta nueva desde una rama con commits nuevos (por ejemplo, rehaciendo los tuyos), "
+                        "o pide al Dueño del programa que relance esta comprobación."))
                 break
             for ejecucion in trozo:
                 nombre = NOMBRE_DE_EJECUCION.fullmatch(str(ejecucion.get("display_title") or ""))
@@ -1452,6 +1477,9 @@ def _subidas_con(api, sha: str, numero: int, repo: str, desde: str, guardadas: d
                         and ejecucion.get("head_sha") == sha and str(ejecucion.get("created_at") or "") >= desde \
                         and _del_robot_y_de_esta_copia(ejecucion, repo):
                     subidas.append((nombre[2], nombre[3], ejecucion))
+            if len(subidas) > TOPE_SUBIDAS_POR_COMMIT:
+                raise SinSaberQuien(f"el commit {sha[:7]} se ha subido más de {TOPE_SUBIDAS_POR_COMMIT} veces a esta "
+                                    "propuesta: cierra esta y abre una nueva con los cambios juntos.")
             if len(trozo) < 100:
                 break
         guardadas[sha] = subidas
@@ -1460,9 +1488,10 @@ def _subidas_con(api, sha: str, numero: int, repo: str, desde: str, guardadas: d
 
 def _cadena_de_subidas(api, sha: str, numero: int, repo: str, desde: str):
     """Sigue las subidas hacia atrás desde `sha` hasta la que abrió la propuesta: cada `synchronize` dice quién subió
-    qué commit y sobre cuál. Devuelve (actores de todas las subidas vistas, None) si llega a `opened`, o
-    (actores, commit que nadie vio subir) si la cadena se rompe."""
-    pendientes, vistos, actores, guardadas, roto, abierta = [sha], set(), [], {}, None, False
+    qué commit y sobre cuál. Devuelve (actores de todas las subidas vistas, None, None) si llega a `opened`, o
+    (actores, commit que nadie vio subir, motivo o None) si la cadena se rompe. Un commit con demasiadas ejecuciones
+    para leerlas es un eslabón que falta (con su propio motivo), no un error: así el Dueño aún puede relanzarla."""
+    pendientes, vistos, actores, guardadas, roto, motivo, abierta = [sha], set(), [], {}, None, None, False
     while pendientes:
         actual = pendientes.pop()
         if actual in vistos:
@@ -1471,7 +1500,12 @@ def _cadena_de_subidas(api, sha: str, numero: int, repo: str, desde: str):
         if len(vistos) > TOPE_SUBIDAS:
             raise SinSaberQuien(f"la propuesta tiene más de {TOPE_SUBIDAS} subidas: cierra esta y abre una nueva con los "
                                 "cambios juntos.")
-        subidas = _subidas_con(api, actual, numero, repo, desde, guardadas)
+        try:
+            subidas = _subidas_con(api, actual, numero, repo, desde, guardadas)
+        except DemasiadasEjecuciones as error:
+            subidas = []
+            if roto is None:
+                roto, motivo = actual, str(error)
         if not subidas and roto is None:
             roto = actual
         for accion, antes, ejecucion in subidas:
@@ -1480,7 +1514,7 @@ def _cadena_de_subidas(api, sha: str, numero: int, repo: str, desde: str):
                 abierta = True
             elif antes != "ninguno":
                 pendientes.append(antes)
-    return actores, (None if abierta else roto or sha)
+    return actores, (None if abierta else roto or sha), (None if abierta else motivo)
 
 
 def _relanzada_por_el_dueno(api, ejecucion_actual, intento, numero: int, cabeza: str, repo: str, es_dueno) -> bool:
@@ -1540,16 +1574,20 @@ def cuentas_de_la_propuesta(api, numero: int, propuesta: dict, cabeza: str, acci
     # Quien subió cada commit: la cadena de subidas, desde la cabeza (o desde el `before` de esta subida).
     desde = max(str(propuesta.get("created_at") or ""), desde or "")
     if accion == "opened":
-        subidores, roto = list(actores_actuales), None
+        subidores, roto, motivo = list(actores_actuales), None, None
     elif accion == "synchronize":
         if not SHA_COMPLETO.fullmatch(antes or ""):
             raise SinSaberQuien("no se sabe sobre qué commit se ha subido la cabeza (falta `PR_ANTES`): revisa el flujo.")
-        subidores, roto = _cadena_de_subidas(api, antes, numero, repo, desde)
+        subidores, roto, motivo = _cadena_de_subidas(api, antes, numero, repo, desde)
         subidores += list(actores_actuales)
     else:
-        subidores, roto = _cadena_de_subidas(api, cabeza, numero, repo, desde)
+        subidores, roto, motivo = _cadena_de_subidas(api, cabeza, numero, repo, desde)
     if roto is not None:
+        # El relanzamiento del Dueño se mira antes de rechazar, también si el eslabón que falta es un commit con
+        # demasiadas ejecuciones ajenas: él responde de lo que hay en la propuesta, sea cual sea el motivo.
         if not _relanzada_por_el_dueno(api, ejecucion_actual, intento, numero, cabeza, repo, es_dueno):
+            if motivo:
+                raise SinSaberQuien(motivo)
             raise SinSaberQuien(
                 f"el robot no ha visto subir el commit {roto[:7]} a esta propuesta (se subió con ella cerrada, se borró "
                 "su comprobación o es de antes de que el robot las nombrara), así que no sabe quién lo subió, y subir "

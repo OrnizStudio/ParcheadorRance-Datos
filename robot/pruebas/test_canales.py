@@ -1186,25 +1186,43 @@ class TerceraRevision(unittest.TestCase):
         self.assertTrue({ADMIN_ID, EDITOR_ID, COLAB_ID, VETADO_ID} <= cuentas)
         self.assertEqual(4, sum("head_sha=" in r for r in api.llamadas))
 
-    def test_5_3_y_4_las_ajenas_no_esconden_la_buena_y_el_tope_pasa_de_largo(self):
-        tope = robot.TOPE_PAGINAS_POR_COMMIT * 100
-        # Con el mismo commit: tope − 1 ejecuciones de otras copias y la buena al final (en la última página).
-        ajenas = [ejecucion(VETADO_ID, repo="otra/copia") for _ in range(tope - 1)]
+    def test_6_1_las_ajenas_se_filtran_antes_de_contar(self):
+        leidas = robot.TOPE_PAGINAS_POR_COMMIT * 100
+        # Con el mismo commit, cientos de ejecuciones de otras copias (más que el tope de subidas) y la buena al final,
+        # en la última página que se lee: no bloquean ni cuentan.
+        ajenas = [ejecucion(VETADO_ID, repo="otra/copia") for _ in range(leidas - 1)]
         api = FalsaApi([commit(COLAB_ID)], ajenas + [ejecucion(COLAB_ID), abierta()])
-        cuentas = ids(quienes(api, "reopened"))
+        cuentas = ids(quienes(api, "edited"))
         self.assertIn(COLAB_ID, cuentas)
         self.assertNotIn(VETADO_ID, cuentas)
-        # Con el tope justo sigue valiendo; con una más, para (y lo dice).
-        ajenas = [ejecucion(VETADO_ID, repo="otra/copia") for _ in range(tope)]
+        self.assertGreater(leidas - 1, robot.TOPE_SUBIDAS_POR_COMMIT)
+        # Más de las que se leen: ese commit no se puede comprobar; el mensaje dice cómo salir.
+        ajenas = [ejecucion(VETADO_ID, repo="otra/copia") for _ in range(leidas)]
         api = FalsaApi([commit(COLAB_ID)], ajenas + [ejecucion(COLAB_ID), abierta()])
         with self.assertRaises(robot.SinSaberQuien) as error:
-            quienes(api, "reopened")
-        self.assertIn(f"más de {tope}", str(error.exception))
-        # Las de antes de abrir la propuesta no llegan (las filtra GitHub con `created`) ni gastan el tope.
+            quienes(api, "edited")
+        self.assertIn(f"más de {leidas}", str(error.exception))
+        self.assertIn("propuesta nueva", str(error.exception))
+        self.assertIn("relance", str(error.exception))
+        self.assertEqual(robot.TOPE_PAGINAS_POR_COMMIT + 1, sum("head_sha=" in r for r in api.llamadas))
+        # …y el Dueño sí puede relanzarla (se mira antes de rechazar).
+        relanzada = ejecucion(ADMIN_ID, "edited", id_=5, intento=2, disparador=DUENO_ID)
+        api = FalsaApi([commit(COLAB_ID)], ajenas + [ejecucion(COLAB_ID), abierta()], actual=relanzada)
+        self.assertIn(DUENO_ID, ids(quienes(api, "edited", actual=5, intento="2",
+                                           actuales=[("admin", ADMIN_ID), ("0rnizL", DUENO_ID)])))
+        # Las de antes de abrir la propuesta no llegan (las filtra GitHub con `created`) ni gastan nada.
         viejas = [ejecucion(VETADO_ID, creada="2026-11-20T00:00:00Z") for _ in range(5000)]
         api = FalsaApi([commit(COLAB_ID)], [ejecucion(COLAB_ID)] + viejas + [abierta()])
         self.assertNotIn(VETADO_ID, ids(quienes(api, "reopened")))
         self.assertEqual(2, sum("head_sha=" in r for r in api.llamadas))
+
+    def test_6_1_el_tope_de_subidas_por_commit_cuenta_solo_las_de_la_propuesta(self):
+        tope = robot.TOPE_SUBIDAS_POR_COMMIT
+        propias = [ejecucion(COLAB_ID) for _ in range(tope)]
+        self.assertIn(COLAB_ID, ids(quienes(FalsaApi([commit(COLAB_ID)], propias + [abierta()]), "edited")))
+        with self.assertRaises(robot.SinSaberQuien) as error:
+            quienes(FalsaApi([commit(COLAB_ID)], propias + [ejecucion(COLAB_ID), abierta()]), "edited")
+        self.assertIn(f"más de {tope} veces", str(error.exception))
 
     def test_5_tope_de_subidas(self):
         cadena, antes = [], ABIERTA
@@ -1302,11 +1320,18 @@ class TerceraRevision(unittest.TestCase):
             try:
                 self.assertEqual("9999-12-31T23:59:59Z", robot.desde_cuando_hay_nombres("HEAD"))
                 g("checkout", "-q", "-b", "rama")
-                flujo.write_text("name: Robot de permisos\nrun-name: x\n", encoding="utf-8")
+                flujo.write_text("name: Robot de permisos\n" + robot.RUN_NAME + "\n", encoding="utf-8")
                 g("commit", "-qam", "con nombre", fecha="2026-02-01T00:00:00Z")
                 g("checkout", "-q", "main")
                 g("merge", "-q", "--no-ff", "-m", "fusión", "rama", fecha="2026-03-01T10:20:30Z")
                 self.assertEqual("2026-03-01T10:20:30Z", robot.desde_cuando_hay_nombres("HEAD"))
+                # Si luego se quita o se cambia, no cuenta la fecha del commit que lo quita: ninguna vale (sexta, 2).
+                for texto in ("name: Robot de permisos\n", "name: Robot de permisos\nrun-name: x\n",
+                              "name: Robot de permisos\n# " + robot.RUN_NAME + "\n"):
+                    with self.subTest(texto=texto):
+                        flujo.write_text(texto, encoding="utf-8")
+                        g("commit", "-qam", "cambio", fecha="2026-04-01T00:00:00Z")
+                        self.assertEqual("9999-12-31T23:59:59Z", robot.desde_cuando_hay_nombres("HEAD"))
             finally:
                 os.chdir(antes)
 
