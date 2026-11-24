@@ -6,8 +6,9 @@ Todo vive en `normas/` y solo lo cambia el Dueño del programa:
   propuestas se rechazan y no pueden ser miembros de ningún canal.
 - `normas/lista-negra/huellas/<xx>.json`: `{esquema, huellas: [{hash, motivo, fecha, tipo}]}` (`tipo`: `archivo` o
   `paquete`). Un paquete con ese hash no se acepta, ni una edición con ese hash en su huella.
-- `normas/lista-negra/canales.json`: `{esquema, canales: [{id, esqueleto, motivo, fecha}]}`. El canal queda
-  bloqueado: nadie salvo el Dueño toca su carpeta, y nadie crea un canal que se le parezca.
+- `normas/lista-negra/canales.json`: `{esquema, canales: [{id, esqueleto?, motivo, fecha}]}`. El canal queda
+  bloqueado: nadie salvo el Dueño toca su carpeta, y nadie crea un canal que se le parezca. El `esqueleto` lo calcula
+  el robot a partir del @ cada vez que lo usa: se puede omitir (o dejar vacío); si se escribe, tiene que ser el del @.
 - `normas/nombres-reservados.json`: `{esquema, nombres: [texto…]}`. Nadie salvo el Dueño usa un @ o un nombre con
   ese esqueleto.
 
@@ -126,7 +127,7 @@ def _huella_valida(fila):
 def _canal_valido(fila):
     if not isinstance(fila.get("id"), str) or not canales.ID_CANAL.match(fila["id"]):
         return "`id` tiene que ser el @ de un canal"
-    if fila.get("esqueleto") != canales.esqueleto(fila["id"]):
+    if fila.get("esqueleto") not in (None, "", canales.esqueleto(fila["id"])):
         return f"`esqueleto` tiene que ser «{canales.esqueleto(fila['id'])}» (el del @)"
     return None
 
