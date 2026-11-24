@@ -144,6 +144,25 @@ class RevisionDeSeguridad(unittest.TestCase):
         self.assertEqual(len(leidos), len(set(leidos)))
 
 
+
+class Retirados(unittest.TestCase):
+    def test_juegos_y_canales_que_ya_no_se_ofrecen(self):
+        archivos = base()
+        archivos["canales/viejo/canal.json"] = canal_json("viejo", estado="retirado")
+        archivos["canales/rance_es/canal.json"] = canal_json("rance_es", estado="bloqueado")
+        central = json.loads(archivos["juegos/rance-x/juego.json"])
+        archivos["juegos/rance-x/juego.json"] = particion.texto_json(dict(central, estado="retirado"))
+        salida = publicados(archivos, todo_el_modelo())
+        self.assertEqual({"esquema": 1, "juegos": [{"id": "rance-x", "estado": "retirado"}],
+                          "canales": [{"id": "rance_es", "estado": "bloqueado"}, {"id": "viejo", "estado": "retirado"}]},
+                         json.loads(salida["retirados.json"]))
+        self.assertIn("retirados.json", json.loads(salida["indice.json"])["trozos"])
+
+    def test_sin_nada_retirado_listas_vacias(self):
+        salida = publicados(base(), todo_el_modelo())
+        self.assertEqual({"esquema": 1, "juegos": [], "canales": []}, json.loads(salida["retirados.json"]))
+
+
 class Directorio(unittest.TestCase):
     def test_todos_menos_los_ocultos(self):
         archivos = base()

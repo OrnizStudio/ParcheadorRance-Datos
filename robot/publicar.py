@@ -361,6 +361,21 @@ def buscar_canales(canales: dict, juegos: dict) -> bytes:
         for cid, c in sorted(canales.items()) if not c["oculto"]]})
 
 
+def retirados(archivos: dict, canales: dict) -> bytes:
+    """`retirados.json`: los juegos (por su `estado` central) y los canales que ya no se ofrecen, para quien los tiene
+    instalados. Las ediciones no tienen estado propio: una que ya no se ofrece es la de un juego o un canal de aquí."""
+    juegos = []
+    for ruta in sorted(archivos):
+        tipo = sueltos.tipo_de_ruta(ruta)
+        if tipo is None or tipo[0] != "juego":
+            continue
+        central = _objeto(archivos[ruta])
+        if isinstance(central, dict) and central.get("id") == tipo[1] and central.get("estado") in ("retirado", "bloqueado"):
+            juegos.append({"id": tipo[1], "estado": central["estado"]})
+    return _json({"esquema": 1, "juegos": juegos, "canales": [
+        {"id": cid, "estado": c["estado"]} for cid, c in sorted(canales.items()) if c["estado"] != "activo"]})
+
+
 def _trozos_de_miembros(cuentas: dict) -> dict:
     """`miembros/<xx>.json`, con `<xx>` del SHA-256 del id escrito en decimal y las cuentas ordenadas por id."""
     por_trozo = {}
@@ -379,7 +394,7 @@ def _trozos(prefijo: str, clave: str, entradas: dict) -> dict:
 def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ahora: str) -> dict:
     """{ruta: bytes} de la rama `publicado`: `indice.json`, `programa/juegos/<xx>.json` (fase B) y, para la app 0.3.0,
     `juegos/<xx>.json`, `detalle/<juego>/<canal>.json`, `canales/<xx>.json`, `logos/<canal>.<ext>` y
-    `etiquetas.json`; desde la fase D, `miembros/<xx>.json` y `buscar-canales.json`. ErrorPublicar si algún archivo
+    `etiquetas.json`; desde la fase D, `miembros/<xx>.json`, `buscar-canales.json` y `retirados.json`. ErrorPublicar si algún archivo
     pasa de 8 MB."""
     resultado = _trozos("programa/juegos/", "juegos", indice_por_juego(archivos))
     canales, logos = canales_publicados(archivos)
@@ -390,6 +405,7 @@ def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ah
     resultado.update(_trozos_de_miembros(miembros_publicados(archivos, canales, hoy)))
     if canales:
         resultado["buscar-canales.json"] = buscar_canales(canales, juegos)
+        resultado["retirados.json"] = retirados(archivos, canales)
     if particion.RUTA_ETIQUETAS in archivos or isinstance((catalogo or {}).get("etiquetas"), list):
         # Sin ninguna de las dos fuentes (un `main` vacío) no hay nada que decir: la app sigue con el catálogo.
         etiquetas = (_objeto(archivos.get(particion.RUTA_ETIQUETAS, b"")) or {}).get("etiquetas")
