@@ -1,4 +1,4 @@
-"""Pruebas de las reglas del robot.  Uso:  python -m unittest discover -s robot/pruebas"""
+"""Pruebas de las reglas del robot.  Uso:  python -I -m unittest discover -s robot/pruebas -t robot/pruebas"""
 import copy
 import json
 import pathlib
@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from permisos import Cambio, Permisos, Rol, RUTA_CATALOGO, comprobar  # noqa: E402
+import permisos as permisos_mod  # noqa: E402
 
 HASH = "blake3:" + "a" * 64
 BASE = {
@@ -25,7 +26,8 @@ BASE = {
     }],
 }
 ADMIN, EDITOR, COLABORADOR, NADIE = (Permisos(r) for r in (Rol.ADMINISTRADOR, Rol.EDITOR, Rol.COLABORADOR, Rol.NINGUNO))
-PROPIETARIO = Permisos(Rol.PROPIETARIO)
+PROPIETARIO = Permisos(Rol.DUENO)
+MANDA = PROPIETARIO  # quien puede con todo el repositorio: el Dueño del programa
 
 
 def catalogo(cambiar=None, subir_version=True):
@@ -72,7 +74,7 @@ class General(unittest.TestCase):
 
     def test_paquete_sin_https_o_con_hash_malo(self):
         def cambiar(c):
-            juego(c)["parche"]["paquetes"][0].update(url="http://example.org/p.zip", hash="sha1:123")
+            juego(c)["parche"]["paquetes"][0].update(url="http://example.org/p.zip", hash="sha1:12")
         self.assertEqual(2, len(revisar(ADMIN, cambiar)))
 
     def test_enlace_simbolico(self):
@@ -81,7 +83,9 @@ class General(unittest.TestCase):
         self.assertIn("enlaces simbólicos", motivos[0])
 
     def test_primer_catalogo_sin_uno_anterior(self):
-        self.assertEqual([], comprobar([Cambio(RUTA_CATALOGO, "A")], None, json.dumps(BASE), ADMIN))
+        # Crear el catálogo desde cero es cosa de quien manda en todo (no hay nada con qué comparar).
+        self.assertEqual([], comprobar([Cambio(RUTA_CATALOGO, "A")], None, json.dumps(BASE), MANDA))
+        self.assertIn("no se puede leer", comprobar([Cambio(RUTA_CATALOGO, "A")], None, json.dumps(BASE), ADMIN)[0])
 
 
 class Administrador(unittest.TestCase):
@@ -90,8 +94,7 @@ class Administrador(unittest.TestCase):
             c["juegos"].append({"id": "juego2", "habilitado": True})
             c["launcher"]["versionMinima"] = "0.2.0"
             juego(c).update(pruebas=True, habilitado=False, etiquetas=["beta", "adultos"])
-        archivos = [Cambio("README.md", "M"), Cambio("pruebas/crear-juego-prueba.py", "M"),
-                    Cambio("catalogo/juegos/juego2/banner.jpg", "A", tamano=100)]
+        archivos = [Cambio("catalogo/juegos/juego2/banner.jpg", "A", tamano=100), Cambio("catalogo/otro.json", "A")]
         self.assertEqual([], revisar(ADMIN, cambiar, archivos=archivos))
 
     def test_no_crea_edita_ni_borra_etiquetas_del_catalogo(self):
@@ -104,7 +107,7 @@ class Administrador(unittest.TestCase):
             with self.subTest(que):
                 motivos = revisar(ADMIN, cambiar)
                 self.assertEqual(1, len(motivos), motivos)
-                self.assertIn("solo las crea, edita o borra el Propietario", motivos[0])
+                self.assertIn("solo las crea, edita o borra el Dueño del programa", motivos[0])
 
     def test_pone_y_quita_en_un_juego_etiquetas_que_ya_existen(self):
         self.assertEqual([], revisar(ADMIN, lambda c: juego(c).update(etiquetas=["adultos"])))
@@ -162,17 +165,18 @@ class Editor(unittest.TestCase):
             with self.subTest(clave):
                 motivos = revisar(EDITOR, lambda c: c.update({clave: valor}))
                 self.assertEqual(1, len(motivos), motivos)
-                self.assertIn("el Propietario" if clave == "etiquetas" else "solo la cambia un Administrador", motivos[0])
+                esperado = {"etiquetas": "el Dueño del programa", "esquema": "solo entiende el 1"}  # esquema: lo para lector_app
+                self.assertIn(esperado.get(clave, "solo la cambia un Administrador"), motivos[0])
 
     def test_no_toca_el_robot_ni_otros_archivos(self):
-        for ruta in ("README.md", "equipo.json", "catalogo/otro.json"):
+        for ruta in ("catalogo/otro.json", "catalogo/juegos/otro.json"):
             with self.subTest(ruta):
                 motivos = revisar(EDITOR, archivos=[Cambio(ruta, "M")], subir_version=False)
                 self.assertIn("solo lo puede cambiar un Administrador", motivos[0])
-        for ruta in (".github/workflows/permisos.yml", "robot/permisos.py"):
+        for ruta in (".github/workflows/permisos.yml", "robot/permisos.py", "README.md", "equipo.json"):
             with self.subTest(ruta):
                 motivos = revisar(EDITOR, archivos=[Cambio(ruta, "M")], subir_version=False)
-                self.assertIn("solo lo cambia el Propietario", motivos[0])
+                self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
 
     def test_solo_imagenes_y_no_enormes(self):
         exe = revisar(EDITOR, archivos=[Cambio("catalogo/juegos/juego1/a.exe", "A", tamano=1)], subir_version=False)
@@ -200,7 +204,7 @@ class Colaborador(unittest.TestCase):
             "parche.paquetes": lambda c: juego(c)["parche"]["paquetes"][0].update(tamano=11),
             "edición nueva": lambda c: juego(c)["ediciones"].append({"id": "gog"}),
             "edición quitada": lambda c: juego(c)["ediciones"].clear(),
-            "huella": lambda c: juego(c)["ediciones"][0].update(huella=[{"ruta": "a"}]),
+            "huella": lambda c: juego(c)["ediciones"][0].update(huella=[{"ruta": "a", "tamano": 1, "hashParcial": HASH, "hash": HASH}]),
             "habilitado": lambda c: juego(c).update(habilitado=False),
             "crear o quitar": lambda c: juego(c).pop("parche"),
         }
@@ -233,6 +237,35 @@ class RolesPorJuego(unittest.TestCase):
         self.assertEqual(Rol.COLABORADOR, ADMIN.el_menor(COLABORADOR).rol_global)
 
 
+class PythonCompilado(unittest.TestCase):
+    """Ningún `.pyc` ni `__pycache__/` entra en el repositorio, lo proponga quien lo proponga."""
+
+    RUTAS = ("robot/__pycache__/permisos.cpython-313.pyc", "robot/pruebas/__pycache__/test_tmp_inst.cpython-313.pyc",
+             "__pycache__/venv.cpython-312.pyc", "venv.pyc", "catalogo/x.pyc", "catalogo/juegos/juego1/a.PYC",
+             "catalogo/__pycache__/x", "catalogo/juegos/juego1/__PYCACHE__/x.png", "robot/x.pyo")
+
+    def test_nadie_sube_python_compilado(self):
+        for permisos in (PROPIETARIO, ADMIN, EDITOR, COLABORADOR):
+            for ruta in self.RUTAS:
+                for estado in ("A", "M"):
+                    with self.subTest(rol=permisos.rol_global, ruta=ruta, estado=estado):
+                        motivos = revisar(permisos, archivos=[Cambio(ruta, estado, tamano=10)], subir_version=False)
+                        self.assertTrue(any("Python compilado" in m for m in motivos), motivos)
+
+    def test_borrarlos_si_se_puede(self):
+        archivos = [Cambio(r, "D") for r in self.RUTAS]
+        self.assertEqual([], revisar(PROPIETARIO, archivos=archivos, subir_version=False))
+
+    def test_lo_parecido_no_es_compilado(self):
+        for ruta in ("robot/permisos.py", "catalogo/pyc.json", "catalogo/juegos/juego1/pycache.png", "x.pyc.txt"):
+            with self.subTest(ruta=ruta):
+                self.assertFalse(permisos_mod.es_python_compilado(ruta))
+
+    def test_el_repositorio_los_ignora(self):
+        ignorar = (pathlib.Path(__file__).resolve().parents[2] / ".gitignore").read_text(encoding="utf-8").split()
+        self.assertIn("__pycache__/", ignorar)
+        self.assertIn("*.pyc", ignorar)
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -243,7 +276,7 @@ class SoloDelPropietario(unittest.TestCase):
              "robot/permisos.py", "robot/pruebas/test_permisos.py", "robot/requisitos.txt",
              ".github/workflows/permisos.yml", ".github/workflows/nuevo.yml", ".github/CODEOWNERS",
              "Robot/permisos.py", ".GITHUB/workflows/x.yml"]
-    PROPIETARIO = Permisos(Rol.PROPIETARIO)
+    PROPIETARIO = Permisos(Rol.DUENO)
 
     def proponer(self, permisos, ruta, estado="M"):
         return comprobar([Cambio(ruta, estado)], json.dumps(BASE), json.dumps(BASE), permisos)
@@ -254,13 +287,13 @@ class SoloDelPropietario(unittest.TestCase):
                 with self.subTest(ruta=ruta, estado=estado):
                     motivos = self.proponer(ADMIN, ruta, estado)
                     self.assertEqual(1, len(motivos))
-                    self.assertIn("solo lo cambia el Propietario", motivos[0])
+                    self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
 
     def test_los_demas_roles_tampoco(self):
         for permisos in (EDITOR, COLABORADOR):
             for ruta in ("robot/permisos.py", ".github/workflows/permisos.yml", "normas/propietario.json"):
                 with self.subTest(rol=permisos.rol_global, ruta=ruta):
-                    self.assertIn("solo lo cambia el Propietario", self.proponer(permisos, ruta)[0])
+                    self.assertIn("solo lo cambia el Dueño del programa", self.proponer(permisos, ruta)[0])
 
     def test_el_propietario_si(self):
         for ruta in self.RUTAS:
@@ -268,15 +301,35 @@ class SoloDelPropietario(unittest.TestCase):
                 self.assertEqual([], self.proponer(self.PROPIETARIO, ruta))
 
     def test_si_un_administrador_sube_un_cambio_a_la_propuesta_del_propietario_cuenta_el_administrador(self):
-        self.assertIn("solo lo cambia el Propietario",
+        self.assertIn("solo lo cambia el Dueño del programa",
                       self.proponer(self.PROPIETARIO.el_menor(ADMIN), "robot/permisos.py")[0])
 
     def test_el_mensaje_dice_que_carpeta_es(self):
         self.assertIn("el robot de permisos (`robot/`)", self.proponer(ADMIN, "robot/permisos.py")[0])
         self.assertIn("(`.github/`)", self.proponer(ADMIN, ".github/workflows/permisos.yml")[0])
-        self.assertIn("grupo.archivosProhibidos", self.proponer(ADMIN, "normas/archivos-prohibidos.json")[0])
+        self.assertIn("canales/<canal>/lista-negra.json", self.proponer(ADMIN, "normas/archivos-prohibidos.json")[0])
 
-    def test_lo_demas_fuera_de_catalogo_sigue_siendo_del_administrador(self):
-        for ruta in ("README.md", "pruebas/crear-juego-prueba.py", "robots.txt", "normas.md", "github/x.yml"):
+    # Lista blanca: fuera de `catalogo/` todo es del Propietario. Sobre todo lo que Python cargaría desde la raíz
+    # del `main` descargado (`python -m venv`, `python -m unittest`) con el permiso de escritura del robot.
+    RAIZ_PELIGROSA = ("venv.py", "unittest.py", "ensurepip.py", "sitecustomize.py", "usercustomize.py", "pip.py",
+                      "encodings/__init__.py", "venv/__init__.py", "json.py", "blake3.py", "x.pth", ".gitattributes",
+                      ".gitmodules", ".python-version", "README.md", "pruebas/crear-juego-prueba.py", "robots.txt",
+                      "normas.md", "github/x.yml", "Catalogo/x.json", "CATALOGO/catalogo.json", "catalogo",
+                      "catalogo.json", "otra/catalogo/x.json")
+
+    def test_fuera_de_catalogo_es_del_propietario(self):
+        for permisos in (Permisos(Rol.PROPIETARIO), ADMIN, EDITOR, COLABORADOR):
+            for ruta in self.RAIZ_PELIGROSA:
+                for estado in ("A", "M", "D"):
+                    with self.subTest(rol=permisos.rol_global, ruta=ruta, estado=estado):
+                        motivos = self.proponer(permisos, ruta, estado)
+                        self.assertEqual(1, len(motivos), motivos)
+                        self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
+
+    def test_el_propietario_puede_fuera_de_catalogo(self):
+        for ruta in self.RAIZ_PELIGROSA:
             with self.subTest(ruta=ruta):
-                self.assertEqual([], self.proponer(ADMIN, ruta))
+                self.assertEqual([], self.proponer(self.PROPIETARIO, ruta))
+
+    def test_un_administrador_que_sube_a_la_propuesta_del_propietario_tampoco_deja_codigo_en_la_raiz(self):
+        self.assertIn("solo lo cambia el Dueño del programa", self.proponer(self.PROPIETARIO.el_menor(ADMIN), "venv.py")[0])

@@ -1,0 +1,30 @@
+{
+  "esquema": 1,
+  "id": "ornizen",
+  "nombre": "Ornizen",
+  "descripcion": "Canal oficial del Parcheador Rance: traducciones al español de la saga Rance.",
+  "contacto": {
+    "issues": true
+  },
+  "paquetes": [
+    "OrnizStudio/ParcheadorRance-Datos"
+  ],
+  "adultos": true,
+  "normasAceptadas": 0,
+  "creado": "2026-11-21",
+  "estado": "activo",
+  "oculto": false,
+  "verificacion": {
+    "verificado": true,
+    "desde": "2026-11-21",
+    "motivo": "Canal oficial del programa.",
+    "historial": [
+      {
+        "fecha": "2026-11-21",
+        "accion": "verificar",
+        "motivo": "Canal oficial del programa.",
+        "por": 55180666
+      }
+    ]
+  }
+}

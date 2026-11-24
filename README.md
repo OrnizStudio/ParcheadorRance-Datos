@@ -58,10 +58,52 @@ rechaza un archivo que no coincida. Si hay que corregir algo, se publica una ver
 
 ## Roles y robot de permisos
 
+> **Canales (fase A).** Los roles ya no salen solo de los equipos de GitHub: el robot los lee de
+> [`canales/ornizen/miembros.json`](canales/ornizen/miembros.json) (el canal oficial), por el **número** de la cuenta
+> de GitHub, siempre de `main`. Mientras dure la transición cuenta el mayor entre ese archivo y el equipo, salvo que
+> la cuenta esté en [`canales/ornizen/lista-negra.json`](canales/ornizen/lista-negra.json): entonces no tiene nada.
+> El antiguo «Propietario» (owner) pasa a llamarse **Dueño del programa** y se reconoce por su número en
+> [`normas/propietario.json`](normas/propietario.json) (`duenos`); «Propietario» es ahora el rol más alto **de un
+> canal**. Quién puede invitar, aceptar, cambiar o quitar miembros, y qué puede tocar cada rol en `canales/`, está en
+> [`robot/canales.py`](robot/canales.py). En resumen:
+>
+> - Cada uno gestiona (invita, cambia, quita, veta y quita vetos) solo a quien está **por debajo de su rol**. Un
+>   Propietario del canal no toca a otro Propietario: solo puede irse él. Siempre queda al menos un Propietario.
+> - Cada veto de `lista-negra.json → usuarios` lleva `por` (el número de quien lo puso). Nadie deshace el veto de
+>   alguien de su mismo rol o superior, salvo el suyo propio.
+> - El **Dueño del programa está por encima de todo veto**: no se le puede vetar, y lo puede todo salvo romper el formato.
+> - Lo que cuenta es el número de la cuenta; el nombre (`cuenta`) solo se enseña, pero tiene que ser el de esa cuenta
+>   en GitHub (el robot lo comprueba). Cada miembro puede corregir el suyo tras renombrarse.
+> - En `canales/` solo valen archivos normales (nada de enlaces simbólicos ni submódulos), y el logo tiene que ser
+>   de verdad PNG, WebP o JPEG.
+> - Fuera de `canales/` (el catálogo y lo demás) hace falta rol en el canal oficial.
+> - Fuera del Dueño, nadie publica un archivo de canal que dice lo mismo que en `main` (solo cambia el formato o el
+>   orden). Quien solo puede tocar su propia fila (sin rol, Colaborador o Editor) deja el resto del archivo igual
+>   byte a byte, o el archivo entero tal como lo escribe el parcheador. Su propia fila, tal como la escribe el
+>   parcheador o como estaba, cambiando solo el valor (sin espacios ni escapes de más).
+> - Si la propuesta la tocan varias cuentas (quien la abre no es quien sube el último cambio), no se acepta nada en
+>   `canales/`. Cuenta el rol más bajo entre quien la abrió, quien subió el último cambio, quien relanza el robot,
+>   el autor y el *committer* de cada commit y quien hizo cada subida a la propuesta. Las subidas las sigue el robot
+>   hacia atrás, de la cabeza a cuando se abrió la propuesta, con el nombre de sus propias ejecuciones (propuesta,
+>   acción y commit de antes). Si falta una (se subió con la propuesta cerrada, se borró su comprobación…), no se
+>   acepta, y subir otro commit encima no lo arregla: hay que abrir una propuesta nueva desde una rama con solo tus
+>   commits, o que el Dueño **relance** la comprobación (así responde de lo que hay; reabrirla o editarla no vale).
+>   Un commit que no es de ninguna cuenta de GitHub no se acepta, salvo que todo lo haya subido el Dueño. Solo se
+>   menciona (`@`) a quien abrió la propuesta. Se comprueba el commit del evento: si la propuesta ya tiene otro, el
+>   robot para.
+> - Una propuesta no puede obligar al robot a preguntar a GitHub sin fin: como mucho 20 filas de miembros o vetos con
+>   cuenta nueva y 90 consultas por ejecución (300 el Dueño): las 20 filas siempre caben. Sin rol solo se mira la fila propia.
+> - El comentario del robot no se puede manipular desde la propuesta: lo que viene de ella va en código, en una sola
+>   línea, recortado y sin enlaces, HTML ni menciones.
+> - El nombre de un canal no usa letras «de estilo» (anchas, matemáticas, en círculo, versalitas). Lo que se parezca
+>   a «Orniz» es solo del Dueño y del canal oficial.
+>
+> Lo que sigue describe los equipos de GitHub, que se quitan en la fase B.
+
 | Rol | Equipo de GitHub | Nivel en este repositorio | Qué puede cambiar |
 |---|---|---|---|
 | Propietario | `administradores` (y *owner* de la organización) | Admin | Todo, también las normas generales (`normas/`), el robot (`robot/`), la configuración de GitHub (`.github/`) y las **etiquetas del catálogo** (crearlas, editarlas y borrarlas: son globales). |
-| Administrador | `administradores` | Admin | Todo menos `normas/`, `robot/` y `.github/`, y menos crear, editar o borrar etiquetas del catálogo (poner y quitar en un juego las que ya existen, sí). |
+| Administrador | `administradores` | Admin | Solo lo de `catalogo/` (fuera de ahí todo es del Propietario), y menos crear, editar o borrar etiquetas del catálogo (poner y quitar en un juego las que ya existen, sí). |
 | Editor | `editores` | Escritura (*write*) | El contenido de los juegos **que ya existen**: ediciones, versiones (crearlas, publicarlas, retirarlas), textos, imágenes, etiquetas puestas, créditos. No puede dar de alta, quitar, publicar ni ocultar un juego entero, ni tocar el parcheador (`launcher`), el grupo, las etiquetas del catálogo o cualquier archivo fuera de `catalogo/`. |
 | Colaborador | `colaboradores` | Clasificación (*triage*) | Solo, en juegos y versiones que ya existen: **textos y notas** (`sinopsis`, `notaEdicion`, `parche.notas`), **etiquetas** (poner y quitar las que existen) y **estado de la traducción** (`estado`, `progreso`, `contenido`). |
 
@@ -75,10 +117,19 @@ Cómo funciona:
 - A todos, también a los Administradores que usen propuestas, les comprueba que el catálogo se pueda leer,
   que `versionCatalogo` suba, que las etiquetas usadas existan y que los paquetes lleven dirección `https`,
   tamaño y hash.
+- «Que se pueda leer» es que lo lea **el parcheador**, no solo que sea JSON (`robot/lector_app.py` copia su
+  modelo): UTF-8 estricto, sin caracteres partidos (un `\ud800` suelto), sin claves repetidas, cada campo con el
+  tipo que espera la app y `esquema` 1. `versionCatalogo` sube como mucho 1000 de una vez y nunca pasa de
+  1 073 741 823: un catálogo ilegible o un número que no cabe en el parcheador dejaría a todos sin catálogos nuevos.
+  Si `main` ya tuviera un número fuera de ese rango, o un `catalogo.json` que no se puede leer, solo el Dueño
+  toca el catálogo hasta arreglarlo, y la versión como mucho a 536 870 912 (el número de rescate).
 - Un borrador (*draft*) se comprueba pero no se publica hasta marcarlo como listo.
 - Los Colaboradores no pueden crear ramas aquí: proponen desde una copia propia del repositorio (*fork*).
   Los Editores sí pueden crear ramas (necesitan escritura para subir paquetes a las Releases).
 - Cuenta el rol más bajo entre quien abrió la propuesta y quien subió el último cambio.
+- Fuera de `catalogo/` **todo es del Propietario** (la raíz, `README.md`, `pruebas/`…): el robot y sus pruebas
+  se ejecutan con este repositorio como carpeta de trabajo, y un `venv.py` o un `unittest.py` en la raíz podría
+  ejecutarse con su permiso de escritura. Por eso, además, todo `python -m` del robot va con `-I`.
 - `normas/`, `robot/` y `.github/` **solo los cambia el Propietario**, ni siquiera los Administradores: son
   las normas generales y lo que las hace cumplir. Si un Administrador pudiera cambiar el robot o sus flujos
   de trabajo, podría quitar cualquier regla. Quién es el Propietario lo dice
@@ -111,8 +162,9 @@ Hay **dos listas** y cuentan las dos a la vez:
   dos tienen nivel *admin*), así que su cuenta está escrita en [`normas/propietario.json`](normas/propietario.json).
   Todo lo que hay en `normas/` lo cambia solo el Propietario, también ese archivo. Si cambia la cuenta del
   Propietario, hay que cambiarla allí.
-- Más adelante, con los canales comunitarios, cada canal tendrá su lista propia con la misma regla: solo
-  añadir.
+- Desde la fase A de canales, la lista propia del canal oficial es `archivos` de
+  [`canales/ornizen/lista-negra.json`](canales/ornizen/lista-negra.json), con la misma regla: solo añade, y cuentan la
+  de `main` y la de la propuesta a la vez.
 - Cómo se escriben los patrones (sin distinguir mayúsculas; `*` vale por cualquier cosa):
   - `steam_api64.dll` o `uplay_r1_loader*.dll`: el **nombre del archivo**, en cualquier carpeta del juego;
   - `steam_settings/` (con barra al final): **cualquier archivo dentro de una carpeta** con ese nombre;

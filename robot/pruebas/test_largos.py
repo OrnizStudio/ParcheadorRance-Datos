@@ -10,7 +10,7 @@ from permisos import (Cambio, Permisos, Rol, RUTA_CATALOGO, comprobar, comprobar
                       LARGO_NOTA_EDICION, LARGO_NOVEDADES, LARGO_SINOPSIS, LARGO_VERSION)
 
 HASH = "blake3:" + "a" * 64
-PROPIETARIO, EDITOR, COLABORADOR = Permisos(Rol.PROPIETARIO), Permisos(Rol.EDITOR), Permisos(Rol.COLABORADOR)
+PROPIETARIO, EDITOR, COLABORADOR = Permisos(Rol.DUENO), Permisos(Rol.EDITOR), Permisos(Rol.COLABORADOR)
 BASE = {
     "esquema": 1, "versionCatalogo": 5, "etiquetas": [],
     "juegos": [{

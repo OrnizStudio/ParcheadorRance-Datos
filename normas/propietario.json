@@ -1,5 +1,13 @@
 {
   "esquema": 1,
-  "descripcion": "Cuenta de GitHub del Propietario (owner de la organización). El robot no puede distinguirlo de un Administrador por sí solo: los dos tienen nivel admin. Solo el Propietario puede cambiar lo que hay en normas/, también este archivo. Si cambia la cuenta del Propietario, hay que cambiarla aquí.",
-  "propietario": ["0rnizL"]
+  "descripcion": "Dueño del programa. `duenos` (con el id numérico de la cuenta de GitHub) es lo que mira el robot desde la fase A de canales; `propietario` (solo cuentas) se queda para los parcheadores 0.2.x. Solo el Dueño puede cambiar lo que hay en normas/, también este archivo.",
+  "propietario": [
+    "0rnizL"
+  ],
+  "duenos": [
+    {
+      "id": 55180666,
+      "cuenta": "0rnizL"
+    }
+  ]
 }

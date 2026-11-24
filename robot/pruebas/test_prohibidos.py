@@ -58,7 +58,7 @@ def lector(servidos):
 BASE = {
     "esquema": 1, "versionCatalogo": 5, "etiquetas": [],
     "juegos": [{"id": "juego1", "ediciones": [{"id": "steam", "huella": [
-        {"ruta": "steam_api64.dll", "tamano": 1, "hash": "blake3:" + "a" * 64}]}],
+        {"ruta": "steam_api64.dll", "tamano": 1, "hashParcial": "blake3:" + "a" * 64, "hash": "blake3:" + "a" * 64}]}],
         "parche": {"version": "1.0.0", "paquetes": [paquete_de(zip_con(["Datos/textos.dat"]), "https://example.org/viejo.zip")]}}],
 }
 
@@ -105,7 +105,7 @@ class Catalogo(unittest.TestCase):
     def test_huella_parcheada_con_un_archivo_protegido_se_rechaza_tambien_al_administrador(self):
         def cambiar(c):
             c["juegos"][0]["ediciones"][0]["huellasParcheadas"] = [
-                {"version": "1.1.0", "archivos": [{"ruta": "Steam_Api64.dll", "tamano": 1, "hash": "blake3:" + "b" * 64}]}]
+                {"version": "1.1.0", "archivos": [{"ruta": "Steam_Api64.dll", "tamano": 1, "hashParcial": "blake3:" + "b" * 64, "hash": "blake3:" + "b" * 64}]}]
         motivos = revisar(cambiar)
         self.assertEqual(1, len(motivos))
         self.assertIn("Este parche toca un archivo protegido (Steam_Api64.dll). " + MENSAJE, motivos[0])
@@ -164,7 +164,7 @@ def con_lista_de_grupo(patrones, nombre="Ornizen"):
 def huella_que_toca(*rutas):
     def poner(c):
         c["juegos"][0]["ediciones"][0]["huellasParcheadas"] = [
-            {"version": "1.1.0", "archivos": [{"ruta": r, "tamano": 1, "hash": "blake3:" + "b" * 64} for r in rutas]}]
+            {"version": "1.1.0", "archivos": [{"ruta": r, "tamano": 1, "hashParcial": "blake3:" + "b" * 64, "hash": "blake3:" + "b" * 64} for r in rutas]}]
     return poner
 
 
@@ -237,15 +237,15 @@ class ListaGeneralYPropietario(unittest.TestCase):
         return comprobar([Cambio(RUTA_PROHIBIDOS, "M")], json.dumps(BASE), json.dumps(BASE), permisos)
 
     def test_solo_el_propietario_cambia_la_lista_general(self):
-        self.assertEqual([], self.proponer_cambio_de_normas(Permisos(Rol.PROPIETARIO)))
+        self.assertEqual([], self.proponer_cambio_de_normas(Permisos(Rol.DUENO)))
         for rol in (Rol.ADMINISTRADOR, Rol.EDITOR, Rol.COLABORADOR):
             with self.subTest(rol=rol):
                 motivos = self.proponer_cambio_de_normas(Permisos(rol))
                 self.assertEqual(1, len(motivos))
-                self.assertIn("solo lo cambia el Propietario", motivos[0])
+                self.assertIn("solo lo cambia el Dueño del programa", motivos[0])
 
     def test_el_propietario_tambien_queda_sujeto_a_la_lista(self):
-        motivos = revisar(huella_que_toca("steam_api.dll"), permisos=Permisos(Rol.PROPIETARIO))
+        motivos = revisar(huella_que_toca("steam_api.dll"), permisos=Permisos(Rol.DUENO))
         self.assertEqual(1, len(motivos))
         self.assertIn(MENSAJE, motivos[0])
 
@@ -255,7 +255,7 @@ class ListaGeneralYPropietario(unittest.TestCase):
         def api(nivel):
             return lambda metodo, ruta, tolerar=(): {"role_name": nivel}
         cuenta = next(iter(propietarios))
-        self.assertEqual(Rol.PROPIETARIO, permisos_de(cuenta.upper(), api("admin"), {}, propietarios).rol_global)
+        self.assertEqual(Rol.DUENO, permisos_de(cuenta.upper(), api("admin"), {}, propietarios).rol_global)
         self.assertEqual(Rol.ADMINISTRADOR, permisos_de("otra-cuenta", api("admin"), {}, propietarios).rol_global)
         # Figurar en la lista no basta: hace falta además ser admin del repositorio.
         self.assertEqual(Rol.EDITOR, permisos_de(cuenta, api("write"), {}, propietarios).rol_global)
@@ -293,7 +293,7 @@ class LeerPaquete(unittest.TestCase):
 
     def test_sin_https(self):
         with self.assertRaises(PaqueteIlegible):
-            self.leer(b"", {"url": "http://x/p.zip", "tamano": 1, "hash": "blake3:" + "a" * 64})
+            self.leer(b"", {"url": "http://x/p.zip", "tamano": 1, "hashParcial": "blake3:" + "a" * 64, "hash": "blake3:" + "a" * 64})
 
     def test_con_blake3_de_verdad_si_esta_instalado(self):
         try:

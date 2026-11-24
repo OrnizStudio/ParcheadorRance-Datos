@@ -11,14 +11,26 @@
 # - Lo único que se instala de fuera es BLAKE3 (robot/requisitos.txt), con versión y hash fijados, para
 #   comprobar los paquetes de parche que se descargan (lista de archivos prohibidos, normas/). Se instala
 #   con reintentos (robot/instalar.sh); si aun así falla, el robot avisa de que es un fallo temporal.
+# - Python: nunca `python -m …` sin `-I` (pondría la raíz del `main` descargado en sys.path). `python robot/x.py`
+#   sí vale: pone en sys.path solo `robot/`, que es del Propietario. Además, fuera de `catalogo/` todo es del
+#   Propietario (permisos.py, CARPETA_CATALOGO), así que nadie más puede dejar código en la raíz.
 name: Robot de permisos
+# El nombre de cada ejecución: propuesta, acción y commit sobre el que se subió la cabeza. El robot lo lee para seguir
+# quién subió cada commit (permisos.py, cuentas_de_la_propuesta): no cambiarlo sin cambiar NOMBRE_DE_EJECUCION.
+run-name: "Robot de permisos · #${{ github.event.pull_request.number }} · ${{ github.event.action }} · antes ${{ github.event.before || 'ninguno' }}"
 
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `edited`: también al cambiar la base de la propuesta (si no, se podría abrir contra otra rama, dejar en verde
+    # un trabajo `permisos` propio y luego pasarla a `main` sin que este robot la mire).
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
+
+# Que Python no deje `.pyc` en la copia de trabajo (`-I` ignora esta variable: ahí va `-B`).
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
 
 concurrency:
   group: permisos-${{ github.event.pull_request.number }}
@@ -31,6 +43,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      # Leer las ejecuciones del robot sobre la propuesta: quién ha subido cada cambio (cuentas_de_la_propuesta).
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,15 +70,33 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
+          PR_ACTOR_ID: ${{ github.event.sender.id }}
+          # El commit del evento (si la propuesta ya tiene otro, el robot para) y quien lanza esta ejecución (distinto
+          # de `sender` al relanzarla): también cuenta para el rol más bajo.
+          PR_CABEZA: ${{ github.event.pull_request.head.sha }}
+          PR_DISPARADOR: ${{ github.triggering_actor }}
+          # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
+          PR_ACCION: ${{ github.event.action }}
+          # synchronize: el commit sobre el que se ha subido la cabeza (el robot tiene que haberlo visto subir).
+          PR_ANTES: ${{ github.event.before }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py'
 
   fusionar:
     needs: permisos
     runs-on: ubuntu-latest
+    # Una sola publicación a la vez en todo el repositorio: cada una vuelve a comprobar contra el `main` de ese
+    # instante y, justo antes de fusionar, confirma que `main` no se ha movido (si se ha movido, no publica y lo dice).
+    # Ojo: GitHub solo deja una en espera por grupo; si llegan varias a la vez, las de en medio se cancelan y hay que
+    # volver a lanzarlas (o subir cualquier cambio a la propuesta).
+    concurrency:
+      group: fusionar-datos
+      cancel-in-progress: false
     timeout-minutes: 20
     permissions:
       contents: write
       pull-requests: write
+      # Leer las ejecuciones del robot sobre la propuesta: quién ha subido cada cambio (cuentas_de_la_propuesta).
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,4 +124,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMERO: ${{ github.event.pull_request.number }}
           PR_ACTOR: ${{ github.event.sender.login }}
+          PR_ACTOR_ID: ${{ github.event.sender.id }}
+          # El commit del evento (si la propuesta ya tiene otro, el robot para) y quien lanza esta ejecución (distinto
+          # de `sender` al relanzarla): también cuenta para el rol más bajo.
+          PR_CABEZA: ${{ github.event.pull_request.head.sha }}
+          PR_DISPARADOR: ${{ github.triggering_actor }}
+          # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
+          PR_ACCION: ${{ github.event.action }}
+          # synchronize: el commit sobre el que se ha subido la cabeza (el robot tiene que haberlo visto subir).
+          PR_ANTES: ${{ github.event.before }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'
