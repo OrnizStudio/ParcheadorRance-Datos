@@ -177,6 +177,22 @@ class CanalesBloqueados(unittest.TestCase):
         p.poner(f"normas/lista-negra/usuarios/{otro_trozo}.json", {"esquema": 1, "usuarios": [veto(YO)]})
         self.assertTrue(any(f"va en `usuarios/{listas.trozo(YO)}.json`" in m for m in juzgar(p, dueno())))
 
+    def test_el_esqueleto_lo_calcula_el_robot(self):
+        # La app escribe {id, motivo, fecha}; vale también vacío. Si lo escribe, tiene que ser el del @.
+        for fila in ({"id": "malware_es", "motivo": "Malware", "fecha": "2026-11-20"},
+                     {"id": "malware_es", "esqueleto": "", "motivo": "Malware", "fecha": "2026-11-20"}):
+            with self.subTest(fila):
+                p = Propuesta(main_con_dos_canales()).poner(listas.RUTA_CANALES, {"esquema": 1, "canales": [fila]})
+                self.assertEqual([], juzgar(p, dueno()))
+        p = Propuesta(main_con_dos_canales()).poner(listas.RUTA_CANALES, {"esquema": 1, "canales": [
+            {"id": "malware_es", "esqueleto": "otro", "motivo": "Malware", "fecha": "2026-11-20"}]})
+        self.assertTrue(any("`esqueleto` tiene que ser" in m for m in juzgar(p, dueno())))
+        # Y sin él, el canal bloqueado sigue impidiendo nombres parecidos.
+        main = con(main_con_dos_canales())
+        main[listas.RUTA_CANALES] = particion.texto_json({"esquema": 1, "canales": [
+            {"id": "malware_es", "motivo": "Malware", "fecha": "2026-11-20"}]})
+        self.assertTrue(any("@malware_es" in m for m in Nombres.renombrar(self, "Malware ES", main)))
+
     def test_cinco_mil_canales_vetados_como_mucho(self):
         ids = [f"c{i:05d}" for i in range(5001)]
         p = Propuesta(main_con_dos_canales())
