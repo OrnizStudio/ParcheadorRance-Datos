@@ -116,6 +116,8 @@ def comprobar_canal_nuevo(sol: Solicitud, leer, autor_id, cuenta_de, creada_el, 
     motivos = []
     if not canales.ID_CANAL.match(c):
         return [f"`{c}` no puede ser el @ de un canal (de 3 a 20 minúsculas, números y `_`)."]
+    if c in canales.ARROBAS_DEL_PROGRAMA:
+        return [f"@{c} está reservado por el programa y no puede ser el @ de un canal."]
     creada = creada_el(autor_id)
     if creada is None or (hoy - creada).days < DIAS_CUENTA:
         motivos.append(f"Para pedir un canal la cuenta tiene que tener al menos {DIAS_CUENTA} días.")

@@ -118,6 +118,9 @@ class CanalNuevo(unittest.TestCase):
         self.assertTrue(juzgar(nuevo_canal(nombre="Rance en Еѕpañol")))
         self.assertTrue(juzgar(nuevo_canal(nombre="0rnizen")))
 
+    def test_programa_esta_reservado(self):
+        self.assertTrue(hay(juzgar(nuevo_canal(canal="programa", nombre="Programa")), "reservado por el programa"))
+
     def test_un_arroba_que_ya_existio(self):
         main = main_con_dos_canales()
         canal = canal_json()
