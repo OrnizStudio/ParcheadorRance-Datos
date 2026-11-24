@@ -196,12 +196,12 @@ EXTENSION_LOGO = {"png": "png", "webp": "webp", "jpeg": "jpg"}
 
 
 def _canales_vetados(archivos: dict) -> dict:
-    """{@: motivo} de `normas/lista-negra/canales.json` (vacío si no hay o no se lee: el `estado` del canal sigue
-    valiendo, y el robot no deja llegar a `main` una lista ilegible)."""
+    """{@: motivo} de `normas/lista-negra/canales.json` (vacío si no hay). Si no se puede leer, no se publica nada
+    (falla en cerrado: publicar sin ella sacaría como activos canales bloqueados)."""
     try:
         return listas.canales_vetados(archivos.get)
-    except listas.ListaIlegible:
-        return {}
+    except listas.ListaIlegible as error:
+        raise ErrorPublicar(f"La lista negra de canales de `main` no se puede leer: {error}") from None
 
 
 def canales_publicados(archivos: dict) -> dict:
@@ -307,15 +307,13 @@ def miembros_publicados(archivos: dict, canales: dict, hoy: datetime.date) -> di
     su estado. No salen los canales `bloqueado` ni las cuentas vetadas (en la lista negra general o en la del canal).
     Un `miembros.json` o una lista negra del canal que no se lee deja fuera ese canal; un trozo de la lista negra
     general que no se lee deja fuera a sus cuentas (es solo para enseñar: el robot mira `main` en cada propuesta)."""
-    vetos = {}
+    consultas = listas.Consultas(archivos.get, hoy)  # cada trozo de la lista negra se lee una vez
 
     def vetada(cuenta_id):
-        if cuenta_id not in vetos:
-            try:
-                vetos[cuenta_id] = listas.veto_de_cuenta(cuenta_id, archivos.get, hoy) is not None
-            except listas.ListaIlegible:
-                vetos[cuenta_id] = True
-        return vetos[cuenta_id]
+        try:
+            return consultas.veto(cuenta_id) is not None
+        except listas.ListaIlegible:
+            return True
 
     cuentas = {}
     for cid, canal in sorted(canales.items()):
