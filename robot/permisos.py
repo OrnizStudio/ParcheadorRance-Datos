@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 
 import canales
 import listas
+import solicitudes
 import lector_app  # el catálogo tal como lo lee el parcheador
 import particion
 import sueltos
@@ -138,7 +139,7 @@ class Cambio:
 
 def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None,
               ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, leer_sueltos=None, hoy=None,
-              cuentas=()) -> list:
+              cuentas=(), creada_el=None, solicitudes_abiertas=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
@@ -150,7 +151,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     de una cuenta en GitHub (para que nadie ponga el nombre de otra persona junto a un id). `leer_sueltos(lado)` da
     {ruta: bytes} con los archivos sueltos del catálogo (y los `canal.json`) en `main` o tras la propuesta (fase B).
     `cuentas` son los ids de todas las cuentas que han tocado la propuesta: si una está en la lista negra general, no
-    se acepta (fase D).
+    se acepta (fase D). Para las solicitudes (fase D, `solicitudes.py`): `creada_el(id)` da la fecha en que se creó una
+    cuenta y `solicitudes_abiertas(etiqueta)` cuántas propuestas abiertas tiene el autor con esa etiqueta (sin esta).
     """
     motivos = []
     if not cambios:
@@ -180,6 +182,19 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         if not permisos.es_dueno:
             return [str(error)]
         bloqueados = {}
+    # Solicitudes (fase D): una propuesta que pide algo que el autor no puede hacer directamente. Se juzga entera aquí.
+    if not permisos.es_dueno:
+        try:
+            sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios], lambda r: leer(r, "antes") is not None)
+        except ValueError as error:
+            return [str(error)]
+        if sol is not None:
+            raros = [c.ruta for c in cambios if c.modo != "100644"]
+            if raros:
+                return [f"`{raros[0]}`: una solicitud solo lleva archivos normales (sin enlaces simbólicos, submódulos "
+                        "ni permisos de ejecución)."]
+            return _sin_repetidos(_comprobar_solicitud(sol, leer, leer_main, permisos, cuenta_de, creada_el,
+                                                       solicitudes_abiertas, leer_sueltos, hoy, bloqueados))
     if not permisos.es_dueno:
         for c in de_canales:
             arroba = canales.canal_de_la_ruta(c.ruta)[0]
@@ -373,6 +388,45 @@ def _comprobar_tamanos(cambios, permisos: Permisos) -> list:
         if c.modo == "100755":
             motivos.append(f"`{c.ruta}`: en el repositorio de datos no van archivos ejecutables (quítale el permiso de ejecución).")
     return motivos
+
+
+def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, creada_el, solicitudes_abiertas,
+                         leer_sueltos, hoy, bloqueados) -> list:
+    hoy = hoy or datetime.datetime.now(datetime.timezone.utc).date()
+    main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
+    if sol.canal in bloqueados:
+        return [f"@{sol.canal} está bloqueado por el Dueño del programa ({bloqueados[sol.canal]})."]
+    if sol.tipo == "verificacion":
+        def vetada(huella):
+            try:
+                return listas.huella_vetada(huella, leer_main) is not None
+            except listas.ListaIlegible:
+                return True
+        return solicitudes.comprobar_verificacion(sol, leer, permisos.cuenta_id,
+                                                  int(permisos.por_canal.get(sol.canal, Rol.NINGUNO)), hoy,
+                                                  main_sueltos, vetada)
+    info = _canales_de(main_sueltos)
+    try:
+        reservados = listas.reservados(leer_main)
+    except listas.ListaIlegible as error:
+        return [str(error)]
+    existentes, verificados = {}, set()
+    for otro, (nombre, verificado, anteriores) in info.items():
+        for texto in (otro, nombre, *anteriores):
+            if (e := canales.esqueleto(texto)):
+                existentes.setdefault(e, f"@{otro} ({nombre})")
+                if verificado:
+                    verificados.add(e)
+    for bloqueado in bloqueados:
+        if (e := canales.esqueleto(bloqueado)):
+            existentes.setdefault(e, f"@{bloqueado}")
+    if sol.canal in info or any(sol.canal in anteriores for _, _, anteriores in info.values()):
+        return [f"@{sol.canal} ya existe o ya existió."]
+    return solicitudes.comprobar_canal_nuevo(
+        sol, leer, permisos.cuenta_id, cuenta_de or (lambda cuenta_id: None), creada_el or (lambda cuenta_id: None),
+        hoy, solicitudes.version_de_normas(leer_main(solicitudes.RUTA_NORMAS)),
+        lambda texto: listas.parecido(texto, reservados, existentes, verificados),
+        lambda: (solicitudes_abiertas or (lambda etiqueta: 0))(sol.etiqueta))
 
 
 def _canales_de(archivos_main: dict) -> dict:
@@ -1927,6 +1981,21 @@ def main() -> int:
         """El nombre actual de la cuenta con ese id en GitHub (None si no existe)."""
         return (api("GET", f"https://api.github.com/user/{int(cuenta_id)}", tolerar=(404,)) or {}).get("login")
 
+    def creada_el(cuenta_id):
+        """La fecha (UTC) en que se creó la cuenta con ese id, o None si no se sabe."""
+        fecha = (api("GET", f"https://api.github.com/user/{int(cuenta_id)}", tolerar=(404,)) or {}).get("created_at")
+        try:
+            return datetime.date.fromisoformat(str(fecha)[:10])
+        except ValueError:
+            return None
+
+    def abiertas_con(etiqueta, cuenta):
+        """Cuántas propuestas abiertas tiene la cuenta con esa etiqueta, sin contar esta."""
+        consulta = urllib.parse.quote(f'repo:{repositorio} is:pr is:open label:"{etiqueta}" author:{cuenta}')
+        encontradas = api("GET", f"https://api.github.com/search/issues?q={consulta}&per_page=100") or {}
+        return sum(1 for i in encontradas.get("items") or [] if i.get("number") != numero)
+    sol = None
+
     def de(usuario, cuenta_id):
         return permisos_de(usuario, api, equipo, propietarios, cuenta_id, canales_main, ids_duenos)
     permisos = combinar([de(cuenta, cuenta_id) for cuenta, cuenta_id in cuentas])
@@ -1966,7 +2035,18 @@ def main() -> int:
         motivos = comprobar(cambios, antes, despues, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete,
                             leer_archivo=leer_archivo, ids_duenos=frozenset(ids_duenos), cuenta_de=cuenta_de,
                             rol_externo=rol_externo, leer_sueltos=leer_sueltos,
-                            cuentas=[i for _, i in cuentas if i is not None])
+                            cuentas=[i for _, i in cuentas if i is not None], creada_el=creada_el,
+                            solicitudes_abiertas=lambda etiqueta: abiertas_con(etiqueta, autor))
+        if not permisos.es_dueno:
+            try:
+                sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios],
+                                             lambda r: leer_archivo(r, "antes") is not None)
+            except ValueError:
+                sol = None
+
+    # La etiqueta `aprobada` solo la pone el Dueño: si la pone otra cuenta, el robot la quita.
+    if solicitudes.aprobacion(os.environ, ids_duenos) == "ajena":
+        api("DELETE", f"/issues/{numero}/labels/{solicitudes.APROBADA}", tolerar=(404,))
 
     if motivos:
         lista = "\n".join(f"- {linea_segura(m)}" for m in motivos[:TOPE_MOTIVOS])
@@ -1979,6 +2059,19 @@ def main() -> int:
         comentar(api, numero, texto)
         resumen(texto)
         return 1
+
+    if sol is not None and sol.necesita_aprobacion and solicitudes.aprobacion(os.environ, ids_duenos) != "aprobada":
+        # Bien formada, pero la decide el Dueño: etiqueta y a esperar (la comprobación queda en verde, sin fusionar).
+        api("POST", f"/issues/{numero}/labels", {"labels": [sol.etiqueta]}, tolerar=(404, 422))
+        # Una `aprobada` de antes no vale para lo que hay ahora (se aprueba un commit, en su evento): se quita.
+        if any((e or {}).get("name") == solicitudes.APROBADA for e in propuesta.get("labels") or []):
+            api("DELETE", f"/issues/{numero}/labels/{solicitudes.APROBADA}", tolerar=(404,))
+        texto = (f"### ⏳ Solicitud enviada\n\n{quien}\n\nLa revisará el Dueño del programa. Si la acepta, se "
+                 "publica sola; si la rechaza, verás aquí el motivo. Si cambias la propuesta, tendrá que volver a "
+                 "aprobarla.")
+        comentar(api, numero, texto)
+        resumen(texto)
+        return 0
 
     aprobado = (f"### ✅ Propuesta aceptada por el robot de permisos\n\n"
                 f"{quien} · rol: **{permisos.rol_global.nombre}**")
