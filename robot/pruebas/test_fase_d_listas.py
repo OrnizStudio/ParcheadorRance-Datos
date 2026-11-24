@@ -203,6 +203,60 @@ class HuellasVetadas(unittest.TestCase):
         self.assertTrue(any("la huella de la edición lleva" in m for m in motivos), motivos)
 
 
+class HuellasEnElManifiesto(unittest.TestCase):
+    """§1.2 y §4.3: la lista negra de huellas se mira también en los archivos que escribe el paquete."""
+
+    def zip_con_destino(self, destino):
+        import io
+        import zipfile
+        memoria = io.BytesIO()
+        with zipfile.ZipFile(memoria, "w") as z:
+            z.writestr("manifiesto.json", json.dumps({
+                "esquema": 1, "juego": "rance", "edicion": "steam", "version": "1.1.0",
+                "operaciones": [{"ruta": "a.dll", "tipo": "nuevo", "archivo": "nuevos/0", "destino": "blake3:" + "1" * 64},
+                                {"ruta": "b.dll", "tipo": "diff", "origen": HASH_MALO, "diff": "d/1",
+                                 "variantes": [{"cuando": {}, "destino": destino, "diff": "d/1"}]}]}))
+            z.writestr("nuevos/0", b"x")
+        return memoria.getvalue()
+
+    def juzgar_con_paquete(self, main, destino):
+        import hashlib
+        import io
+        from permisos import comprobar, rutas_del_paquete
+        from test_fase_d_canales import URL_ES
+        from test_prohibidos import Sha256EnLugarDeBlake3
+        from test_sueltos import CATALOGO
+        datos = self.zip_con_destino(destino)
+        url = URL_ES.replace("rance-es.zip", "v2.zip")
+        p = (Propuesta(main).cambiar(PARCHE_ES, version_nueva(url, "blake3:" + hashlib.sha256(datos).hexdigest()))
+             .cambiar(PARCHE_ES, lambda q: q["ediciones"][0]["versiones"][-1]["paquete"].update(tamano=len(datos))))
+        texto = particion.texto_json(CATALOGO).decode("utf-8")
+        lados = {"antes": p.antes, "despues": p.despues}
+        return comprobar(p.cambios(), texto, texto.encode(), de({OTRO: Rol.EDITOR}),
+                         leer_paquete=lambda q: rutas_del_paquete(q, calcular_hash=Sha256EnLugarDeBlake3,
+                                                                  abrir=lambda u: io.BytesIO(datos)),
+                         leer_archivo=lambda r, lado: lados[lado].get(r), leer_sueltos=lambda lado: lados[lado],
+                         hoy=HOY)
+
+    def test_un_archivo_vetado_por_el_programa(self):
+        main = con(main_con_dos_canales(), h=huellas(HASH_MALO))
+        motivos = self.juzgar_con_paquete(main, HASH_MALO.upper().replace("BLAKE3", "blake3"))
+        self.assertTrue(any("escribe un archivo" in m and "del programa" in m for m in motivos), motivos)
+
+    def test_un_archivo_vetado_por_su_canal(self):
+        main = main_con_dos_canales()
+        main[f"canales/{OTRO}/lista-negra.json"] = particion.texto_json(
+            {"esquema": 1, "archivos": [], "usuarios": [],
+             "huellas": [{"hash": HASH_MALO, "motivo": "Minero", "fecha": "2026-11-20"}]})
+        motivos = self.juzgar_con_paquete(main, HASH_MALO)
+        self.assertTrue(any("escribe un archivo" in m and "@rance_es" in m for m in motivos), motivos)
+
+    def test_el_origen_es_del_juego_y_no_cuenta(self):
+        # `origen` (el archivo original del juego) lleva el hash vetado, pero el paquete no lo escribe.
+        main = con(main_con_dos_canales(), h=huellas(HASH_MALO))
+        self.assertEqual([], self.juzgar_con_paquete(main, "blake3:" + "2" * 64))
+
+
 class Nombres(unittest.TestCase):
     def renombrar(self, nombre, main=None, reservados=None):
         main = con_miembros_es(main or main_con_dos_canales())

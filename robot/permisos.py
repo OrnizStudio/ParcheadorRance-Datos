@@ -112,14 +112,20 @@ class Permisos:
                         self.cuenta_id if self.cuenta_id == otro.cuenta_id else None)
 
 
-# Campos que puede cambiar un Colaborador (ARQUITECTURA §8, rol 4): textos y notas, etiquetas y estado
-# de la traducción. Nada más: ni créditos, ni imágenes, ni paquetes.
-CAMPOS_COLABORADOR_JUEGO = ("sinopsis", "etiquetas", "estado", "progreso")
-CAMPOS_COLABORADOR_EDICION = ("notaEdicion", "etiquetas", "estado", "progreso", "contenido")
+# Campos que puede cambiar un Colaborador (ARQUITECTURA §8, rol 4; docs/canales.md §4.2): textos y notas y estado
+# de la traducción. Nada más: ni créditos, ni imágenes, ni paquetes, ni etiquetas.
+CAMPOS_COLABORADOR_JUEGO = ("sinopsis", "estado", "progreso")
+CAMPOS_COLABORADOR_EDICION = ("notaEdicion", "estado", "progreso", "contenido")
 CAMPOS_COLABORADOR_PARCHE = ("notas",)
 
-# Campos de un juego que deciden si el público lo ve. Un Editor no publica ni oculta juegos.
-CAMPOS_PUBLICAR_JUEGO = ("habilitado", "pruebas")
+# Campos de un juego que son de Administrador o más (docs/canales.md §4.2): si el público lo ve («Visible»), su
+# `orden` y sus etiquetas. Un Editor no publica ni oculta juegos ni los ordena.
+CAMPOS_PUBLICAR_JUEGO = ("habilitado", "pruebas", "orden", "etiquetas")
+# Lo mismo en cada edición.
+CAMPOS_ADMIN_EDICION = ("etiquetas",)
+
+# Paquetes nuevos (sin revisar) que el robot baja y revisa en una sola propuesta.
+TOPE_PAQUETES_NUEVOS = 20
 
 # Claves de la raíz del catálogo que cualquiera con permiso sobre un juego puede tocar.
 RAIZ_LIBRE = ("juegos", "versionCatalogo")
@@ -258,6 +264,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                                        frozenset(c for c, (_, verificado, _) in info.items() if verificado))
 
     toca_catalogo = any(c.ruta == RUTA_CATALOGO for c in cambios)
+    vetada_en_manifiesto = None  # fase D: con archivos sueltos, las listas negras del canal y la general
     manda = _manda_en_todo(permisos)
 
     # ── Fase B: la fuente del catálogo son los archivos sueltos y `catalogo.json` lo regenera el robot.
@@ -293,6 +300,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         del_canal_huellas = _huellas_del_canal(leer_archivo, canal)
 
         def vetada(de_canal, huella):
+            """El motivo por el que un hash está vetado (lista del canal o general), o None."""
             if de_canal is not None and huella in del_canal_huellas:
                 return f"de @{de_canal}: {del_canal_huellas[huella]}"
             try:
@@ -302,6 +310,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             return f"del programa: {general}" if general else None
         motivos += sueltos.comprobar_huellas([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
                                              vetada, permisos.es_dueno)
+        if not permisos.es_dueno:
+            vetada_en_manifiesto = lambda huella: vetada(canal, huella)  # noqa: E731
         try:
             particion.juntar(main_sueltos, 1)
         except particion.ErrorParticion as error:
@@ -333,7 +343,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             # Para todos los roles, también Administradores y Propietario: no hay excepción posible.
             motivos += comprobar_archivos_protegidos(cat_antes, cat_despues,
                                                      list(prohibidos) + _prohibidos_del_canal(leer_archivo, canal),
-                                                     leer_paquete)
+                                                     leer_paquete, vetada_en_manifiesto)
             motivos += comprobar_largos(cat_antes, cat_despues)
 
     juegos_antes = _juegos_por_id(cat_antes)
@@ -862,7 +872,9 @@ class PaqueteIlegible(Exception):
     """No se ha podido leer el paquete o no es el que dice el catálogo."""
 
 
-def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer_paquete) -> list:
+def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer_paquete, vetada=None) -> list:
+    """Ningún archivo parcheado está prohibido y ningún paquete nuevo toca uno prohibido o ignorado. Con `vetada(hash)`
+    (fase D), tampoco escribe un archivo cuyo hash (`destino` en su manifiesto) está en una lista negra."""
     # Primero la general: si un archivo está en las dos, el aviso dice «general».
     del_grupo_antes, _ = prohibidos_del_grupo(cat_antes)
     del_grupo, motivos = prohibidos_del_grupo(cat_despues)
@@ -883,6 +895,10 @@ def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer
             if clave in ya_publicados or clave in revisados:
                 continue  # ya se revisó cuando se publicó (o más arriba en esta misma propuesta)
             revisados.add(clave)
+            if len(revisados) > TOPE_PAQUETES_NUEVOS:
+                motivos.append(f"La propuesta trae más de {TOPE_PAQUETES_NUEVOS} paquetes nuevos y el robot los baja "
+                               "y revisa todos: repártelos en varias propuestas.")
+                break
             try:
                 rutas = leer_paquete(paquete)
             except PaqueteIlegible as error:
@@ -893,6 +909,10 @@ def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer
                 norma = archivo_prohibido(ruta, todos)
                 if norma:
                     motivos.append(mensaje_protegido(donde, ruta, norma))
+            for huella in sorted(getattr(rutas, "hashes", ())) if vetada is not None else ():
+                if motivo := vetada(huella):
+                    motivos.append(f"{donde}: el paquete escribe un archivo con el hash `{huella[:20]}…`, que está en "
+                                   f"la lista negra ({motivo}).")
             motivos += _ignorados_que_toca(cat_despues, donde, paquete, rutas)
     return _sin_repetidos(motivos)
 
@@ -952,6 +972,15 @@ def _paquetes(catalogo):
     for juego in catalogo.get("juegos") or []:
         if isinstance(juego, dict):
             yield from recorrer(juego, f"`{juego.get('id')}`")
+            # El paquete de cada versión (`ediciones[].versiones[].paquete`): la app instala también las de
+            # `pruebas`. Va con el id de su edición, para mirar lo que esa edición ignora.
+            for edicion in juego.get("ediciones") or []:
+                if not isinstance(edicion, dict):
+                    continue
+                for version in edicion.get("versiones") or []:
+                    if isinstance(version, dict) and isinstance(version.get("paquete"), dict):
+                        yield (f"`{juego.get('id')}` › edición `{edicion.get('id')}` › versión "
+                               f"`{version.get('version')}`", {**version["paquete"], "edicion": edicion.get("id")})
 
 
 def _clave_paquete(paquete: dict):
@@ -1011,12 +1040,25 @@ def rutas_del_paquete(paquete: dict, calcular_hash=None, abrir=None) -> list:
     operaciones = manifiesto.get("operaciones") if isinstance(manifiesto, dict) else None
     if not isinstance(operaciones, list):
         raise PaqueteIlegible(f"su `{NOMBRE_MANIFIESTO}` no tiene `operaciones`.")
-    rutas = []
+    rutas = RutasDelPaquete()
     for op in operaciones:
         if not isinstance(op, dict) or not isinstance(op.get("ruta"), str):
             raise PaqueteIlegible(f"su `{NOMBRE_MANIFIESTO}` tiene una operación sin `ruta`.")
         rutas.append(op["ruta"])
+        # Los archivos que deja escritos: `destino` de la operación y de cada variante (`origen` es el del juego).
+        for destino in [op.get("destino")] + [v.get("destino") for v in op.get("variantes") or []
+                                              if isinstance(v, dict)]:
+            if isinstance(destino, str):
+                rutas.hashes.add(destino.strip().lower())
     return rutas
+
+
+class RutasDelPaquete(list):
+    """Las rutas que escribe un paquete, con `hashes`: los de los archivos que deja escritos (su manifiesto)."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.hashes = set()
 
 
 def _abrir_https(url: str):
@@ -1113,13 +1155,20 @@ def _comprobar_campos(antes: dict, despues: dict, permisos: Permisos) -> list:
         if rol == Rol.EDITOR:
             for clave in _claves_distintas(a, d):
                 if clave in CAMPOS_PUBLICAR_JUEGO:
-                    motivos.append(f"`{jid}` › `{clave}`: publicar u ocultar un juego entero es cosa de un "
-                                   "Administrador. Como Editor puedes publicar y retirar sus versiones.")
+                    motivos.append(f"`{jid}` › `{clave}`: publicar u ocultar un juego entero, ordenarlo y sus "
+                                   "etiquetas son cosa de un Administrador. Como Editor puedes publicar y retirar sus "
+                                   "versiones.")
+            ed_a, ed_d = _ediciones_por_id(a.get("ediciones")), _ediciones_por_id(d.get("ediciones"))
+            for eid in ed_a.keys() & ed_d.keys():
+                for clave in CAMPOS_ADMIN_EDICION:
+                    if ed_a[eid].get(clave) != ed_d[eid].get(clave):
+                        motivos.append(f"`{jid}` › edición `{eid}` › `{clave}`: las etiquetas son cosa de un "
+                                       "Administrador.")
         elif rol == Rol.COLABORADOR:
             for donde in _fuera_de_lo_permitido_al_colaborador(a, d):
                 motivos.append(f"`{jid}` › {donde}: un Colaborador solo puede cambiar textos y notas "
-                               "(`sinopsis`, `notaEdicion`, `parche.notas`), `etiquetas` y el estado de la "
-                               "traducción (`estado`, `progreso`, `contenido`).")
+                               "(`sinopsis`, `notaEdicion`, `parche.notas`) y el estado de la traducción (`estado`, "
+                               "`progreso`, `contenido`).")
         else:
             motivos.append(f"`{jid}`: no tienes ningún rol en este juego.")
     return _sin_repetidos(motivos)

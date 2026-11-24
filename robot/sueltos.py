@@ -109,6 +109,71 @@ def _alta_bien_formada(alta) -> bool:
             and (fecha is None or (isinstance(fecha, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha) is not None)))
 
 
+def _estado_canal(archivos: dict, canal: str) -> str:
+    """El `estado` del `canal.json` del canal en `archivos`: «activo» si no hay `canal.json` (sin él, sus parches no se
+    publican) y «ilegible» si no se puede leer o el estado no es uno conocido."""
+    datos = archivos.get(f"canales/{canal}/canal.json")
+    if datos is None:
+        return "activo"
+    try:
+        objeto = lector_app.leer(datos)
+    except lector_app.JsonIlegible:
+        return "ilegible"
+    estado = objeto.get("estado", "activo") if isinstance(objeto, dict) else None
+    return estado if estado in ("activo", "retirado", "bloqueado") else "ilegible"
+
+
+def _cerrado(ruta: str, estado: str, canal: str, antes: dict, despues: dict):
+    """Por qué no vale cambiar este parche si su canal no está activo (docs/canales.md §7.5), o None. Cuenta el peor
+    estado de `main` y de la propuesta: cerrar el canal y publicar a la vez tampoco vale. Un canal `retirado` solo
+    retira versiones u oculta sus parches; uno `bloqueado` (o ilegible), nada."""
+    estados = {_estado_canal(antes, canal), _estado_canal(despues, canal)}
+    if estados == {"activo"}:
+        return None
+    if "bloqueado" in estados or "ilegible" in estados:
+        que = "está bloqueado por el Dueño del programa" if "bloqueado" in estados else "tiene un `canal.json` ilegible"
+        return f"`{ruta}`: @{canal} {que}; sus parches ya no se cambian."
+    aviso = (f"`{ruta}`: @{canal} está retirado: sus parches no reciben versiones nuevas ni cambios; solo se pueden "
+             "retirar versiones u ocultar el parche (docs/canales.md §7.5).")
+    if estado in ("A", "D") or ruta not in antes or ruta not in despues:
+        return aviso
+    try:
+        viejo, nuevo = lector_app.leer(antes[ruta]), lector_app.leer(despues[ruta])
+    except lector_app.JsonIlegible:
+        return aviso
+    return None if _solo_retira_u_oculta(viejo, nuevo) else aviso
+
+
+CAMPOS_RETIRAR = ("estado", "motivo", "motivoPublico", "fechaRetirada")
+
+
+def _solo_retira_u_oculta(viejo, nuevo) -> bool:
+    """¿`nuevo` es `viejo` con versiones que pasan a `retirada` (y sus campos de retirada) o el parche oculto
+    (`habilitado: false`), y nada más?"""
+    if not isinstance(viejo, dict) or not isinstance(nuevo, dict):
+        return False
+    import copy
+    n = copy.deepcopy(nuevo)
+    if n.get("habilitado") is False and viejo.get("habilitado") is not False:
+        if "habilitado" in viejo:
+            n["habilitado"] = viejo["habilitado"]
+        else:
+            del n["habilitado"]
+    ed_viejas = {e.get("id"): e for e in viejo.get("ediciones") or [] if isinstance(e, dict)}
+    for e in n.get("ediciones") or []:
+        if not isinstance(e, dict) or e.get("id") not in ed_viejas:
+            continue
+        v_viejas = {v.get("version"): v for v in ed_viejas[e["id"]].get("versiones") or [] if isinstance(v, dict)}
+        for i, v in enumerate(e.get("versiones") or []):
+            previa = v_viejas.get(v.get("version")) if isinstance(v, dict) else None
+            if previa is None or v.get("estado") != "retirada" or previa.get("estado") == "retirada":
+                continue
+            resto = {k: x for k, x in v.items() if k not in CAMPOS_RETIRAR}
+            if resto == {k: x for k, x in previa.items() if k not in CAMPOS_RETIRAR}:
+                e["versiones"][i] = previa
+    return n == viejo
+
+
 def _juego_de(tipo) -> str:
     return tipo[2] if tipo[0] == "parche" else tipo[1]
 
@@ -149,6 +214,9 @@ def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id
         if not es_dueno and (estado_main := _estado_central(antes, _juego_de(tipo))) != "activo":
             motivos.append(f"`{ruta}`: el juego «{_juego_de(tipo)}» está {estado_main} por el Dueño del programa; "
                            "sus archivos solo los cambia él.")
+            continue
+        if tipo[0] == "parche" and not es_dueno and (motivo := _cerrado(ruta, estado, tipo[1], antes, despues)):
+            motivos.append(motivo)
             continue
         if tipo[0] == "parche" and not es_dueno and (estado in ("A", "D") or ruta not in antes or ruta not in despues):
             # Añadir un juego al canal o quitarlo es de Administrador o más del canal (docs/canales.md §4.2).
@@ -392,6 +460,32 @@ def _hashes(parche) -> set:
     return {p["hash"].strip().lower() for p in _paquetes(parche) if isinstance(p.get("hash"), str)}
 
 
+def _hashes_vivos(parche) -> set:
+    """Los hashes de los paquetes de un parche que siguen en uso: los de `parche.paquetes` (del juego y de cada
+    edición) y los de cada versión que no está retirada."""
+    vivos = set()
+    if not isinstance(parche, dict):
+        return vivos
+
+    def anadir(paquete):
+        if isinstance(paquete, dict) and isinstance(paquete.get("hash"), str):
+            vivos.add(paquete["hash"].strip().lower())
+
+    def del_parche(p):
+        if isinstance(p, dict):
+            for q in p.get("paquetes") or []:
+                anadir(q)
+    del_parche(parche.get("parche"))
+    for e in parche.get("ediciones") or []:
+        if not isinstance(e, dict):
+            continue
+        del_parche(e.get("parche"))
+        for v in e.get("versiones") or []:
+            if isinstance(v, dict) and v.get("estado") != "retirada":
+                anadir(v.get("paquete"))
+    return vivos
+
+
 def _hashes_de_huella(edicion) -> set:
     """Los hashes de la huella de una edición (`hash` y `hashParcial` de cada archivo)."""
     if not isinstance(edicion, dict):
@@ -404,9 +498,10 @@ TOPE_HUELLAS_CONSULTADAS = 2000
 
 
 def comprobar_huellas(cambios, antes: dict, despues: dict, vetada, es_dueno: bool) -> list:
-    """Ningún paquete nuevo de un parche lleva una huella vetada y ninguna edición nueva o cambiada tiene en su
-    huella un hash vetado. `vetada(canal, hash)` da el motivo (lista negra del canal, con `canal`, o la general) o None.
-    Solo se miran los hashes que la propuesta añade."""
+    """Ningún paquete vivo (no retirado) de un parche que cambia lleva una huella vetada, y ninguna edición nueva o
+    cambiada añade a su huella un hash vetado. En los parches cuentan todos los paquetes vivos, no solo los nuevos: una
+    huella vetada no vuelve por otra versión ni des-retirando una. `vetada(canal, hash)` da el motivo (lista negra del
+    canal, con `canal`, o la general) o None."""
     if es_dueno:
         return []
     motivos, consultas = [], 0
@@ -416,11 +511,14 @@ def comprobar_huellas(cambios, antes: dict, despues: dict, vetada, es_dueno: boo
             continue
         try:
             nuevo = lector_app.leer(despues[ruta])
-            viejo = lector_app.leer(antes[ruta]) if ruta in antes else None
         except lector_app.JsonIlegible:
             continue
+        try:
+            viejo = lector_app.leer(antes[ruta]) if ruta in antes else None
+        except lector_app.JsonIlegible:
+            viejo = None
         if tipo[0] == "parche":
-            canal, nuevos, que = tipo[1], _hashes(nuevo) - _hashes(viejo), "un paquete lleva"
+            canal, nuevos, que = tipo[1], _hashes_vivos(nuevo), "un paquete lleva"
         else:
             canal, nuevos, que = None, _hashes_de_huella(nuevo) - _hashes_de_huella(viejo), "la huella de la edición lleva"
         for huella in sorted(nuevos):
