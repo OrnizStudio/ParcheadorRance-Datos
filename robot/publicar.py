@@ -11,7 +11,9 @@ Tras cada fusión en `main` (y a mano, o cuando el Dueño sube algo directamente
    `programa/juegos/<xx>.json` (256 trozos por el SHA-256 del id). Desde la fase C, también lo que lee la app 0.3.0:
    `juegos/<xx>.json` (cada juego con un parche ligero por canal), `detalle/<juego>/<canal>.json` (el juego entero,
    con huellas y versiones), `canales/<xx>.json`, `logos/<canal>.<ext>` y `etiquetas.json`; el índice sigue en
-   esquema 1 (las 0.2.x ignoran los trozos que no conocen) y añade `grupo`. Es un único commit sin padres que
+   esquema 1 (las 0.2.x ignoran los trozos que no conocen) y añade `grupo`. Desde la fase D, también
+   `miembros/<xx>.json` (los canales de cada cuenta, para el selector de Modo equipo) y `buscar-canales.json` (el
+   directorio de canales). Es un único commit sin padres que
    sustituye al anterior (la rama no crece). Si nada ha cambiado, no escribe.
 
 Antes de la migración (sin archivos sueltos en `main`) no regenera nada: el índice sale de partir el `catalogo.json`
@@ -31,6 +33,7 @@ import subprocess
 import sys
 
 import lector_app
+import listas
 import particion
 import permisos
 import sueltos
@@ -192,11 +195,22 @@ CAMPOS_SOLO_DETALLE = ("huella", "huellasParcheadas", "versiones")
 EXTENSION_LOGO = {"png": "png", "webp": "webp", "jpeg": "jpg"}
 
 
+def _canales_vetados(archivos: dict) -> dict:
+    """{@: motivo} de `normas/lista-negra/canales.json` (vacío si no hay o no se lee: el `estado` del canal sigue
+    valiendo, y el robot no deja llegar a `main` una lista ilegible)."""
+    try:
+        return listas.canales_vetados(archivos.get)
+    except listas.ListaIlegible:
+        return {}
+
+
 def canales_publicados(archivos: dict) -> dict:
     """{id: entrada de `canales/<xx>.json`} de cada canal con un `canal.json` que se puede leer, cuyo `id` es el de su
     carpeta y con un `estado` conocido; y {ruta: bytes} de los logos que valen. Un canal dañado no entra (ni sus
-    parches): no tumba la publicación."""
+    parches): no tumba la publicación. Un canal de la lista negra general de canales sale `bloqueado` aunque su
+    `canal.json` diga otra cosa."""
     entradas, logos = {}, {}
+    vetados = _canales_vetados(archivos)
     for ruta, datos in archivos.items():
         partes = ruta.split("/")
         if len(partes) != 3 or partes[0] != "canales" or partes[2] != "canal.json":
@@ -217,16 +231,20 @@ def canales_publicados(archivos: dict) -> dict:
                 destino = f"logos/{cid}.{EXTENSION_LOGO[tipo]}"
                 logos[destino] = imagen
                 logo = {"ruta": destino, "tamano": len(imagen), "hash": _hash(imagen)}
+        paquetes = canal.get("paquetes") if isinstance(canal.get("paquetes"), list) else []
+        paquetes = sorted({p for p in paquetes if isinstance(p, str) and permisos.canales.REPOSITORIO.match(p)})
         entradas[cid] = {
             "id": cid,
             "nombre": canal["nombre"] if isinstance(canal.get("nombre"), str) else cid,
             "descripcion": canal["descripcion"] if isinstance(canal.get("descripcion"), str) else "",
             "verificado": verificacion.get("verificado") is True,
             "adultos": canal.get("adultos") is True,
-            "estado": canal["estado"],
+            "estado": "bloqueado" if cid in vetados else canal["estado"],
             "oculto": canal.get("oculto") is True,
             "contacto": canal["contacto"] if isinstance(canal.get("contacto"), dict) else {},
             "logo": logo,
+            # Los repositorios de paquetes del canal (fase D): la lista blanca de descargas de la app.
+            "paquetes": paquetes[:permisos.canales.MAX_PAQUETES],
         }
     return entradas, logos
 
@@ -284,6 +302,75 @@ def juegos_publicados(archivos: dict, canales: dict):
     return entradas, detalles
 
 
+def miembros_publicados(archivos: dict, canales: dict, hoy: datetime.date) -> dict:
+    """{id de cuenta: entrada de `miembros/<xx>.json`}: los canales `activo` y `retirado` de cada cuenta, con su rol y
+    su estado. No salen los canales `bloqueado` ni las cuentas vetadas (en la lista negra general o en la del canal).
+    Un `miembros.json` o una lista negra del canal que no se lee deja fuera ese canal; un trozo de la lista negra
+    general que no se lee deja fuera a sus cuentas (es solo para enseñar: el robot mira `main` en cada propuesta)."""
+    vetos = {}
+
+    def vetada(cuenta_id):
+        if cuenta_id not in vetos:
+            try:
+                vetos[cuenta_id] = listas.veto_de_cuenta(cuenta_id, archivos.get, hoy) is not None
+            except listas.ListaIlegible:
+                vetos[cuenta_id] = True
+        return vetos[cuenta_id]
+
+    cuentas = {}
+    for cid, canal in sorted(canales.items()):
+        if canal["estado"] not in ("activo", "retirado"):
+            continue
+        ruta = f"canales/{cid}/miembros.json"
+        ruta_lista = f"canales/{cid}/lista-negra.json"
+        try:
+            filas, errores = permisos.canales.leer_miembros(
+                permisos.canales.leer_json_estricto(archivos.get(ruta) or b"", ruta,
+                                                    permisos.canales.TOPES["miembros.json"]), ruta)
+            del_canal = {}
+            if ruta_lista in archivos:
+                lista, errores_lista = permisos.canales.leer_lista_negra(
+                    permisos.canales.leer_json_estricto(archivos[ruta_lista], ruta_lista,
+                                                        permisos.canales.TOPES["lista-negra.json"]), ruta_lista)
+                if errores_lista:
+                    continue
+                del_canal = lista.usuarios
+        except permisos.canales.JsonMalo:
+            continue
+        if errores:
+            continue
+        for cuenta_id, m in sorted(filas.items()):
+            if cuenta_id in del_canal or vetada(cuenta_id):
+                continue
+            fila = {"canal": cid, "rol": permisos.canales.TEXTO_ROL[m.rol - 1], "estado": m.estado}
+            if m.estado == "invitado" and isinstance(m.fila.get("invitadoPor"), int):
+                fila["invitadoPor"] = m.fila["invitadoPor"]
+            entrada = cuentas.setdefault(cuenta_id, {"id": cuenta_id, "cuenta": m.cuenta, "canales": []})
+            entrada["canales"].append(fila)
+    return cuentas
+
+
+def buscar_canales(canales: dict, juegos: dict) -> bytes:
+    """`buscar-canales.json`: el directorio de canales, todos menos los ocultos, con cuántos juegos tienen parche
+    publicado de cada uno."""
+    parches = {}
+    for juego in juegos.values():
+        for parche in juego["parches"]:
+            parches[parche["canal"]] = parches.get(parche["canal"], 0) + 1
+    return _json({"esquema": 1, "canales": [
+        {"id": cid, "nombre": c["nombre"], "verificado": c["verificado"], "estado": c["estado"],
+         "adultos": c["adultos"], "parches": parches.get(cid, 0)}
+        for cid, c in sorted(canales.items()) if not c["oculto"]]})
+
+
+def _trozos_de_miembros(cuentas: dict) -> dict:
+    """`miembros/<xx>.json`, con `<xx>` del SHA-256 del id escrito en decimal y las cuentas ordenadas por id."""
+    por_trozo = {}
+    for cuenta_id in sorted(cuentas):
+        por_trozo.setdefault(listas.trozo(cuenta_id), []).append(cuentas[cuenta_id])
+    return {f"miembros/{t}.json": _json({"esquema": 1, "cuentas": lista}) for t, lista in sorted(por_trozo.items())}
+
+
 def _trozos(prefijo: str, clave: str, entradas: dict) -> dict:
     por_trozo = {}
     for ident, entrada in sorted(entradas.items()):
@@ -294,12 +381,17 @@ def _trozos(prefijo: str, clave: str, entradas: dict) -> dict:
 def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ahora: str) -> dict:
     """{ruta: bytes} de la rama `publicado`: `indice.json`, `programa/juegos/<xx>.json` (fase B) y, para la app 0.3.0,
     `juegos/<xx>.json`, `detalle/<juego>/<canal>.json`, `canales/<xx>.json`, `logos/<canal>.<ext>` y
-    `etiquetas.json`. ErrorPublicar si algún archivo pasa de 8 MB."""
+    `etiquetas.json`; desde la fase D, `miembros/<xx>.json` y `buscar-canales.json`. ErrorPublicar si algún archivo
+    pasa de 8 MB."""
     resultado = _trozos("programa/juegos/", "juegos", indice_por_juego(archivos))
     canales, logos = canales_publicados(archivos)
     juegos, detalles = juegos_publicados(archivos, canales)
     resultado.update(_trozos("juegos/", "juegos", juegos))
     resultado.update(_trozos("canales/", "canales", canales))
+    hoy = datetime.date.fromisoformat(ahora[:10]) if len(ahora) >= 10 else datetime.datetime.now(datetime.timezone.utc).date()
+    resultado.update(_trozos_de_miembros(miembros_publicados(archivos, canales, hoy)))
+    if canales:
+        resultado["buscar-canales.json"] = buscar_canales(canales, juegos)
     if particion.RUTA_ETIQUETAS in archivos or isinstance((catalogo or {}).get("etiquetas"), list):
         # Sin ninguna de las dos fuentes (un `main` vacío) no hay nada que decir: la app sigue con el catálogo.
         etiquetas = (_objeto(archivos.get(particion.RUTA_ETIQUETAS, b"")) or {}).get("etiquetas")
@@ -411,20 +503,29 @@ def _main(remoto: str, entorno) -> str:
 
 
 def _archivos_de_canales(revision: str) -> dict:
-    """{ruta: bytes} de los `canal.json` y las imágenes de la raíz de cada `canales/<c>/` (los logos) en `revision`, de
-    una vez con `git cat-file --batch`. Un logo que pasa de su tope no se lee: se cambia por algo que no vale como logo
+    """{ruta: bytes} de los `canal.json`, `miembros.json`, `lista-negra.json` y las imágenes de la raíz de cada
+    `canales/<c>/` (los logos) en `revision`, más la lista negra general (`normas/lista-negra/`), de una vez con
+    `git cat-file --batch`. Un trozo de la lista negra general que pasa de su tope sale ilegible (nadie de él sale en
+    `miembros/`). Un logo que pasa de su tope no se lee: se cambia por algo que no vale como logo
     (sale `logo: null`). Un `canal.json` que pasa de su tope no se lee (el canal no se publica)."""
     salida = _git("ls-tree", "-r", "-z", "-l", "--full-tree", revision, "--",
-                  permisos.canales.CARPETA_CANALES).decode("utf-8", errors="replace")
+                  permisos.canales.CARPETA_CANALES, listas.CARPETA).decode("utf-8", errors="replace")
     pedir, resultado = [], {}
     for entrada in (e for e in salida.split("\0") if e):
         cabecera, ruta = entrada.split("\t", 1)
         modo, tipo, sha, tamano = cabecera.split()
+        if ruta.startswith(listas.CARPETA):
+            if modo == "100644" and tipo == "blob":
+                if int(tamano) > listas.TOPE_TROZO:
+                    resultado[ruta] = b"{"
+                else:
+                    pedir.append((ruta, sha))
+            continue
         partes = ruta.split("/")
         if modo != "100644" or tipo != "blob" or len(partes) != 3 or not permisos.canales.ID_CANAL.match(partes[1]):
             continue
-        if partes[2] == "canal.json":
-            if int(tamano) <= permisos.canales.TOPES["canal.json"]:
+        if partes[2] in ("canal.json", "miembros.json", "lista-negra.json"):
+            if int(tamano) <= permisos.canales.TOPES[partes[2]]:
                 pedir.append((ruta, sha))
         elif partes[2].endswith(permisos.canales.EXTENSIONES_LOGO):
             if int(tamano) > permisos.canales.TOPE_LOGO:

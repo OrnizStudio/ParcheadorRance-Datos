@@ -309,7 +309,15 @@ directa a `main`, a mano y una vez al día. Hace dos cosas:
     `huellasParcheadas` ni `versiones`.
   - `detalle/<juego>/<canal>.json`: `{"esquema":1,"canal":…,"juego":…}`, el juego de ese canal entero.
   - `canales/<xx>.json`: todos los canales (también los retirados y bloqueados) con `id`, `nombre`, `descripcion`,
-    `verificado`, `adultos`, `estado`, `oculto`, `contacto` y `logo` (`{ruta, tamano, hash}` o `null`).
+    `verificado`, `adultos`, `estado`, `oculto`, `contacto`, `logo` (`{ruta, tamano, hash}` o `null`) y
+    `paquetes` (los repositorios de paquetes del canal, la lista blanca de descargas de la app). Un canal de
+    `normas/lista-negra/canales.json` sale `bloqueado`.
+  - `miembros/<xx>.json` (fase D; `xx` sale del SHA-256 del id de la cuenta en decimal): por cada cuenta, sus
+    canales `activo` y `retirado` con `rol`, `estado` e `invitadoPor` (los invitados). No salen los canales
+    bloqueados ni las cuentas vetadas (en la lista negra general o en la del canal). Es para enseñar en Modo equipo:
+    el robot sigue mirando el rol en `main` en cada propuesta.
+  - `buscar-canales.json` (fase D): el directorio, todos los canales menos los ocultos, con `id`, `nombre`,
+    `verificado`, `estado`, `adultos` y `parches` (cuántos juegos tienen parche publicado de ese canal).
   - `logos/<canal>.<png|webp|jpg>`: el logo de cada canal, si pesa 512 KB o menos y es PNG, WebP o JPEG de verdad
     (se mira el contenido); si no, el canal sale con `logo: null`.
   - `etiquetas.json`: `{"esquema":1,"etiquetas":[…]}`, las de `normas/etiquetas.json`.
