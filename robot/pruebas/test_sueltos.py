@@ -226,7 +226,14 @@ class Versiones(unittest.TestCase):
     def test_paquete_fuera_de_los_repositorios_del_canal(self):
         for url in ("https://github.com/otro/repo/releases/download/x/p.zip", "https://example.org/p.zip",
                     f"https://github.com/{REPO}/releases/download/../../x", f"https://github.com/{REPO}/archive/p.zip",
-                    f"https://github.com/{REPO}/releases/download/x/p.zip?x=1"):
+                    f"https://github.com/{REPO}/releases/download/x/p.zip?x=1",
+                    f"https://github.com/{REPO}/releases/download/%2e%2e/%2e%2e/otro/p.zip",
+                    f"https://github.com/{REPO}/releases/download/x%2fy/p.zip",
+                    f"https://github.com/{REPO}/releases/download/x/%2E%2E",
+                    f"https://github.com/{REPO}/releases/download/x/y/p.zip",
+                    f"https://github.com/{REPO}/releases/download/x\\..\\y/p.zip",
+                    f"https://github.com/{REPO}/releases/download//p.zip",
+                    f"https://github.com/{REPO}/releases/download/x/.."):
             with self.subTest(url=url):
                 motivos = self.nueva(Propuesta(), url).juzgar(Rol.EDITOR)
                 self.assertTrue(any("no está en las Releases" in m for m in motivos), motivos)

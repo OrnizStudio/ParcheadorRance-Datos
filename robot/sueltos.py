@@ -385,6 +385,15 @@ def _urls(parche) -> set:
     return urls
 
 
+def _cola_de_release(url: str, prefijos: tuple) -> bool:
+    """Lo que va tras `.../releases/download/` es `<etiqueta>/<archivo>`, sin `..` ni `.`, sin `?` ni `#` y sin
+    nada codificado con `%` (`%2e%2e`, `%2f`): así no hay forma de salir de las Releases del repositorio."""
+    prefijo = next(p for p in prefijos if url.startswith(p))
+    partes = url[len(prefijo):].split("/")
+    return (len(partes) == 2 and all(partes) and all(p not in (".", "..") for p in partes)
+            and not any(c in url[len(prefijo):] for c in "%?#\\ \t\r\n"))
+
+
 def comprobar_paquetes(cambios, antes: dict, despues: dict, paquetes_por_canal: dict, es_dueno: bool) -> list:
     """Cada paquete nuevo de un parche tiene que estar en las Releases de uno de los repositorios del canal
     (`canal.json` → `paquetes`, leído de `main`). Los que ya estaban no se miran (los de antes de los canales)."""
@@ -403,7 +412,7 @@ def comprobar_paquetes(cambios, antes: dict, despues: dict, paquetes_por_canal: 
         repos = paquetes_por_canal.get(tipo[1]) or []
         prefijos = tuple(f"https://github.com/{r}/releases/download/" for r in repos)
         for url in sorted(_urls(nuevo) - _urls(viejo)):
-            if not prefijos or not url.startswith(prefijos) or "/../" in url or "?" in url or "#" in url:
+            if not prefijos or not url.startswith(prefijos) or not _cola_de_release(url, prefijos):
                 motivos.append(f"`{ruta}`: el paquete `{url}` no está en las Releases de los repositorios de "
                                f"@{tipo[1]} ({', '.join(f'`{r}`' for r in repos) or 'ninguno'}; se cambian en "
                                "`canal.json` → `paquetes`).")
