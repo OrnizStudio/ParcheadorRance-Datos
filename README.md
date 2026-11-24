@@ -273,12 +273,13 @@ Lo que comprueba el robot además de las reglas de siempre (`robot/sueltos.py`):
 - **Forma.** Solo esas rutas, con ids de letras, números, `.`, `_` y `-`. Solo claves conocidas, `esquema: 1` y JSON
   estricto. Un juego hasta 256 KB, una edición o un parche hasta 4 MB.
 - **`alta`.** La pone quien propone: `{"canal", "cuenta", "fecha"}`, con su id, la fecha de hoy (UTC, con un día de
-  margen) y un canal donde es Administrador o más. Después no cambia, salvo el Dueño. Los juegos migrados llevan
+  margen) y un canal donde es Administrador o más (para un juego) o Editor o más (para una edición). Después no cambia, salvo el Dueño. La migración se reconoce por `programa/parcheador.json` en `main`. Los juegos migrados llevan
   `{"canal": "ornizen", "cuenta": null, "fecha": null}`.
 - **El `estado` central de un juego** y **la `huella` de una edición publicada** solo los cambia el Dueño. Un juego
   actualizado es otra edición.
 - **`versiones` solo crece.** Una versión no se borra ni se le cambia la versión, la fecha, el autor o el paquete.
-  Retirarla (`estado`, `motivo`, `motivoPublico`, `fechaRetirada`) y editar sus `notas` sí se puede.
+  Retirarla (`estado`, `motivo`, `motivoPublico`, `fechaRetirada`) y editar sus `notas` sí se puede. Por lo
+  mismo, un parche con versiones publicadas no se borra (salvo el Dueño).
 - **Coherencia.**
   - Cada edición de la lista de un juego tiene su archivo, y al revés.
   - Cada parche apunta a un juego que existe.

@@ -28,7 +28,7 @@ import re
 import lector_app
 import particion
 
-ADMINISTRADOR, DUENO = 3, 5
+EDITOR, ADMINISTRADOR, DUENO = 2, 3, 5
 
 # Rutas. Los ids, como en `particion.id_valido` (sirven de nombre de carpeta o de archivo).
 _ID = r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?"
@@ -73,8 +73,10 @@ def de_los_sueltos(ruta: str) -> bool:
 
 
 def migrado(archivos_main: dict) -> bool:
-    """Si `main` ya tiene el catálogo en archivos sueltos (desde la migración de la fase B)."""
-    return any(tipo_de_ruta(r) is not None for r in archivos_main)
+    """Si `main` ya tiene el catálogo en archivos sueltos (desde la migración de la fase B). La marca es
+    `programa/parcheador.json`, la misma que miran el Modo equipo y `publicar-version.ps1`: la migración lo escribe
+    todo a la vez."""
+    return particion.RUTA_PARCHEADOR in archivos_main
 
 
 def _leer(datos, ruta, motivos):
@@ -125,7 +127,17 @@ def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id
             motivos.append(f"`{ruta}`: por ahora solo el canal oficial (@{particion.CANAL_OFICIAL}) publica parches.")
             continue
         if estado == "D":
-            continue  # quitar un juego o una edición lo deciden las reglas del catálogo (y la coherencia de abajo)
+            # Quitar un juego o una edición lo deciden las reglas del catálogo (y la coherencia de abajo); quitar un
+            # parche con versiones publicadas borraría su historial, que solo borra el Dueño.
+            if tipo[0] == "parche" and not es_dueno and ruta in antes:
+                previo = _leer(antes[ruta], ruta, [])
+                if isinstance(previo, dict) and any(
+                        isinstance(e, dict) and any(isinstance(v, dict) for v in e.get("versiones") or [])
+                        for e in previo.get("ediciones") or []):
+                    motivos.append(f"`{ruta}`: este parche tiene versiones publicadas y su historial no se borra; "
+                                   "para quitarlo del catálogo, ocúltalo o retira sus versiones (solo el Dueño del "
+                                   "programa borra historial).")
+            continue
         datos = despues.get(ruta)
         if datos is None:
             continue
@@ -209,9 +221,12 @@ def _reglas(ruta, tipo, previo, objeto, rol_por_canal, autor_id, hoy) -> list:
                     motivos.append(f"`{ruta}` › `alta.cuenta`: tiene que ser el id de tu cuenta ({autor_id}).")
                 if not _hoy_vale(alta["fecha"], hoy):
                     motivos.append(f"`{ruta}` › `alta.fecha`: tiene que ser la fecha de hoy ({hoy.isoformat()}, UTC).")
-                if rol_por_canal.get(alta["canal"], 0) < ADMINISTRADOR:
-                    motivos.append(f"`{ruta}` › `alta.canal`: dar de alta lo hace un Administrador o un Propietario "
-                                   f"del canal, y en @{alta['canal']} no lo eres.")
+                minimo = ADMINISTRADOR if tipo[0] == "juego" else EDITOR
+                if rol_por_canal.get(alta["canal"], 0) < minimo:
+                    quien = ("un Administrador o un Propietario" if tipo[0] == "juego"
+                             else "un Editor, un Administrador o un Propietario")
+                    motivos.append(f"`{ruta}` › `alta.canal`: dar de alta {que} lo hace {quien} del canal, y en "
+                                   f"@{alta['canal']} no lo eres.")
             if tipo[0] == "juego" and objeto.get("estado", "activo") != "activo":
                 motivos.append(f"`{ruta}`: un juego nuevo empieza `activo`; retirarlo o bloquearlo es del Dueño del "
                                "programa.")

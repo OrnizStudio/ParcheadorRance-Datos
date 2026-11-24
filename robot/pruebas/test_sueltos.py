@@ -187,6 +187,13 @@ class Alta(unittest.TestCase):
         p.poner("juegos/rance/ediciones/gog.json", {"esquema": 1, "id": "gog", "nombre": "GOG"})
         self.assertTrue(any("le falta `alta`" in m for m in p.juzgar(Rol.ADMINISTRADOR)))
 
+    def test_un_editor_registra_ediciones_y_un_colaborador_no(self):
+        p = Propuesta().cambiar(JUEGO, lambda j: j["ediciones"].append("gog"))
+        p.poner("juegos/rance/ediciones/gog.json", {"esquema": 1, "id": "gog", "nombre": "GOG", "alta": alta()})
+        self.assertEqual([], p.juzgar(Rol.EDITOR))
+        motivos = p.juzgar(Rol.COLABORADOR)
+        self.assertTrue(any("alta.canal" in m for m in motivos), motivos)
+
     def test_el_alta_no_cambia_salvo_el_dueno(self):
         p = Propuesta().cambiar(JUEGO, lambda j: j.update(alta=alta()))
         self.assertTrue(any("`alta`" in m for m in p.juzgar(Rol.PROPIETARIO)))
@@ -241,6 +248,32 @@ class Versiones(unittest.TestCase):
         self.assertEqual([], Propuesta().cambiar(PARCHE, lambda p: p["ediciones"][0]["versiones"].clear()).juzgar(Rol.DUENO))
 
 
+class Borrados(unittest.TestCase):
+    def test_un_parche_con_versiones_no_se_borra(self):
+        for rol in (Rol.ADMINISTRADOR, Rol.PROPIETARIO):
+            with self.subTest(rol=rol):
+                motivos = Propuesta().quitar(PARCHE).juzgar(rol)
+                self.assertTrue(any("historial no se borra" in m for m in motivos), motivos)
+        self.assertEqual([], Propuesta().quitar(PARCHE).juzgar(Rol.DUENO))
+
+    def test_revertir_un_juego_nuevo_sin_versiones(self):
+        main = juego_nuevo(Propuesta()).despues
+        p = Propuesta(main=main)
+        for ruta in ("juegos/rance-2/juego.json", "juegos/rance-2/ediciones/dl.json", "canales/ornizen/parches/rance-2.json"):
+            p.quitar(ruta)
+        self.assertEqual([], p.juzgar(Rol.ADMINISTRADOR))
+
+    def test_quitar_una_edicion_que_el_parche_aun_nombra(self):
+        p = Propuesta().cambiar(JUEGO, lambda j: j.update(ediciones=[])).quitar(EDICION)
+        self.assertTrue(p.juzgar(Rol.EDITOR))
+
+    def test_la_marca_de_migracion_es_programa_parcheador(self):
+        main = main_migrado()
+        del main["programa/parcheador.json"]
+        p = Propuesta(main=main).cambiar(JUEGO, lambda j: j.update(sinopsis="Después"))
+        self.assertIn("migración", p.juzgar(Rol.ADMINISTRADOR)[0])
+
+
 class Coherencia(unittest.TestCase):
     def test_edicion_sin_archivo_o_sin_lista(self):
         p = Propuesta().cambiar(JUEGO, lambda j: j["ediciones"].append("gog"))
@@ -252,9 +285,11 @@ class Coherencia(unittest.TestCase):
         p = Propuesta().poner("canales/ornizen/parches/fantasma.json", {"esquema": 1, "juego": "fantasma"})
         self.assertTrue(any("no existe" in m for m in p.juzgar(Rol.ADMINISTRADOR)))
 
-    def test_borrar_el_juego_con_su_parche_es_de_administrador(self):
+    def test_borrar_un_juego_con_versiones_es_del_dueno(self):
+        # Quitar un juego es de Administrador (reglas del catálogo), pero con versiones publicadas borraría historial.
         p = Propuesta().quitar(JUEGO).quitar(EDICION).quitar(PARCHE)
-        self.assertEqual([], p.juzgar(Rol.ADMINISTRADOR))
+        self.assertTrue(any("historial no se borra" in m for m in p.juzgar(Rol.ADMINISTRADOR)))
+        self.assertEqual([], p.juzgar(Rol.DUENO))
         self.assertTrue(any("quitar un juego" in m for m in p.juzgar(Rol.EDITOR)))
 
     def test_borrar_el_juego_y_dejar_el_parche(self):
