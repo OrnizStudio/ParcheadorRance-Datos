@@ -153,39 +153,37 @@ class LoDeSiempre(unittest.TestCase):
 
 
 class Alta(unittest.TestCase):
-    def test_juego_nuevo_bien(self):
-        self.assertEqual([], juego_nuevo(Propuesta()).juzgar(Rol.ADMINISTRADOR))
+    def test_un_juego_nuevo_solo_lo_da_de_alta_el_dueno(self):
+        for rol in (Rol.COLABORADOR, Rol.EDITOR, Rol.ADMINISTRADOR, Rol.PROPIETARIO):
+            with self.subTest(rol=rol):
+                motivos = juego_nuevo(Propuesta()).juzgar(rol)
+                self.assertTrue(any("del Dueño del programa (PROGRAMA › Juegos)" in m for m in motivos), motivos)
+        self.assertEqual([], juego_nuevo(Propuesta()).juzgar(Rol.DUENO))
 
-    def test_juego_nuevo_es_de_administrador(self):
-        motivos = juego_nuevo(Propuesta()).juzgar(Rol.EDITOR)
-        self.assertTrue(any("alta.canal" in m for m in motivos), motivos)
-        self.assertTrue(any("Juego nuevo" in m for m in motivos), motivos)
+    def edicion_nueva(self, con_alta=None, quitar_alta=False):
+        p = Propuesta().cambiar(JUEGO, lambda j: j["ediciones"].append("gog"))
+        edicion = {"esquema": 1, "id": "gog", "nombre": "GOG", "alta": alta() if con_alta is None else con_alta}
+        if quitar_alta:
+            del edicion["alta"]
+        return p.poner("juegos/rance/ediciones/gog.json", edicion)
 
     def test_alta_de_otra_cuenta_otro_dia_u_otro_canal(self):
         for malo, texto in ((alta(cuenta=1), "alta.cuenta"), (alta(fecha="2026-11-20"), "alta.fecha"),
                             (alta(canal="otro_canal"), "alta.canal"), (alta(cuenta=None), "alta.cuenta")):
             with self.subTest(alta=malo):
-                motivos = juego_nuevo(Propuesta(), con_alta=malo).juzgar(Rol.ADMINISTRADOR)
+                motivos = self.edicion_nueva(malo).juzgar(Rol.ADMINISTRADOR)
                 self.assertTrue(any(texto in m for m in motivos), motivos)
         # Un día de margen (zonas horarias).
         for fecha in ("2026-11-23", "2026-11-25"):
-            self.assertEqual([], juego_nuevo(Propuesta(), con_alta=alta(fecha=fecha)).juzgar(Rol.ADMINISTRADOR))
+            self.assertEqual([], self.edicion_nueva(alta(fecha=fecha)).juzgar(Rol.ADMINISTRADOR))
 
     def test_alta_que_falta_o_mal_formada(self):
-        for malo in (None, {}, {"canal": "ornizen", "cuenta": YO}, {"canal": "ornizen", "cuenta": YO, "fecha": HOY.isoformat(), "x": 1},
+        self.assertTrue(any("le falta `alta`" in m for m in self.edicion_nueva(quitar_alta=True).juzgar(Rol.ADMINISTRADOR)))
+        for malo in ({}, {"canal": "ornizen", "cuenta": YO}, {"canal": "ornizen", "cuenta": YO, "fecha": HOY.isoformat(), "x": 1},
                      {"canal": "ORNIZEN", "cuenta": YO, "fecha": "hoy"}, {"canal": "ornizen", "cuenta": True, "fecha": None},
                      {"canal": "ornizen", "cuenta": 2 ** 60, "fecha": None}):
             with self.subTest(alta=malo):
-                p = juego_nuevo(Propuesta())
-                p.cambiar("juegos/rance-2/juego.json", lambda j: j.update(alta=malo) if malo is not None else j.pop("alta"))
-                self.assertTrue(p.juzgar(Rol.ADMINISTRADOR))
-
-    def test_edicion_nueva_con_su_alta(self):
-        p = Propuesta().cambiar(JUEGO, lambda j: j["ediciones"].append("gog"))
-        p.poner("juegos/rance/ediciones/gog.json", {"esquema": 1, "id": "gog", "nombre": "GOG", "alta": alta()})
-        self.assertEqual([], p.juzgar(Rol.ADMINISTRADOR))
-        p.poner("juegos/rance/ediciones/gog.json", {"esquema": 1, "id": "gog", "nombre": "GOG"})
-        self.assertTrue(any("le falta `alta`" in m for m in p.juzgar(Rol.ADMINISTRADOR)))
+                self.assertTrue(self.edicion_nueva(malo).juzgar(Rol.ADMINISTRADOR))
 
     def test_un_editor_registra_ediciones_y_un_colaborador_no(self):
         p = Propuesta().cambiar(JUEGO, lambda j: j["ediciones"].append("gog"))

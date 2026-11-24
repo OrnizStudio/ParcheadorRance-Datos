@@ -273,7 +273,8 @@ Lo que comprueba el robot además de las reglas de siempre (`robot/sueltos.py`):
 - **Forma.** Solo esas rutas, con ids de letras, números, `.`, `_` y `-`. Solo claves conocidas, `esquema: 1` y JSON
   estricto. Un juego hasta 256 KB, una edición o un parche hasta 4 MB.
 - **`alta`.** La pone quien propone: `{"canal", "cuenta", "fecha"}`, con su id, la fecha de hoy (UTC, con un día de
-  margen) y un canal donde es Administrador o más (para un juego) o Editor o más (para una edición). Después no cambia, salvo el Dueño. La migración se reconoce por `programa/parcheador.json` en `main`. Los juegos migrados llevan
+  margen) y un canal donde es Editor o más. En la fase B, un juego nuevo solo lo da de alta el Dueño del programa
+  (PROGRAMA › Juegos); los canales verificados se suman con la fase D. Después no cambia, salvo el Dueño. La migración se reconoce por `programa/parcheador.json` en `main`. Los juegos migrados llevan
   `{"canal": "ornizen", "cuenta": null, "fecha": null}`.
 - **El `estado` central de un juego** y **la `huella` de una edición publicada** solo los cambia el Dueño. Un juego
   actualizado es otra edición.
