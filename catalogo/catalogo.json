@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 33,
+  "versionCatalogo": 34,
   "launcher": {
-    "ultimaVersion": "0.2.5",
+    "ultimaVersion": "0.3.0",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Preparado para los catálogos por canal: el parcheador ya lee el catálogo partido en archivos", "Modo equipo: los paquetes nuevos se suben al repositorio de paquetes del canal", "PROGRAMA › Juegos lee un índice comprobado y no mezcla datos de dos momentos distintos", "Reordenar juegos avisa antes de enviar un cambio demasiado grande"],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.2.5/ParcheadorOrnizen-0.2.5-win-x64.zip",
-    "tamano": 24309140,
-    "hash": "blake3:e58aa05c2bc70c26093ee6962edb7fac41fb9ef54a3685c5dda5ee69e69b175b"
+    "novedades": ["Varios parches por juego: cada parche muestra el canal que lo hace, con su @ y su logo", "Puedes elegir de qué canal usar el parche de cada juego", "Avisos claros si un canal está retirado o bloqueado", "Más seguridad: los parches solo se descargan de direcciones permitidas", "Modo equipo: «Actualizar» en el historial siempre trae lo último"],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.3.0/ParcheadorOrnizen-0.3.0-win-x64.zip",
+    "tamano": 24487753,
+    "hash": "blake3:3c1eb9c1a8e6a5ec2a645d4a83d201b7efd9177b877b02fe037cc7a6d6cbce66"
   },
   "juegos": [
     {
