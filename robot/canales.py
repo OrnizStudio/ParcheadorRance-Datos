@@ -20,6 +20,10 @@ from dataclasses import dataclass, field
 CARPETA_CANALES = "canales/"
 CANAL_OFICIAL = "ornizen"
 ID_CANAL = re.compile(r"^[a-z0-9_]{3,20}$")
+# @ que ningún canal puede tener, ni siquiera creado por el Dueño: `programa` es el prefijo de las ramas de la zona
+# PROGRAMA de Modo equipo (`programa/…`), y la app descarta un canal con ese @ (LectorCanalesCuenta.IdValido). Solo el
+# @ exacto: un nombre como «Programa de traducción» sí vale.
+ARROBAS_DEL_PROGRAMA = ("programa",)
 CUENTA_GITHUB = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 HASH_VALIDO = re.compile(r"^blake3:[0-9a-f]{64}$")
@@ -847,6 +851,9 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
             continue
         if not ID_CANAL.match(canal):
             motivos.append(f"`{c.ruta}`: `{canal}` no puede ser el @ de un canal (de 3 a 20 minúsculas, números y `_`).")
+            continue
+        if canal in ARROBAS_DEL_PROGRAMA:
+            motivos.append(f"`{c.ruta}`: @{canal} está reservado por el programa y no puede ser el @ de un canal.")
             continue
         por_canal.setdefault(canal, []).append((resto, c))
 
