@@ -835,6 +835,8 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
         solo_aceptar = True
 
     for resto, c in archivos:
+        if resto.startswith("parches/"):
+            continue  # los parches del canal (fase B) los juzga sueltos.py, con el rol en el canal
         if resto in ("canal.json", "miembros.json", "lista-negra.json"):
             try:
                 antes = _leer(c, "antes", resto)
