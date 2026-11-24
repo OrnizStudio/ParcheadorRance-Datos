@@ -27,7 +27,8 @@ ARROBAS_DEL_PROGRAMA = ("programa",)
 CUENTA_GITHUB = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 HASH_VALIDO = re.compile(r"^blake3:[0-9a-f]{64}$")
-REPOSITORIO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
+# «.» y «..» no son repositorios (la app usa esta lista como lista blanca de descargas).
+REPOSITORIO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$")
 RUTA_SEGURA = re.compile(r"^[a-z0-9._/-]+$")
 EXTENSIONES_LOGO = (".png", ".webp", ".jpg", ".jpeg")
 
@@ -220,7 +221,7 @@ _CONFUNDIBLES = str.maketrans({
     "ß": "b",
     # dígitos y signos que pasan por letras
     "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g", "|": "l", "!": "l", "$": "s",
-    "@": "a", "ǀ": "l",
+    "@": "a", "ǀ": "l", "¡": "i",
     # i y l se confunden entre sí
     "i": "l",
 })
@@ -256,7 +257,9 @@ def _tabla_uts39() -> dict:
     return _uts39
 
 
-_LETRA_LATINA = re.compile(r"LATIN (?:SMALL|CAPITAL) LETTER ([A-Z])(?: WITH .*| [A-Z]+)?")
+# Con lo que lleve delante («NEGATIVE CIRCLED», «NEGATIVE SQUARED»…) y las letras de bandera (REGIONAL INDICATOR).
+_LETRA_LATINA = re.compile(r"(?:[A-Z]+ )*(?:LATIN (?:SMALL|CAPITAL) LETTER|REGIONAL INDICATOR SYMBOL LETTER) ([A-Z])"
+                           r"(?: WITH .*| [A-Z]+)?")
 
 
 def _letra_base(c: str) -> str:
@@ -289,6 +292,19 @@ def esqueleto(texto: str) -> str:
     for par, letra in _PARES_CONFUNDIBLES:
         t = t.replace(par, letra)
     return t
+
+
+NO_COMPARABLE = ("casi no tiene letras normales (a–z) y no se puede comparar con los demás canales: escríbelo con "
+                 "letras latinas")
+
+
+def esqueleto_dudoso(texto: str) -> bool:
+    """¿Se pierde casi todo al sacar el esqueleto? (letras raras que ni NFKC ni las tablas llevan a a–z: el esqueleto
+    vacío o de menos de la mitad de las letras y cifras del texto no sirve para comparar, y se rechaza)."""
+    if not isinstance(texto, str):
+        return False
+    visibles = sum(1 for c in texto if unicodedata.category(c)[0] in "LNS")
+    return visibles > 0 and len(esqueleto(texto)) * 2 < visibles
 
 
 def nombre_reservado(texto) -> bool:
@@ -976,6 +992,8 @@ PARECE_ORNIZ = "se parece a Orniz, que es del Dueño del programa"
 
 def _solo_orniz(canal, nombre):
     """Sin la lista de canales y reservados de `main` (pruebas sueltas de este módulo): solo «Orniz»."""
+    if esqueleto_dudoso(nombre):
+        return NO_COMPARABLE
     return PARECE_ORNIZ if canal != CANAL_OFICIAL and nombre_reservado(nombre) else None
 
 
@@ -1057,9 +1075,9 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
 
     for mid in sorted(set(m_despues) & vetados):
         motivos.append(f"`{ruta}`: `{m_despues[mid].cuenta}` está en la lista negra del canal: no puede ser miembro.")
-    # Lista negra general (fase D): ni entrar ni seguir. Solo se mira a quien la propuesta añade o cambia (los demás
-    # ya se revisan al vetarlos), con un tope de consultas.
-    for mid in [m for m in sorted(m_despues) if m_antes.get(m) != m_despues[m]][:TOPE_CONSULTAS_DUENO]:
+    # Lista negra general (fase D): ni entrar ni seguir. Se mira a todos los que la propuesta añade o cambia (los
+    # demás ya se revisan al vetarlos); cada trozo se lee una vez (`listas.Consultas`).
+    for mid in [m for m in sorted(m_despues) if m_antes.get(m) != m_despues[m]]:
         if motivo := veto_general(mid):
             motivos.append(f"`{ruta}`: `{m_despues[mid].cuenta}` está en la lista negra del programa ({motivo}): no "
                            "puede ser miembro de ningún canal.")
