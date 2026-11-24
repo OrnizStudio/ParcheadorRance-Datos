@@ -108,6 +108,61 @@ class Miembros(unittest.TestCase):
         self.assertFalse([r for r in publicados(archivos, todo_el_modelo()) if r.startswith("miembros/")])
 
 
+
+class RevisionDeSeguridad(unittest.TestCase):
+    """La lista negra de canales falla en cerrado y cada trozo de la general se lee una vez (revisión de #50)."""
+
+    def test_una_lista_de_canales_ilegible_para_la_publicacion(self):
+        import publicar
+        for roto in (b"{", particion.texto_json({"esquema": 1, "canales": "x"})):
+            archivos = base()
+            archivos[listas.RUTA_CANALES] = roto
+            with self.subTest(roto), self.assertRaises(publicar.ErrorPublicar):
+                publicar.canales_publicados(archivos)
+
+    def test_una_fila_que_ya_no_valida_sigue_bloqueando(self):
+        archivos = base()
+        archivos[listas.RUTA_CANALES] = particion.texto_json({"esquema": 1, "canales": [
+            {"id": "rance_es", "esqueleto": "otra-version", "motivo": "x" * 301, "fecha": "2026-11-20", "nota": 1}]})
+        self.assertEqual("bloqueado", canal_de(publicados(archivos, todo_el_modelo()), "rance_es")["estado"])
+
+    def test_cada_trozo_de_la_lista_general_se_lee_una_vez(self):
+        import datetime
+        import publicar
+        archivos = con_miembros(base(), "rance_es", miembro(7, "eva", "propietario"),
+                                *[miembro(1000 + j, f"u{j}") for j in range(2000)])
+        leidos = []
+
+        class Contador(dict):
+            def get(self, ruta, defecto=None):
+                if ruta.startswith(listas.CARPETA):
+                    leidos.append(ruta)
+                return super().get(ruta, defecto)
+        canales, _ = publicar.canales_publicados(archivos)
+        publicar.miembros_publicados(Contador(archivos), canales, datetime.date(2026, 11, 24))
+        self.assertTrue(leidos)
+        self.assertEqual(len(leidos), len(set(leidos)))
+
+
+
+class Retirados(unittest.TestCase):
+    def test_juegos_y_canales_que_ya_no_se_ofrecen(self):
+        archivos = base()
+        archivos["canales/viejo/canal.json"] = canal_json("viejo", estado="retirado")
+        archivos["canales/rance_es/canal.json"] = canal_json("rance_es", estado="bloqueado")
+        central = json.loads(archivos["juegos/rance-x/juego.json"])
+        archivos["juegos/rance-x/juego.json"] = particion.texto_json(dict(central, estado="retirado"))
+        salida = publicados(archivos, todo_el_modelo())
+        self.assertEqual({"esquema": 1, "juegos": [{"id": "rance-x", "estado": "retirado"}],
+                          "canales": [{"id": "rance_es", "estado": "bloqueado"}, {"id": "viejo", "estado": "retirado"}]},
+                         json.loads(salida["retirados.json"]))
+        self.assertIn("retirados.json", json.loads(salida["indice.json"])["trozos"])
+
+    def test_sin_nada_retirado_listas_vacias(self):
+        salida = publicados(base(), todo_el_modelo())
+        self.assertEqual({"esquema": 1, "juegos": [], "canales": []}, json.loads(salida["retirados.json"]))
+
+
 class Directorio(unittest.TestCase):
     def test_todos_menos_los_ocultos(self):
         archivos = base()

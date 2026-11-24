@@ -177,11 +177,12 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
 
     def leer_main(ruta):
         return leer(ruta, "antes")
+    consultas = listas.Consultas(leer_main, hoy)
     # Lista negra general (fase D, docs/canales.md §3.1). El Dueño está por encima de cualquier veto.
     try:
         if not permisos.es_dueno:
             for cuenta in dict.fromkeys(c for c in (permisos.cuenta_id, *cuentas) if c is not None):
-                if motivo := listas.veto_de_cuenta(cuenta, leer_main, hoy):
+                if motivo := consultas.veto(cuenta):
                     return [f"La cuenta {cuenta} está en la lista negra del programa ({motivo}): el robot no acepta "
                             "propuestas suyas."]
         bloqueados = listas.canales_vetados(leer_main)
@@ -265,7 +266,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
 
     def veto_general(cuenta_id):
         try:
-            return listas.veto_de_cuenta(cuenta_id, leer_main, hoy)
+            return consultas.veto(cuenta_id)
         except listas.ListaIlegible:
             return "la lista negra de esa cuenta no se puede leer"
 
@@ -324,9 +325,9 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             if de_canal is not None and huella in del_canal_huellas:
                 return f"de @{de_canal}: {del_canal_huellas[huella]}"
             try:
-                general = listas.huella_vetada(huella, leer_main)
-            except listas.ListaIlegible:
-                return "su trozo de la lista negra no se puede leer"
+                general = consultas.huella(huella)
+            except listas.ListaIlegible as error:
+                return f"no se ha podido comprobar en la lista negra: {error}"
             return f"del programa: {general}" if general else None
         motivos += sueltos.comprobar_huellas([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
                                              vetada, permisos.es_dueno)
@@ -412,9 +413,11 @@ def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, cr
     if sol.canal in bloqueados:
         return [f"@{sol.canal} está bloqueado por el Dueño del programa ({bloqueados[sol.canal]})."]
     if sol.tipo == "verificacion":
+        consultas = listas.Consultas(leer_main, hoy)  # un canal con muchos paquetes: cada trozo, una vez
+
         def vetada(huella):
             try:
-                return listas.huella_vetada(huella, leer_main) is not None
+                return consultas.huella(huella) is not None
             except listas.ListaIlegible:
                 return True
         return solicitudes.comprobar_verificacion(sol, leer, permisos.cuenta_id,

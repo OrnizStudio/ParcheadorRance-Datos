@@ -240,12 +240,12 @@ EXTENSION_LOGO = {"png": "png", "webp": "webp", "jpeg": "jpg"}
 
 
 def _canales_vetados(archivos: dict) -> dict:
-    """{@: motivo} de `normas/lista-negra/canales.json` (vacío si no hay o no se lee: el `estado` del canal sigue
-    valiendo, y el robot no deja llegar a `main` una lista ilegible)."""
+    """{@: motivo} de `normas/lista-negra/canales.json` (vacío si no hay). Si no se puede leer, no se publica nada
+    (falla en cerrado: publicar sin ella sacaría como activos canales bloqueados)."""
     try:
         return listas.canales_vetados(archivos.get)
-    except listas.ListaIlegible:
-        return {}
+    except listas.ListaIlegible as error:
+        raise ErrorPublicar(f"La lista negra de canales de `main` no se puede leer: {error}") from None
 
 
 def canales_publicados(archivos: dict) -> dict:
@@ -351,15 +351,13 @@ def miembros_publicados(archivos: dict, canales: dict, hoy: datetime.date) -> di
     su estado. No salen los canales `bloqueado` ni las cuentas vetadas (en la lista negra general o en la del canal).
     Un `miembros.json` o una lista negra del canal que no se lee deja fuera ese canal; un trozo de la lista negra
     general que no se lee deja fuera a sus cuentas (es solo para enseñar: el robot mira `main` en cada propuesta)."""
-    vetos = {}
+    consultas = listas.Consultas(archivos.get, hoy)  # cada trozo de la lista negra se lee una vez
 
     def vetada(cuenta_id):
-        if cuenta_id not in vetos:
-            try:
-                vetos[cuenta_id] = listas.veto_de_cuenta(cuenta_id, archivos.get, hoy) is not None
-            except listas.ListaIlegible:
-                vetos[cuenta_id] = True
-        return vetos[cuenta_id]
+        try:
+            return consultas.veto(cuenta_id) is not None
+        except listas.ListaIlegible:
+            return True
 
     cuentas = {}
     for cid, canal in sorted(canales.items()):
@@ -407,6 +405,21 @@ def buscar_canales(canales: dict, juegos: dict) -> bytes:
         for cid, c in sorted(canales.items()) if not c["oculto"]]})
 
 
+def retirados(archivos: dict, canales: dict) -> bytes:
+    """`retirados.json`: los juegos (por su `estado` central) y los canales que ya no se ofrecen, para quien los tiene
+    instalados. Las ediciones no tienen estado propio: una que ya no se ofrece es la de un juego o un canal de aquí."""
+    juegos = []
+    for ruta in sorted(archivos):
+        tipo = sueltos.tipo_de_ruta(ruta)
+        if tipo is None or tipo[0] != "juego":
+            continue
+        central = _objeto(archivos[ruta])
+        if isinstance(central, dict) and central.get("id") == tipo[1] and central.get("estado") in ("retirado", "bloqueado"):
+            juegos.append({"id": tipo[1], "estado": central["estado"]})
+    return _json({"esquema": 1, "juegos": juegos, "canales": [
+        {"id": cid, "estado": c["estado"]} for cid, c in sorted(canales.items()) if c["estado"] != "activo"]})
+
+
 def _trozos_de_miembros(cuentas: dict) -> dict:
     """`miembros/<xx>.json`, con `<xx>` del SHA-256 del id escrito en decimal y las cuentas ordenadas por id."""
     por_trozo = {}
@@ -425,7 +438,7 @@ def _trozos(prefijo: str, clave: str, entradas: dict) -> dict:
 def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ahora: str) -> dict:
     """{ruta: bytes} de la rama `publicado`: `indice.json`, `programa/juegos/<xx>.json` (fase B) y, para la app 0.3.0,
     `juegos/<xx>.json`, `detalle/<juego>/<canal>.json`, `canales/<xx>.json`, `logos/<canal>.<ext>` y
-    `etiquetas.json`; desde la fase D, `miembros/<xx>.json` y `buscar-canales.json`. ErrorPublicar si algún archivo
+    `etiquetas.json`; desde la fase D, `miembros/<xx>.json`, `buscar-canales.json` y `retirados.json`. ErrorPublicar si algún archivo
     pasa de 8 MB."""
     resultado = _trozos("programa/juegos/", "juegos", indice_por_juego(archivos))
     canales, logos = canales_publicados(archivos)
@@ -436,6 +449,7 @@ def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ah
     resultado.update(_trozos_de_miembros(miembros_publicados(archivos, canales, hoy)))
     if canales:
         resultado["buscar-canales.json"] = buscar_canales(canales, juegos)
+        resultado["retirados.json"] = retirados(archivos, canales)
     if particion.RUTA_ETIQUETAS in archivos or isinstance((catalogo or {}).get("etiquetas"), list):
         # Sin ninguna de las dos fuentes (un `main` vacío) no hay nada que decir: la app sigue con el catálogo.
         etiquetas = (_objeto(archivos.get(particion.RUTA_ETIQUETAS, b"")) or {}).get("etiquetas")

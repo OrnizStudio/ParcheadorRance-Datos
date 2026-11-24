@@ -329,3 +329,90 @@ class ConfundiblesDeUnicode(unittest.TestCase):
         datos = canales.RUTA_CONFUSABLES.read_bytes()
         self.assertEqual(canales.SHA256_CONFUSABLES, hashlib.sha256(datos).hexdigest())
         self.assertIn(b"# Version: 16.0.0", datos[:400])
+
+
+class RevisionDeSeguridad(unittest.TestCase):
+    """Lo que encontró la revisión de seguridad de #48: letras que imitan a Orniz, listas negras que fallaban en
+    abierto, el corte de consultas y las lecturas repetidas de trozos."""
+
+    def test_letras_de_recuadro_circulo_y_bandera_no_imitan_a_orniz(self):
+        for nombre in ("\U0001F17E\U0001F181\U0001F17D\U0001F178\U0001F189",       # NEGATIVE SQUARED
+                       "\U0001F15E\U0001F161\U0001F15D\U0001F158\U0001F169en",      # NEGATIVE CIRCLED
+                       "\U0001F1F4\U0001F1F7\U0001F1F3\U0001F1EE\U0001F1FF",        # REGIONAL INDICATOR
+                       "Orn¡z"):
+            with self.subTest(ascii(nombre)):
+                motivos = Nombres.renombrar(self, nombre)
+                self.assertTrue(any("se parece a Orniz" in m for m in motivos), motivos)
+
+    def test_un_nombre_que_casi_no_tiene_letras_latinas_no_se_puede_comparar(self):
+        for nombre in ("日本語サブ", "★★★", "\U0001D7D8\U0001F600\U0001F600\U0001F600"):
+            with self.subTest(ascii(nombre)):
+                motivos = Nombres.renombrar(self, nombre)
+                self.assertTrue(any("no se puede comparar" in m for m in motivos), motivos)
+        self.assertEqual([], Nombres.renombrar(self, "Rance 日本"))
+
+    def test_punto_y_dos_puntos_no_son_repositorios(self):
+        import canales
+        for malo in ("ornizstudio/.", "ornizstudio/.."):
+            self.assertIsNone(canales.REPOSITORIO.match(malo), malo)
+        for bueno in ("ornizstudio/.github", "ornizstudio/a...b", "a/x"):
+            self.assertIsNotNone(canales.REPOSITORIO.match(bueno), bueno)
+
+    def test_una_fila_que_ya_no_valida_sigue_bloqueando_el_canal(self):
+        fila = {"id": "malo", "esqueleto": "malo", "motivo": "malware", "fecha": "2026-11-20"}
+        for nombre, lista in [("esqueleto de otra versión", {"esquema": 1, "canales": [dict(fila, esqueleto="rnalo")]}),
+                              ("motivo de 301", {"esquema": 1, "canales": [dict(fila, motivo="x" * 301)]}),
+                              ("sin motivo", {"esquema": 1, "canales": [dict(fila, motivo=7)]}),
+                              ("campo de más", {"esquema": 1, "canales": [fila], "nota": 1})]:
+            with self.subTest(nombre):
+                leer = {listas.RUTA_CANALES: particion.texto_json(lista)}.get
+                self.assertIn("malo", listas.canales_vetados(leer))
+        self.assertEqual({}, listas.canales_vetados({listas.RUTA_CANALES: particion.texto_json({"esquema": 1})}.get))
+        for roto in (b"{", particion.texto_json({"esquema": 1, "canales": "x"}), particion.texto_json([1])):
+            with self.subTest(roto), self.assertRaises(listas.ListaIlegible):
+                listas.canales_vetados({listas.RUTA_CANALES: roto}.get)
+
+    def test_una_cuenta_con_una_fila_que_ya_no_valida_sigue_vetada(self):
+        for fila in (veto(YO, "x" * 301), veto(YO, hasta="pronto"), dict(veto(YO), extra=1)):
+            with self.subTest(fila):
+                p = CuentasVetadas.propuesta(self, con(main_con_dos_canales(), u=usuarios(fila)))
+                motivos = juzgar(p, de({OTRO: Rol.PROPIETARIO}))
+                self.assertTrue(any("lista negra del programa" in m for m in motivos), motivos)
+
+    def test_cada_trozo_se_lee_una_vez(self):
+        leidos = []
+        main = {**usuarios(veto(9)), **huellas(HASH_MALO)}
+
+        def leer(ruta):
+            leidos.append(ruta)
+            return main.get(ruta)
+        consultas = listas.Consultas(leer, HOY)
+        vetadas = [i for i in range(1, 5001) if consultas.veto(i)]
+        self.assertEqual([9], vetadas)
+        hashes = ["blake3:%064x" % i for i in range(5000)] + [HASH_MALO.upper()]
+        self.assertEqual(1, sum(1 for h in hashes if consultas.huella(h)))
+        self.assertEqual(len(leidos), len(set(leidos)))
+        self.assertLessEqual(len(leidos), 2 * 256)
+
+    def test_un_tope_de_hashes_por_propuesta_que_falla_en_cerrado(self):
+        from unittest import mock
+        with mock.patch.object(listas, "TOPE_HUELLAS", 3):
+            consultas = listas.Consultas(lambda r: None)
+            for i in range(3):
+                self.assertIsNone(consultas.huella("blake3:%064x" % i))
+            self.assertIsNone(consultas.huella("BLAKE3:%064x" % 0))  # el mismo, ya visto
+            with self.assertRaises(listas.ListaIlegible):
+                consultas.huella("blake3:%064x" % 3)
+
+    def test_un_vetado_no_se_cuela_detras_de_cientos_de_cambios(self):
+        vetado = 9_000_000
+        otros = [{"id": 1000 + i, "cuenta": f"u{1000 + i}", "desde": "2026-11-24", "estado": "activo"}
+                 for i in range(400)]
+        main = con(main_con_dos_canales(), u=usuarios(veto(vetado)))
+        main[MIEMBROS_ES] = particion.texto_json(miembros_es(*[dict(m, rol="editor") for m in otros]))
+        p = Propuesta(main).poner(MIEMBROS_ES, miembros_es(
+            *[dict(m, rol="colaborador") for m in otros],
+            {"id": vetado, "cuenta": "vetado", "rol": "colaborador", "desde": "2026-11-24", "estado": "invitado",
+             "invitadoPor": YO}))
+        motivos = juzgar(p, de({OTRO: Rol.PROPIETARIO}))
+        self.assertTrue(any("`vetado` está en la lista negra del programa" in m for m in motivos), motivos)

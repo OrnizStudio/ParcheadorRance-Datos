@@ -320,6 +320,9 @@ directa a `main`, a mano y una vez al día. Hace dos cosas:
     el robot sigue mirando el rol en `main` en cada propuesta.
   - `buscar-canales.json` (fase D): el directorio, todos los canales menos los ocultos, con `id`, `nombre`,
     `verificado`, `estado`, `adultos` y `parches` (cuántos juegos tienen parche publicado de ese canal).
+  - `retirados.json` (fase D): `{"esquema":1,"juegos":[{id, estado}],"canales":[{id, estado}]}`, los juegos (por su
+    estado central) y los canales `retirado` o `bloqueado`, para quien los tiene instalados. Las ediciones no tienen
+    estado propio. Si la lista negra de canales de `main` no se puede leer, no se publica nada.
   - `logos/<canal>.<png|webp|jpg>`: el logo de cada canal, si pesa 512 KB o menos y es PNG, WebP o JPEG de verdad
     (se mira el contenido); si no, el canal sale con `logo: null`.
   - `etiquetas.json`: `{"esquema":1,"etiquetas":[…]}`, las de `normas/etiquetas.json`.
