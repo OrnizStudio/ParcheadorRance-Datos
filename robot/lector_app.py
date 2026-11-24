@@ -13,6 +13,7 @@ Solo usa la biblioteca estándar.
 from __future__ import annotations
 
 import json
+import re
 
 INT32 = (-(2 ** 31), 2 ** 31 - 1)
 INT64 = (-(2 ** 63), 2 ** 63 - 1)
@@ -152,6 +153,9 @@ def _corta(texto, largo=40):
 
 def _profundidad(texto: str) -> int:
     """La anidación más honda de `[` y `{` fuera de las cadenas, sin parsear (un JSON hondísimo tumbaría a Python)."""
+    abiertos = texto.count("[") + texto.count("{")
+    if abiertos <= PROFUNDIDAD_MAXIMA:
+        return abiertos  # no puede pasar del tope (solo se compara con él: lo que diga de más no importa)
     hondo = maximo = 0
     en_cadena = escapado = False
     for c in texto:
@@ -220,8 +224,11 @@ def _sustituto_dentro(valor) -> bool:
     return False
 
 
+_SUSTITUTO = re.compile(r"[\ud800-\udfff]")
+
+
 def _tiene_sustituto(texto: str) -> bool:
-    return any(0xD800 <= ord(c) <= 0xDFFF for c in texto)
+    return _SUSTITUTO.search(texto) is not None
 
 
 def _es_entero(valor) -> bool:
