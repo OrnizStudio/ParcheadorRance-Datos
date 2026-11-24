@@ -194,10 +194,25 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     migrado = sueltos.migrado(main_sueltos)
     if migrado and toca_catalogo and not permisos.es_dueno:
         return [ACTUALIZA_EL_PARCHEADOR]
+    # El `grupo` del catálogo vive en `programa/parcheador.json` desde la migración, pero hasta la fase D (que lo pasa a
+    # `canal.json`) lo sigue cambiando un Administrador desde Ajustes del canal, como antes. Solo `grupo`: el resto de
+    # `programa/` es del Dueño.
+    solo_grupo = None
+    if migrado and not permisos.es_dueno:
+        cambio_programa = next((c for c in cambios if c.ruta == particion.RUTA_PARCHEADOR and c.estado == "M"), None)
+        if cambio_programa is not None and particion.RUTA_PARCHEADOR in main_sueltos:
+            nuevo = leer_sueltos("despues").get(particion.RUTA_PARCHEADOR)
+            try:
+                a, d = lector_app.leer(main_sueltos[particion.RUTA_PARCHEADOR]), lector_app.leer(nuevo)
+            except (lector_app.JsonIlegible, TypeError):
+                a = d = None
+            if (isinstance(a, dict) and isinstance(d, dict) and set(a) | {"grupo"} == set(d) | {"grupo"}
+                    and all(a[k] == d[k] for k in a if k != "grupo")):
+                solo_grupo = cambio_programa
     if de_sueltos and not migrado and not permisos.es_dueno:
         return [f"`{de_sueltos[0].ruta}`: el catálogo aún está en `{RUTA_CATALOGO}`; los archivos sueltos (`juegos/`, "
                 "`canales/<canal>/parches/`) los crea la migración, que hace el Dueño del programa."]
-    if de_sueltos:
+    if de_sueltos or solo_grupo is not None:
         prop_sueltos = leer_sueltos("despues")
         rol_por_canal = {k: int(v) for k, v in permisos.por_canal.items()}
         motivos += sueltos.comprobar([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
@@ -236,7 +251,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             motivos += comprobar_largos(cat_antes, cat_despues)
 
     juegos_antes = _juegos_por_id(cat_antes)
-    motivos += _comprobar_archivos(cambios, juegos_antes, permisos)
+    motivos += _comprobar_archivos([c for c in cambios if c is not solo_grupo], juegos_antes, permisos)
     if toca_catalogo and cat_despues is not None and isinstance(cat_antes, dict):
         motivos += _comprobar_campos(cat_antes, cat_despues, permisos)
     return motivos

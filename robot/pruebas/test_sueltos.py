@@ -385,3 +385,22 @@ class LecturaConGit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Programa(unittest.TestCase):
+    def test_un_administrador_cambia_el_grupo_y_nada_mas_de_programa(self):
+        p = Propuesta().cambiar("programa/parcheador.json", lambda x: x.update(grupo={"nombre": "Otro grupo"}))
+        self.assertEqual([], p.juzgar(Rol.ADMINISTRADOR))
+        self.assertTrue(p.juzgar(Rol.EDITOR))
+        p = Propuesta().cambiar("programa/parcheador.json", lambda x: x["launcher"].update(ultimaVersion="9.9.9"))
+        self.assertTrue(any("Dueño" in m for m in p.juzgar(Rol.PROPIETARIO)))
+        self.assertEqual([], p.juzgar(Rol.DUENO))
+        p = Propuesta().cambiar("programa/parcheador.json", lambda x: x.update(grupo={"nombre": "x"}, otra=1))
+        self.assertTrue(p.juzgar(Rol.ADMINISTRADOR))
+        # Quitar el archivo o crearlo de nuevo sigue siendo del Dueño.
+        self.assertTrue(Propuesta().quitar("programa/parcheador.json").juzgar(Rol.ADMINISTRADOR))
+
+    def test_normas_etiquetas_solo_el_dueno(self):
+        p = Propuesta().cambiar("normas/etiquetas.json", lambda x: x.update(etiquetas=[]))
+        self.assertTrue(p.juzgar(Rol.PROPIETARIO))
+        self.assertEqual([], p.juzgar(Rol.DUENO))

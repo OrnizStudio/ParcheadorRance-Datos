@@ -266,7 +266,7 @@ catálogo):
 | `juegos/<j>/ediciones/<e>.json` | `id`, `nombre`, `grupo`, `huella`, `ignorar`, `ignorados`, `lanzar`, `tiendas`, `restricciones`, `avisoRestricciones`, `imagenes`; además `alta`. |
 | `canales/<c>/parches/<j>.json` | `juego`, `habilitado`, `disponibilidad`, `pruebas`, `orden`, `etiquetas`, `estado`, `progreso`, `creditos`, `opciones`, `parche` y, por edición (`ediciones: [{id, …}]`), `notaEdicion`, `disponibilidad`, `pruebas`, `huellasParcheadas`, `estado`, `progreso`, `parche`, `versiones`, `etiquetas`, `contenido`. Puede llevar `titulo` y `sinopsis` propios, que van por encima de los del juego. |
 | `normas/etiquetas.json` | Las etiquetas globales (solo el Dueño). |
-| `programa/parcheador.json` | El bloque `launcher` y el `grupo` del catálogo de antes (solo el Dueño). |
+| `programa/parcheador.json` | El bloque `launcher` y el `grupo` del catálogo de antes. Solo el Dueño, salvo el `grupo`, que hasta la fase D sigue cambiándolo un Administrador del canal. |
 
 Lo que comprueba el robot además de las reglas de siempre (`robot/sueltos.py`):
 
