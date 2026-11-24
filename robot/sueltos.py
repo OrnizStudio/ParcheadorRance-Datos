@@ -25,11 +25,8 @@ import datetime
 import json
 import re
 
-try:
-    from . import lector_app, particion  # type: ignore
-except ImportError:
-    import lector_app  # type: ignore
-    import particion  # type: ignore
+import lector_app
+import particion
 
 ADMINISTRADOR, DUENO = 3, 5
 

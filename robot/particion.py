@@ -25,10 +25,7 @@ from __future__ import annotations
 import json
 import re
 
-try:
-    from . import lector_app  # type: ignore
-except ImportError:  # al ejecutarlo suelto (`python -I robot/particion.py …`) o desde las pruebas
-    import lector_app  # type: ignore
+import lector_app
 
 CANAL_OFICIAL = "ornizen"
 
@@ -227,7 +224,7 @@ def mismo_catalogo(a: dict, b: dict) -> bool:
 
 
 def main(argv=None) -> int:
-    """`python -I robot/particion.py partir <carpeta del repositorio>`: escribe los archivos sueltos a partir de
+    """`python -B robot/particion.py partir <carpeta del repositorio>` (sin `-I`: con él, Python no pone `robot/` en sys.path): escribe los archivos sueltos a partir de
     `catalogo/catalogo.json` y comprueba la ida y vuelta antes de escribir nada."""
     import pathlib
     import sys
