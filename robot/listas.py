@@ -165,6 +165,87 @@ class ListaIlegible(Exception):
     """Un archivo de la lista negra de `main` no se puede leer: mejor rechazar que dejar pasar a un vetado."""
 
 
+def _filas_para_buscar(datos, ruta, clave) -> list:
+    """Las filas de un archivo de `main` para buscar en ellas, sin volver a validarlas (falla en cerrado): una fila con
+    un `motivo` largo, un `esqueleto` de otra versión del robot o un campo de más sigue vetando. Solo lo que no deja
+    ni buscar (JSON roto, sin la lista) es ilegible."""
+    try:
+        objeto = _objeto(datos, ruta)
+    except canales.JsonMalo as error:
+        raise ListaIlegible(f"`{ruta}` de `main` no se puede leer ({error}). Hasta que lo arregle el Dueño del "
+                            "programa, el robot no acepta lo que dependa de él.") from error
+    if objeto is None:
+        return []
+    # Sin la lista es una lista vacía, como al escribirla (`_filas`); con otra cosa en su sitio, ilegible.
+    if not isinstance(objeto, dict) or not isinstance(objeto.get(clave, []), list):
+        raise ListaIlegible(f"`{ruta}` de `main` no tiene la lista `{clave}`. Hasta que lo arregle el Dueño del "
+                            "programa, el robot no acepta lo que dependa de él.")
+    return [f for f in objeto.get(clave, []) if isinstance(f, dict)]
+
+
+def _motivo(fila) -> str:
+    motivo = fila.get("motivo")
+    return motivo[:LARGO_MOTIVO] if isinstance(motivo, str) and motivo.strip() else "sin motivo"
+
+
+def _sigue_vetada(fila, hoy) -> bool:
+    """Un veto con `hasta` ya pasado no cuenta; un `hasta` que no se entiende, sí (falla en cerrado)."""
+    hasta = fila.get("hasta")
+    return not (_fecha_valida(hasta) and datetime.date.fromisoformat(hasta) < hoy)
+
+
+TOPE_HUELLAS = 20000  # hashes distintos por los que una propuesta puede preguntar (manifiestos enormes)
+
+
+class Consultas:
+    """Consultas a la lista negra general de `main` con cada trozo leído una sola vez (una propuesta o una publicación
+    puede preguntar por miles de cuentas o de hashes). Pasado `TOPE_HUELLAS`, cada hash nuevo es ListaIlegible (falla
+    en cerrado: quien pregunta lo trata como vetado)."""
+
+    def __init__(self, leer_main, hoy: datetime.date | None = None):
+        self._leer = leer_main
+        self._hoy = hoy or datetime.datetime.now(datetime.timezone.utc).date()
+        self._cuentas, self._huellas = {}, {}
+        self._vistas = set()
+
+    def _trozo(self, cache, ruta, clave, llave):
+        if ruta not in cache:
+            try:
+                indice = {}
+                for fila in _filas_para_buscar(self._leer(ruta), ruta, clave):
+                    k = llave(fila)
+                    if k is not None:
+                        indice.setdefault(k, []).append(fila)
+                cache[ruta] = indice
+            except ListaIlegible as error:
+                cache[ruta] = error  # un trozo roto tampoco se vuelve a leer
+        if isinstance(cache[ruta], ListaIlegible):
+            raise cache[ruta]
+        return cache[ruta]
+
+    def veto(self, cuenta_id):
+        """El motivo por el que la cuenta está vetada, o None. ListaIlegible si su trozo no se puede leer."""
+        if not isinstance(cuenta_id, int) or isinstance(cuenta_id, bool):
+            return None
+        filas = self._trozo(self._cuentas, ruta_usuario(cuenta_id), "usuarios",
+                            lambda f: f["id"] if isinstance(f.get("id"), int) and not isinstance(f.get("id"), bool) else None)
+        return next((_motivo(f) for f in filas.get(cuenta_id, []) if _sigue_vetada(f, self._hoy)), None)
+
+    def huella(self, huella):
+        """El motivo por el que ese hash está vetado, o None. ListaIlegible si su trozo no se puede leer."""
+        if not isinstance(huella, str):
+            return None
+        huella = huella.strip().lower()
+        if huella not in self._vistas:
+            if len(self._vistas) >= TOPE_HUELLAS:
+                raise ListaIlegible(f"la propuesta escribe más de {TOPE_HUELLAS} archivos distintos y no se pueden "
+                                    "comprobar todos en la lista negra: divídela")
+            self._vistas.add(huella)
+        filas = self._trozo(self._huellas, ruta_huella(huella), "huellas",
+                            lambda f: f["hash"].strip().lower() if isinstance(f.get("hash"), str) else None)
+        return next((_motivo(f) for f in filas.get(huella, [])), None)
+
+
 def _leer_seguro(lector, datos, ruta):
     try:
         return lector(datos, ruta)[0]
@@ -175,29 +256,19 @@ def _leer_seguro(lector, datos, ruta):
 
 def veto_de_cuenta(cuenta_id, leer_main, hoy: datetime.date | None = None):
     """El motivo por el que la cuenta está en la lista negra general (de `main`), o None. Un veto con `hasta` ya
-    pasado no cuenta. `leer_main(ruta)` da los bytes de `main` o None."""
-    if not isinstance(cuenta_id, int) or isinstance(cuenta_id, bool):
-        return None
-    hoy = hoy or datetime.datetime.now(datetime.timezone.utc).date()
-    ruta = ruta_usuario(cuenta_id)
-    for fila in _leer_seguro(leer_usuarios, leer_main(ruta), ruta):
-        if fila["id"] == cuenta_id and not ("hasta" in fila and datetime.date.fromisoformat(fila["hasta"]) < hoy):
-            return fila["motivo"]
-    return None
+    pasado no cuenta. `leer_main(ruta)` da los bytes de `main` o None. Para muchas, `Consultas`."""
+    return Consultas(leer_main, hoy).veto(cuenta_id)
 
 
 def huella_vetada(huella, leer_main):
-    """El motivo por el que ese hash está en la lista negra general de huellas, o None."""
-    if not isinstance(huella, str):
-        return None
-    huella = huella.strip().lower()
-    ruta = ruta_huella(huella)
-    return next((f["motivo"] for f in _leer_seguro(leer_huellas, leer_main(ruta), ruta) if f["hash"] == huella), None)
+    """El motivo por el que ese hash está en la lista negra general de huellas, o None. Para muchos, `Consultas`."""
+    return Consultas(leer_main).huella(huella)
 
 
 def canales_vetados(leer_main) -> dict:
-    """{@: motivo} de los canales bloqueados en `main`."""
-    return {f["id"]: f["motivo"] for f in _leer_seguro(leer_canales_vetados, leer_main(RUTA_CANALES), RUTA_CANALES)}
+    """{@: motivo} de los canales bloqueados en `main`, sin volver a validar las filas (ni su `esqueleto`)."""
+    return {f["id"]: _motivo(f) for f in _filas_para_buscar(leer_main(RUTA_CANALES), RUTA_CANALES, "canales")
+            if isinstance(f.get("id"), str)}
 
 
 def reservados(leer_main) -> list:
@@ -219,6 +290,8 @@ def parecido(texto: str, reservados_: list, existentes: dict, verificados: set):
     """Por qué un @ o un nombre de canal no vale por parecerse a otro, o None. `existentes` = {esqueleto: «@x (Nombre)»}
     de todos los canales (también retirados, bloqueados y @ anteriores); `verificados` = esqueletos de los verificados.
     """
+    if canales.esqueleto_dudoso(texto):
+        return canales.NO_COMPARABLE
     e = canales.esqueleto(texto)
     if not e:
         return None
@@ -270,7 +343,7 @@ def comprobar_normas(cambios, leer, ids_duenos=frozenset(), verificados_main=fro
                 if len(filas) > TOPE_CANALES:
                     motivos.append(f"`{ruta}`: hay {len(filas)} canales y el máximo son {TOPE_CANALES}.")
                 try:
-                    antes = {f["id"] for f in _leer_seguro(leer_canales_vetados, leer(ruta, "antes"), ruta)}
+                    antes = set(canales_vetados(lambda r: leer(r, "antes")))
                 except ListaIlegible:
                     antes = set()  # el Dueño arregla un archivo roto de `main`
                 for f in filas:
