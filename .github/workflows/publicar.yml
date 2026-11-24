@@ -1,0 +1,47 @@
+# Trabajo `publicar` (fase B de los canales): regenera `catalogo/catalogo.json` para las ≤0.2.x a partir de
+# `juegos/` y `canales/<canal>/parches/`, y escribe la rama `publicado` (indice.json y el índice por juego de
+# Programa › Juegos originales). Las reglas y el detalle, en robot/publicar.py.
+#
+# Normalmente lo lanza el robot de permisos tras fusionar una propuesta (permisos.yml, trabajo `publicar`). Este flujo
+# cubre lo demás: lo que el Dueño sube directamente a `main`, lanzarlo a mano y una pasada diaria por si alguna
+# publicación se quedó a medias. Solo lee `main`; si no hay nada nuevo, no escribe nada.
+name: Publicar
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * *'
+
+permissions: {}
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+concurrency:
+  group: publicar-datos
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # `python robot/x.py` pone en sys.path solo `robot/`, que es del Dueño (nunca `python -m` sin `-I`).
+      - name: Regenerar el catálogo y escribir la rama publicado
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python robot/publicar.py
