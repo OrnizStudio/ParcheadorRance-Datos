@@ -14,7 +14,9 @@ prohibidos, largos y lo que la app puede leer). Aquí va lo que no existía en e
 - `versiones` solo crece: nadie quita una versión ni le cambia la versión, la fecha, el autor o el paquete;
 - cada edición tiene su archivo y está en su juego, y cada parche apunta a un juego que existe;
 - los paquetes nuevos de un canal están en uno de sus repositorios (`canal.json` → `paquetes`);
-- en la fase B solo hay parches del canal oficial.
+- ningún paquete nuevo de un canal lleva una huella de su lista negra (`lista-negra.json` → `huellas`).
+
+Desde la fase D publica parches cualquier canal: cada parche se juzga con el rol del autor en su canal.
 
 Solo usa la biblioteca estándar.
 """
@@ -143,9 +145,6 @@ def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id
                                "`juegos/<juego>/ediciones/<edición>.json`, y en la carpeta `parches/` de un canal, "
                                "`<juego>.json` (ids con letras, números, `.`, `_` y `-`). Las imágenes siguen en "
                                "`catalogo/juegos/<juego>/`.")
-            continue
-        if tipo[0] == "parche" and tipo[1] != particion.CANAL_OFICIAL and not es_dueno:
-            motivos.append(f"`{ruta}`: por ahora solo el canal oficial (@{particion.CANAL_OFICIAL}) publica parches.")
             continue
         if not es_dueno and (estado_main := _estado_central(antes, _juego_de(tipo))) != "activo":
             motivos.append(f"`{ruta}`: el juego «{_juego_de(tipo)}» está {estado_main} por el Dueño del programa; "
@@ -364,25 +363,58 @@ def _coherencia(cambios, despues, es_dueno) -> list:
 
 # ─────────────────────────────────── Paquetes del canal ───────────────────────────────────
 
-def _urls(parche) -> set:
-    urls = set()
+def _paquetes(parche) -> list:
+    """Todos los paquetes (objetos con `url` y `hash`) de un archivo de parche: el del juego, los de cada edición y
+    los de cada versión."""
+    paquetes = []
     if not isinstance(parche, dict):
-        return urls
+        return paquetes
 
     def del_parche(p):
         if isinstance(p, dict):
-            for paquete in p.get("paquetes") or []:
-                if isinstance(paquete, dict) and isinstance(paquete.get("url"), str):
-                    urls.add(paquete["url"])
+            paquetes.extend(q for q in p.get("paquetes") or [] if isinstance(q, dict))
     del_parche(parche.get("parche"))
     for e in parche.get("ediciones") or []:
         if not isinstance(e, dict):
             continue
         del_parche(e.get("parche"))
         for v in e.get("versiones") or []:
-            if isinstance(v, dict) and isinstance(v.get("paquete"), dict) and isinstance(v["paquete"].get("url"), str):
-                urls.add(v["paquete"]["url"])
-    return urls
+            if isinstance(v, dict) and isinstance(v.get("paquete"), dict):
+                paquetes.append(v["paquete"])
+    return paquetes
+
+
+def _urls(parche) -> set:
+    return {p["url"] for p in _paquetes(parche) if isinstance(p.get("url"), str)}
+
+
+def _hashes(parche) -> set:
+    return {p["hash"].strip().lower() for p in _paquetes(parche) if isinstance(p.get("hash"), str)}
+
+
+def comprobar_huellas(cambios, antes: dict, despues: dict, huellas_por_canal: dict, es_dueno: bool) -> list:
+    """Ningún paquete nuevo de un parche lleva una huella de la lista negra de su canal (`lista-negra.json` →
+    `huellas`; cuentan la de `main` y la de la propuesta). `huellas_por_canal` = {canal: {hash: motivo}}."""
+    if es_dueno:
+        return []
+    motivos = []
+    for ruta, estado in cambios:
+        tipo = tipo_de_ruta(ruta)
+        if estado == "D" or tipo is None or tipo[0] != "parche" or ruta not in despues:
+            continue
+        vetadas = huellas_por_canal.get(tipo[1]) or {}
+        if not vetadas:
+            continue
+        try:
+            nuevo = lector_app.leer(despues[ruta])
+            viejo = lector_app.leer(antes[ruta]) if ruta in antes else None
+        except lector_app.JsonIlegible:
+            continue
+        for huella in sorted(_hashes(nuevo) - _hashes(viejo)):
+            if huella in vetadas:
+                motivos.append(f"`{ruta}`: un paquete lleva la huella `{huella[:20]}…`, que está en la lista negra de "
+                               f"@{tipo[1]} ({vetadas[huella]}).")
+    return motivos
 
 
 def _cola_de_release(url: str, prefijos: tuple) -> bool:
@@ -437,26 +469,26 @@ def paquetes_de_los_canales(archivos_main: dict) -> dict:
 
 # ─────────────────────────────────── Catálogos para comparar ───────────────────────────────────
 
-def catalogos_para_reglas(antes: dict, despues: dict) -> tuple:
-    """(catálogo de `main`, catálogo tras la propuesta) con todos los juegos, también los que no tienen parche del
-    canal y los retirados o bloqueados: con ellos se juzgan los roles, campo a campo. ErrorParticion si los de la
-    propuesta no se pueden juntar."""
+def catalogos_para_reglas(antes: dict, despues: dict, canal: str = particion.CANAL_OFICIAL) -> tuple:
+    """(catálogo de `main`, catálogo tras la propuesta) del canal `canal`, con todos los juegos, también los que no
+    tienen parche del canal y los retirados o bloqueados: con ellos se juzgan los roles, campo a campo. ErrorParticion
+    si los de la propuesta no se pueden juntar."""
     try:
-        cat_antes = particion.juntar(antes, 1, todos=True)
+        cat_antes = particion.juntar(antes, 1, canal=canal, todos=True)
     except particion.ErrorParticion:
         cat_antes = {"esquema": 1, "versionCatalogo": 1, "juegos": []}
-    return cat_antes, particion.juntar(despues, 2, todos=True)
+    return cat_antes, particion.juntar(despues, 2, canal=canal, todos=True)
 
 
-def catalogos_para_comparar(antes: dict, despues: dict, version_main):
+def catalogos_para_comparar(antes: dict, despues: dict, version_main, canal: str = particion.CANAL_OFICIAL):
     """(texto del catálogo de `main`, bytes del catálogo tras la propuesta) juntando los archivos sueltos, con la
     versión de `main` y la siguiente: así las reglas de siempre ven lo que cambia como si fuera `catalogo.json`.
     ErrorParticion si los de la propuesta no se pueden juntar (los de `main`, si no se pueden, cuentan como vacíos)."""
     version = version_main if isinstance(version_main, int) and not isinstance(version_main, bool) \
         and 0 < version_main < lector_app.VERSION_MAXIMA else 1
     try:
-        cat_antes = particion.juntar(antes, version)
+        cat_antes = particion.juntar(antes, version, canal=canal)
     except particion.ErrorParticion:
         cat_antes = {"esquema": 1, "versionCatalogo": version, "juegos": []}
-    cat_despues = particion.juntar(despues, version + 1)
+    cat_despues = particion.juntar(despues, version + 1, canal=canal)
     return (particion.texto_json(cat_antes).decode("utf-8"), particion.texto_json(cat_despues))

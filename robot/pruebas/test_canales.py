@@ -612,7 +612,8 @@ class RolesDesdeMain(unittest.TestCase):
         # Un invitado no puede aceptar con el último cambio subido por otra cuenta.
         aceptar = miembros(lambda m: fila(m, INVITADO_ID).update(estado="activo"))
         sin_cuenta = Permisos(Rol.NINGUNO)
-        self.assertIn("ningún rol", comprobar([Cambio(M, "M")], None, None, sin_cuenta,
+        # (Fase D: el motivo dice que son varias cuentas, no que no tiene rol en @ornizen.)
+        self.assertIn("varias cuentas", comprobar([Cambio(M, "M")], None, None, sin_cuenta,
                                               leer_archivo=lambda r, l: b(aceptar if l == "despues" else MIEMBROS))[0])
 
 

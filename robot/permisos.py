@@ -160,11 +160,20 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                 "propuesta (ya están en `.gitignore`)." for ruta in compilados]
     de_canales = [c for c in cambios if c.ruta.startswith(canales.CARPETA_CANALES)]
     de_sueltos = [c for c in cambios if sueltos.de_los_sueltos(c.ruta)]
+    # Fase D: el canal cuyos parches toca la propuesta. Una de otro canal que no es el oficial solo cambia su carpeta
+    # (lo central se pide aparte) y se juzga entera con el rol del autor en ese canal; dos canales a la vez ya los
+    # rechaza `canales.comprobar_canales`.
+    canal = _canal_de_los_parches(de_sueltos)
+    if canal != canales.CANAL_OFICIAL and not permisos.es_dueno:
+        fuera = [c.ruta for c in cambios if not c.ruta.startswith(f"{canales.CARPETA_CANALES}{canal}/")]
+        if fuera:
+            return [f"`{fuera[0]}`: una propuesta de @{canal} solo cambia `canales/{canal}/`. Lo central (juegos, "
+                    "ediciones, imágenes) y lo de otros canales va en propuestas aparte."]
     # El catálogo y todo lo que no es `canales/` se juzga con el rol del canal oficial (`rol_global`): un rol en otro
     # canal no cuenta. En `canales/` hace falta saber el id de la cuenta (aceptar la invitación propia, salir…).
     sin_rol_oficial = permisos.rol_global == Rol.NINGUNO and not permisos.por_juego
     if (sin_rol_oficial and len(de_canales) != len(cambios)) or (permisos.cuenta_id is None and not permisos.es_dueno
-                                                                  and sin_rol_oficial):
+                                                                  and sin_rol_oficial and not de_canales):
         return [_SIN_ROL]
     # Lo de `canales/` se decide por la cuenta (aceptar la invitación propia, `invitadoPor`, `por` de un veto…). Si la
     # propuesta la ha abierto una cuenta y el último cambio lo ha subido otra, no hay «una» cuenta: no se acepta.
@@ -222,6 +231,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                                      rol_por_canal, permisos.cuenta_id, permisos.es_dueno, hoy)
         motivos += sueltos.comprobar_paquetes([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
                                               sueltos.paquetes_de_los_canales(main_sueltos), permisos.es_dueno)
+        motivos += sueltos.comprobar_huellas([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
+                                             {canal: _huellas_del_canal(leer_archivo, canal)}, permisos.es_dueno)
         try:
             particion.juntar(main_sueltos, 1)
         except particion.ErrorParticion as error:
@@ -231,10 +242,10 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         cat_main = _leer_json(antes)
         version_main = cat_main.get("versionCatalogo") if isinstance(cat_main, dict) else None
         try:
-            antes, despues = sueltos.catalogos_para_comparar(main_sueltos, prop_sueltos, version_main)
+            antes, despues = sueltos.catalogos_para_comparar(main_sueltos, prop_sueltos, version_main, canal)
             # Los roles se juzgan con todos los juegos: los que no tienen parche y los retirados o bloqueados no
             # entran en el catálogo de las ≤0.2.x, pero sus cambios también pasan por las reglas por campo.
-            para_reglas = sueltos.catalogos_para_reglas(main_sueltos, prop_sueltos)
+            para_reglas = sueltos.catalogos_para_reglas(main_sueltos, prop_sueltos, canal)
             toca_catalogo = True
         except particion.ErrorParticion as error:
             return motivos + [f"Con esta propuesta el catálogo no se puede juntar: {error}"]
@@ -252,17 +263,21 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         if cat_despues is not None:
             # Para todos los roles, también Administradores y Propietario: no hay excepción posible.
             motivos += comprobar_archivos_protegidos(cat_antes, cat_despues,
-                                                     list(prohibidos) + _prohibidos_del_canal(leer_archivo),
+                                                     list(prohibidos) + _prohibidos_del_canal(leer_archivo, canal),
                                                      leer_paquete)
             motivos += comprobar_largos(cat_antes, cat_despues)
 
     juegos_antes = _juegos_por_id(cat_antes)
     motivos += _comprobar_archivos([c for c in cambios if c is not solo_grupo], juegos_antes, permisos)
+    # En los parches de otro canal manda el rol en ese canal, no el del oficial.
+    del_canal = permisos if canal == canales.CANAL_OFICIAL or permisos.es_dueno else Permisos(
+        Rol(permisos.por_canal.get(canal, Rol.NINGUNO)), {}, {canal: permisos.por_canal.get(canal, Rol.NINGUNO)},
+        permisos.cuenta_id)
     if toca_catalogo and cat_despues is not None and isinstance(cat_antes, dict):
         if para_reglas is not None:
-            motivos += _comprobar_campos(para_reglas[0], para_reglas[1], permisos)
+            motivos += _comprobar_campos(para_reglas[0], para_reglas[1], del_canal)
         else:
-            motivos += _comprobar_campos(cat_antes, cat_despues, permisos)
+            motivos += _comprobar_campos(cat_antes, cat_despues, del_canal)
     return _sin_repetidos(motivos)
 
 
@@ -291,13 +306,19 @@ def _comprobar_tamanos(cambios, permisos: Permisos) -> list:
     return motivos
 
 
-def _prohibidos_del_canal(leer_archivo) -> list:
-    """Los archivos de la lista negra del canal oficial: cuentan la de `main` y la de la propuesta a la vez (solo
-    añade a la general, igual que la antigua `grupo.archivosProhibidos`)."""
+def _canal_de_los_parches(de_sueltos) -> str:
+    """El canal cuyos parches toca la propuesta (el oficial si no toca ninguno o toca varios: varios ya se rechazan
+    en `canales.comprobar_canales`, salvo al Dueño)."""
+    vistos = {tipo[1] for c in de_sueltos if (tipo := sueltos.tipo_de_ruta(c.ruta)) and tipo[0] == "parche"}
+    return vistos.pop() if len(vistos) == 1 else canales.CANAL_OFICIAL
+
+
+def _listas_del_canal(leer_archivo, canal: str) -> list:
+    """Las `lista-negra.json` del canal en `main` y tras la propuesta (las que se pueden leer)."""
     if leer_archivo is None:
         return []
-    ruta = f"{canales.CARPETA_CANALES}{canales.CANAL_OFICIAL}/lista-negra.json"
-    resultado, vistos = [], set()
+    ruta = f"{canales.CARPETA_CANALES}{canal}/lista-negra.json"
+    listas = []
     for lado in ("antes", "despues"):
         datos = leer_archivo(ruta, lado)
         if datos is None:
@@ -306,12 +327,27 @@ def _prohibidos_del_canal(leer_archivo) -> list:
             lista, _ = canales.leer_lista_negra(canales.leer_json_estricto(datos, ruta), ruta)
         except canales.JsonMalo:
             continue  # el error ya sale en la parte de canales
+        listas.append(lista)
+    return listas
+
+
+def _prohibidos_del_canal(leer_archivo, canal: str = canales.CANAL_OFICIAL) -> list:
+    """Los archivos de la lista negra del canal: cuentan la de `main` y la de la propuesta a la vez (solo añade a la
+    general, igual que la antigua `grupo.archivosProhibidos`)."""
+    resultado, vistos = [], set()
+    for lista in _listas_del_canal(leer_archivo, canal):
         for fila in lista.archivos:
             clave = fila["patron"].strip().lower()
             if clave not in vistos:
                 vistos.add(clave)
-                resultado.append(Prohibido(fila["patron"].strip(), fila.get("motivo", ""), f"del canal @{canales.CANAL_OFICIAL}"))
+                resultado.append(Prohibido(fila["patron"].strip(), fila.get("motivo", ""), f"del canal @{canal}"))
     return resultado
+
+
+def _huellas_del_canal(leer_archivo, canal: str) -> dict:
+    """{hash en minúsculas: motivo} de la lista negra del canal (`main` y la propuesta)."""
+    return {f["hash"].strip().lower(): f.get("motivo", "") for lista in _listas_del_canal(leer_archivo, canal)
+            for f in lista.huellas if isinstance(f.get("hash"), str)}
 
 
 def _manda_en_todo(permisos: Permisos) -> bool:
