@@ -259,7 +259,12 @@ class Borrados(unittest.TestCase):
         p = Propuesta(main=main)
         for ruta in ("juegos/rance-2/juego.json", "juegos/rance-2/ediciones/dl.json", "canales/ornizen/parches/rance-2.json"):
             p.quitar(ruta)
-        self.assertEqual([], p.juzgar(Rol.ADMINISTRADOR))
+        # Quitar el juego de `juegos/` es del Dueño; quitar solo el parche del canal, de un Administrador.
+        self.assertTrue(any("quitar un juego de `juegos/`" in m for m in p.juzgar(Rol.ADMINISTRADOR)))
+        self.assertEqual([], p.juzgar(Rol.DUENO))
+        solo_parche = Propuesta(main=main).quitar("canales/ornizen/parches/rance-2.json")
+        self.assertEqual([], solo_parche.juzgar(Rol.ADMINISTRADOR))
+        self.assertTrue(any("añadir un juego al canal o quitarlo" in m for m in solo_parche.juzgar(Rol.EDITOR)))
 
     def test_quitar_una_edicion_que_el_parche_aun_nombra(self):
         p = Propuesta().cambiar(JUEGO, lambda j: j.update(ediciones=[])).quitar(EDICION)
@@ -403,4 +408,145 @@ class Programa(unittest.TestCase):
     def test_normas_etiquetas_solo_el_dueno(self):
         p = Propuesta().cambiar("normas/etiquetas.json", lambda x: x.update(etiquetas=[]))
         self.assertTrue(p.juzgar(Rol.PROPIETARIO))
+        self.assertEqual([], p.juzgar(Rol.DUENO))
+
+
+def con_juego_sin_parche(estado="activo"):
+    """`main` con `rance` (con parche) y `nuevo`, que el Dueño dio de alta y aún no tiene parche del canal."""
+    m = main_migrado()
+    m["juegos/nuevo/juego.json"] = particion.texto_json({
+        "esquema": 1, "id": "nuevo", "titulo": "Nuevo", "estado": estado, "deteccion": {"ejecutables": ["Nuevo.exe"]},
+        "alta": {"canal": "ornizen", "cuenta": 1, "fecha": "2026-11-20"}, "ediciones": ["dl"]})
+    m["juegos/nuevo/ediciones/dl.json"] = particion.texto_json({
+        "esquema": 1, "id": "dl", "nombre": "DL", "huella": HUELLA,
+        "alta": {"canal": "ornizen", "cuenta": 1, "fecha": "2026-11-20"}})
+    return m
+
+
+def con_rance(estado):
+    m = main_migrado()
+    j = json.loads(m[JUEGO])
+    j["estado"] = estado
+    m[JUEGO] = particion.texto_json(j)
+    return m
+
+
+def version_999(p):
+    p["ediciones"][0]["versiones"].append({"version": "9.9.9", "estado": "publica", "fecha": "2026-11-24", "autor": "x",
+                                           "notas": "", "paquete": {"url": URL.replace("1.0.0", "9.9.9"), "tamano": 5,
+                                                                    "hash": HASH}})
+
+
+def juzgar_con(p, permisos_):
+    texto = particion.texto_json(CATALOGO).decode("utf-8")
+    return comprobar(p.cambios(), texto, texto.encode(), permisos_,
+                     leer_sueltos=lambda lado: p.antes if lado == "antes" else p.despues, hoy=HOY)
+
+
+class JuegosFueraDelCatalogo(unittest.TestCase):
+    """Revisión de seguridad de la fase B, hallazgo 1: los juegos sin parche, retirados o bloqueados no entran en el
+    catálogo de las ≤0.2.x, pero sus cambios pasan igual por las reglas por rol."""
+
+    def test_un_colaborador_no_toca_lo_central_de_un_juego_sin_parche(self):
+        p = Propuesta(con_juego_sin_parche()).cambiar("juegos/nuevo/juego.json", lambda j: j.update(
+            titulo="PWNED", deteccion={"ejecutables": ["otro.exe"]}, imagenes={"portada": "https://example.com/x.png"}))
+        self.assertTrue(p.juzgar(Rol.COLABORADOR))
+        p = Propuesta(con_juego_sin_parche()).cambiar("juegos/nuevo/ediciones/dl.json", lambda e: e.update(
+            lanzar="cmd.exe", tiendas=[{"nombre": "x", "url": "https://evil.example/"}]))
+        self.assertTrue(p.juzgar(Rol.COLABORADOR))
+
+    def test_nadie_salvo_el_dueno_borra_un_juego_sin_parche(self):
+        def borrar():
+            return Propuesta(con_juego_sin_parche()).quitar("juegos/nuevo/juego.json").quitar("juegos/nuevo/ediciones/dl.json")
+        for rol in (Rol.COLABORADOR, Rol.ADMINISTRADOR, Rol.PROPIETARIO):
+            self.assertTrue(borrar().juzgar(rol), rol)
+        self.assertEqual([], borrar().juzgar(Rol.DUENO))
+
+    def test_colaborador_de_otro_juego(self):
+        p = Propuesta(con_juego_sin_parche()).cambiar("juegos/nuevo/juego.json", lambda j: j.update(titulo="PWNED"))
+        self.assertTrue(juzgar_con(p, Permisos(Rol.NINGUNO, por_juego={"rance": Rol.COLABORADOR}, cuenta_id=YO)))
+
+    def test_un_editor_cambia_lo_central_de_un_juego_sin_parche_como_en_los_demas(self):
+        # Reglas de la fase A (docs/canales.md §8.1): igual que si el juego tuviera parche.
+        p = Propuesta(con_juego_sin_parche()).cambiar("juegos/nuevo/juego.json", lambda j: j.update(titulo="Nuevo (2)"))
+        self.assertEqual([], p.juzgar(Rol.EDITOR))
+
+    def test_juego_bloqueado_o_retirado_solo_el_dueno(self):
+        casos = {
+            "central": lambda p: p.cambiar(JUEGO, lambda j: j.update(titulo="PWNED")),
+            "parche": lambda p: p.cambiar(PARCHE, lambda x: x.update(titulo="PWNED", habilitado=True,
+                                                                     creditos=[{"nombre": "yo"}])),
+            "versión": lambda p: p.cambiar(PARCHE, version_999),
+            "borrar parche": lambda p: p.quitar(PARCHE),
+            "edición": lambda p: p.cambiar(EDICION, lambda e: e.update(nombre="x")),
+        }
+        for estado in ("bloqueado", "retirado"):
+            for nombre, cambio in casos.items():
+                with self.subTest(estado=estado, caso=nombre):
+                    for rol in (Rol.NINGUNO, Rol.COLABORADOR, Rol.PROPIETARIO):
+                        motivos = cambio(Propuesta(con_rance(estado))).juzgar(rol)
+                        self.assertTrue(motivos if rol == Rol.NINGUNO else any(estado in m for m in motivos), (rol, motivos))
+                    if nombre != "versión":  # la 9.9.9 de prueba no está en las Releases: eso no lo salta ni el Dueño
+                        self.assertEqual([], cambio(Propuesta(con_rance(estado))).juzgar(Rol.DUENO))
+
+    def test_anadir_el_parche_de_un_juego_es_de_administrador(self):
+        def con_parche():
+            return Propuesta(con_juego_sin_parche()).poner("canales/ornizen/parches/nuevo.json", {
+                "esquema": 1, "juego": "nuevo", "habilitado": False, "orden": 5, "ediciones": [{"id": "dl"}]})
+        for rol in (Rol.NINGUNO, Rol.COLABORADOR, Rol.EDITOR):
+            self.assertTrue(con_parche().juzgar(rol), rol)
+        self.assertEqual([], con_parche().juzgar(Rol.ADMINISTRADOR))
+
+    def test_edicion_nueva_solo_del_canal_oficial_y_con_rol(self):
+        def ed_nueva(canal):
+            p = Propuesta(con_juego_sin_parche()).cambiar("juegos/nuevo/juego.json", lambda j: j["ediciones"].append("e2"))
+            return p.poner("juegos/nuevo/ediciones/e2.json", {"esquema": 1, "id": "e2", "nombre": "E2", "huella": HUELLA,
+                                                             "alta": alta(canal=canal)})
+        self.assertTrue(ed_nueva("ornizen").juzgar(Rol.COLABORADOR))
+        self.assertEqual([], ed_nueva("ornizen").juzgar(Rol.EDITOR))
+        motivos = juzgar_con(ed_nueva("otro"), Permisos(Rol.NINGUNO, por_juego={"rance": Rol.COLABORADOR},
+                                                        por_canal={"otro": Rol.ADMINISTRADOR}, cuenta_id=YO))
+        self.assertTrue(any("canal oficial" in m for m in motivos), motivos)
+
+    def test_sustituto_suelto_en_un_juego_sin_parche(self):
+        p = Propuesta(con_juego_sin_parche())
+        p.poner("juegos/nuevo/juego.json",
+                p.antes["juegos/nuevo/juego.json"].replace(b'"titulo": "Nuevo"', b'"titulo": "\\ud800"'))
+        self.assertTrue(any("carácter partido" in m for m in p.juzgar(Rol.DUENO)))
+
+
+class EntradasRaras(unittest.TestCase):
+    """Hallazgos 7–9: nada de esto puede tirar el robot ni colarse."""
+
+    def test_version_repetida_con_otro_hash(self):
+        def dup(p):
+            v = copy.deepcopy(p["ediciones"][0]["versiones"][0])
+            v["paquete"]["hash"] = "blake3:" + "c" * 64
+            p["ediciones"][0]["versiones"].append(v)
+        for rol in (Rol.EDITOR, Rol.ADMINISTRADOR, Rol.DUENO):
+            self.assertTrue(any("repetidas" in m for m in Propuesta().cambiar(PARCHE, dup).juzgar(rol)), rol)
+
+    def test_parches_y_ids_que_no_son_lo_que_toca(self):
+        casos = (("lista", lambda p: p.poner(PARCHE, b"[]\n")),
+                 ("id lista", lambda p: p.cambiar(PARCHE, lambda x: x["ediciones"].append({"id": ["x"]}))),
+                 ("juego vacío", lambda p: p.poner(JUEGO, b"")),
+                 ("versiones no lista", lambda p: p.cambiar(PARCHE, lambda x: x["ediciones"][0].update(versiones={}))),
+                 ("versión sin nombre", lambda p: p.cambiar(PARCHE, lambda x: x["ediciones"][0]["versiones"].append({"version": 3}))))
+        for nombre, poner in casos:
+            for rol in (Rol.ADMINISTRADOR, Rol.DUENO):
+                with self.subTest(caso=nombre, rol=rol):
+                    self.assertTrue(poner(Propuesta()).juzgar(rol))
+
+    def test_solo_grupo_compara_el_json_canonico(self):
+        real = main_migrado()[particion.RUTA_PARCHEADOR]
+        for nombre, nuevo in (("esquema 1.0", real.replace(b'"esquema": 1', b'"esquema": 1.0')),
+                              ("esquema true", real.replace(b'"esquema": 1', b'"esquema": true'))):
+            with self.subTest(caso=nombre):
+                self.assertNotEqual(real, nuevo)
+                self.assertTrue(Propuesta().poner(particion.RUTA_PARCHEADOR, nuevo).juzgar(Rol.ADMINISTRADOR))
+
+
+    def test_grupo_enorme(self):
+        p = Propuesta().cambiar(particion.RUTA_PARCHEADOR, lambda o: o.update(grupo={"nombre": "x" * 100000}))
+        self.assertTrue(p.juzgar(Rol.ADMINISTRADOR))
         self.assertEqual([], p.juzgar(Rol.DUENO))

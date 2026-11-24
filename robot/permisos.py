@@ -54,6 +54,8 @@ import particion
 import sueltos
 
 RUTA_CATALOGO = "catalogo/catalogo.json"
+# Lo más que puede ocupar el `grupo` de `programa/parcheador.json` que cambia un Administrador (JSON compacto).
+TOPE_GRUPO = 4096
 # Fase B: desde la migración, `catalogo.json` lo escribe el robot (trabajo `publicar`) a partir de los archivos sueltos.
 ACTUALIZA_EL_PARCHEADOR = (f"Actualiza el parcheador: el catálogo ya no se edita así. `{RUTA_CATALOGO}` lo escribe el "
                            "robot a partir de `juegos/` y `canales/<canal>/parches/`, que es lo que cambia el Modo "
@@ -198,6 +200,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     # `canal.json`) lo sigue cambiando un Administrador desde Ajustes del canal, como antes. Solo `grupo`: el resto de
     # `programa/` es del Dueño.
     solo_grupo = None
+    para_reglas = None
     if migrado and not permisos.es_dueno:
         cambio_programa = next((c for c in cambios if c.ruta == particion.RUTA_PARCHEADOR and c.estado == "M"), None)
         if cambio_programa is not None and particion.RUTA_PARCHEADOR in main_sueltos:
@@ -206,8 +209,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                 a, d = lector_app.leer(main_sueltos[particion.RUTA_PARCHEADOR]), lector_app.leer(nuevo)
             except (lector_app.JsonIlegible, TypeError):
                 a = d = None
-            if (isinstance(a, dict) and isinstance(d, dict) and set(a) | {"grupo"} == set(d) | {"grupo"}
-                    and all(a[k] == d[k] for k in a if k != "grupo")):
+            if (isinstance(a, dict) and isinstance(d, dict) and _canonico(a, sin="grupo") == _canonico(d, sin="grupo")
+                    and len(_canonico({"grupo": d.get("grupo")}, sin="")) <= TOPE_GRUPO):
                 solo_grupo = cambio_programa
     if de_sueltos and not migrado and not permisos.es_dueno:
         return [f"`{de_sueltos[0].ruta}`: el catálogo aún está en `{RUTA_CATALOGO}`; los archivos sueltos (`juegos/`, "
@@ -229,6 +232,9 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         version_main = cat_main.get("versionCatalogo") if isinstance(cat_main, dict) else None
         try:
             antes, despues = sueltos.catalogos_para_comparar(main_sueltos, prop_sueltos, version_main)
+            # Los roles se juzgan con todos los juegos: los que no tienen parche y los retirados o bloqueados no
+            # entran en el catálogo de las ≤0.2.x, pero sus cambios también pasan por las reglas por campo.
+            para_reglas = sueltos.catalogos_para_reglas(main_sueltos, prop_sueltos)
             toca_catalogo = True
         except particion.ErrorParticion as error:
             return motivos + [f"Con esta propuesta el catálogo no se puede juntar: {error}"]
@@ -253,8 +259,18 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     juegos_antes = _juegos_por_id(cat_antes)
     motivos += _comprobar_archivos([c for c in cambios if c is not solo_grupo], juegos_antes, permisos)
     if toca_catalogo and cat_despues is not None and isinstance(cat_antes, dict):
-        motivos += _comprobar_campos(cat_antes, cat_despues, permisos)
-    return motivos
+        if para_reglas is not None:
+            motivos += _comprobar_campos(para_reglas[0], para_reglas[1], permisos)
+        else:
+            motivos += _comprobar_campos(cat_antes, cat_despues, permisos)
+    return _sin_repetidos(motivos)
+
+
+def _canonico(objeto: dict, sin: str) -> str:
+    """El JSON de `objeto` sin la clave `sin`, de una sola forma (claves ordenadas, sin espacios): `1`, `1.0` y `true`
+    salen distintos, aunque en Python sean iguales."""
+    return json.dumps({k: v for k, v in objeto.items() if k != sin}, sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":"))
 
 
 def _comprobar_tamanos(cambios, permisos: Permisos) -> list:

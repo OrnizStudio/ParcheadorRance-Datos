@@ -80,7 +80,11 @@ def trozo(juego_id: str) -> str:
 
 
 def _json(valor) -> bytes:
-    return (json.dumps(valor, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    try:
+        return (json.dumps(valor, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    except UnicodeEncodeError:
+        # Un texto con un sustituto suelto (no debería llegar: lector_app los rechaza): mejor escapado que parado.
+        return (json.dumps(valor, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii")
 
 
 def _objeto(datos):
@@ -326,10 +330,18 @@ def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
 
 
 def _propuesta_del_catalogo(api, version: int) -> int:
-    dueno = api("GET", "")["owner"]["login"] if api is not None else ""
+    """La propuesta abierta de `robot/catalogo` hacia `main` de este mismo repositorio, o una nueva. Una abierta con otra
+    base o desde otro repositorio se cierra: fusionarla llevaría el catálogo a otra rama (o la bloquearía)."""
+    repositorio = api("GET", "")
+    dueno, nombre = repositorio["owner"]["login"], repositorio["full_name"]
     abiertas = api("GET", f"/pulls?state=open&head={dueno}:{RAMA_CATALOGO}") or []
-    if abiertas:
-        return abiertas[0]["number"]
+    for pr in abiertas:
+        buena = ((pr.get("base") or {}).get("ref") == "main"
+                 and ((pr.get("head") or {}).get("repo") or {}).get("full_name") == nombre
+                 and (pr.get("head") or {}).get("ref") == RAMA_CATALOGO)
+        if buena:
+            return pr["number"]
+        api("PATCH", f"/pulls/{pr['number']}", {"state": "closed"})
     return api("POST", "/pulls", {"title": f"Catálogo para las ≤0.2.x (versión {version})", "head": RAMA_CATALOGO,
                                   "base": "main", "body": "Lo regenera el robot (trabajo `publicar`) a partir de "
                                   "`juegos/` y `canales/<canal>/parches/`. Se fusiona solo."})["number"]
@@ -369,6 +381,10 @@ def main() -> int:
     except ErrorPublicar as error:
         permisos.resumen(f"### ⚠️ No se ha publicado\n\n{error}")
         return 1
+    except Exception as error:  # noqa: BLE001 — cualquier fallo tiene que verse: si no, `publicado` se queda viejo
+        permisos.resumen(f"### ⚠️ No se ha publicado (error inesperado)\n\n`{type(error).__name__}`: "
+                         f"{str(error)[:500]}")
+        raise
     return 0
 
 

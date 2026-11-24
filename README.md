@@ -17,7 +17,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo** que descarga el parcheador al abrirse (esquema 1). Desde la fase B **no se edita a mano**: lo escribe el robot juntando `juegos/` y `canales/ornizen/parches/`, `normas/etiquetas.json` y `programa/parcheador.json`. |
 | Rama [`publicado`](../../tree/publicado) | Lo que genera el robot para el parcheador y el Modo equipo: `indice.json` y el índice por juego de Programa › Juegos originales. No se toca a mano. |
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
-| [Releases](../../releases) | Los **paquetes de parche** (`<juego>-<edición>-<versión>.zip`) y, más adelante, las versiones del propio parcheador. |
+| [Releases](../../releases) | Las versiones del propio parcheador y los **paquetes de parche** publicados hasta la fase B (`<juego>-<edición>-<versión>.zip`). Desde la fase B, los paquetes nuevos van a las Releases de [`OrnizStudio/Ornizen-Parches`](https://github.com/OrnizStudio/Ornizen-Parches) (`canal.json` → `paquetes`); los ya publicados se quedan aquí. |
 | [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. Solo lo cambia el Propietario. |
 | [`normas/`](normas/) | Las normas generales, que solo cambia el Propietario: los archivos que **ningún parche puede tocar** (protección anticopia y cracks) y la cuenta del Propietario. |
 | [`pruebas/`](pruebas/) | El «Juego de prueba»: un juego inventado para probar el parcheador de principio a fin. |
@@ -281,6 +281,10 @@ Lo que comprueba el robot además de las reglas de siempre (`robot/sueltos.py`):
 - **`versiones` solo crece.** Una versión no se borra ni se le cambia la versión, la fecha, el autor o el paquete.
   Retirarla (`estado`, `motivo`, `motivoPublico`, `fechaRetirada`) y editar sus `notas` sí se puede. Por lo
   mismo, un parche con versiones publicadas no se borra (salvo el Dueño).
+- **Juegos fuera del catálogo.** Los juegos sin parche del canal y los retirados o bloqueados no entran en el
+  `catalogo.json` de las ≤0.2.x, pero el robot juzga los roles con un catálogo que los lleva todos. Los archivos de
+  un juego retirado o bloqueado solo los cambia el Dueño. Quitar un juego de `juegos/` es del Dueño; añadir o quitar
+  el parche de un juego en el canal, de un Administrador o más.
 - **Coherencia.**
   - Cada edición de la lista de un juego tiene su archivo, y al revés.
   - Cada parche apunta a un juego que existe.

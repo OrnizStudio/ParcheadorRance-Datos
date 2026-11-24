@@ -130,13 +130,16 @@ class ApiFalsa:
 
     def __init__(self, remoto):
         self.remoto, self.llamadas, self.propuestas = remoto, [], 0
+        self.abiertas = []
 
     def __call__(self, metodo, ruta, datos=None, tolerar=()):
         self.llamadas.append((metodo, ruta, datos))
         if (metodo, ruta) == ("GET", ""):
-            return {"owner": {"login": "OrnizStudio"}}
+            return {"owner": {"login": "OrnizStudio"}, "full_name": "OrnizStudio/ParcheadorRance-Datos"}
         if metodo == "GET" and ruta.startswith("/pulls?"):
-            return []
+            return self.abiertas
+        if metodo == "PATCH" and ruta.startswith("/pulls/"):
+            return {}
         if (metodo, ruta) == ("POST", "/pulls"):
             self.propuestas += 1
             return {"number": 100 + self.propuestas}
@@ -261,3 +264,24 @@ class ParcheAntiguo(unittest.TestCase):
         # Sin `version` no cuenta (no es un parche).
         archivos["canales/ornizen/parches/viejo.json"] = b'{"esquema": 1, "juego": "viejo", "parche": {}, "ediciones": []}'
         self.assertEqual(0, publicar.indice_por_juego(archivos)["viejo"]["totales"]["versiones"])
+
+
+class PropuestaDelCatalogo(unittest.TestCase):
+    """Solo se reutiliza la propuesta de `robot/catalogo` hacia `main` de este repositorio; las demás se cierran."""
+
+    def abierta(self, numero, base="main", repo="OrnizStudio/ParcheadorRance-Datos", ref="robot/catalogo"):
+        return {"number": numero, "base": {"ref": base}, "head": {"ref": ref, "repo": {"full_name": repo}}}
+
+    def test_reutiliza_la_buena_y_cierra_las_demas(self):
+        api = ApiFalsa(None)
+        api.abiertas = [self.abierta(7, base="otra"), self.abierta(8, repo="alguien/fork"), self.abierta(9)]
+        self.assertEqual(9, publicar._propuesta_del_catalogo(api, 33))
+        cerradas = [r for m, r, d in api.llamadas if m == "PATCH"]
+        self.assertEqual(["/pulls/7", "/pulls/8"], cerradas)
+
+    def test_sin_buena_abre_una_nueva_hacia_main(self):
+        api = ApiFalsa(None)
+        api.abiertas = [self.abierta(7, base="publicado"), self.abierta(8, repo=None)]
+        self.assertEqual(101, publicar._propuesta_del_catalogo(api, 33))
+        nueva = next(d for m, r, d in api.llamadas if (m, r) == ("POST", "/pulls"))
+        self.assertEqual(("robot/catalogo", "main"), (nueva["head"], nueva["base"]))

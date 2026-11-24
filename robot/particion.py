@@ -143,17 +143,23 @@ def partir(catalogo: dict, canal: str = CANAL_OFICIAL) -> dict:
     return archivos
 
 
-def _leer(archivos: dict, ruta: str):
+def _leer(archivos: dict, ruta: str) -> dict:
     try:
-        return lector_app.leer(archivos[ruta])
+        objeto = lector_app.leer(archivos[ruta])
     except lector_app.JsonIlegible as error:
         raise ErrorParticion(f"{ruta}: {error}") from None
+    if not isinstance(objeto, dict):
+        raise ErrorParticion(f"{ruta}: tiene que ser un objeto JSON.")
+    return objeto
 
 
-def juntar(archivos: dict, version_catalogo: int, canal: str = CANAL_OFICIAL) -> dict:
-    """El catálogo de esquema 1 (solo los juegos con parche de `canal`) a partir de los archivos sueltos {ruta: bytes}.
-    Lo que no es de `juegos/`, `canales/<canal>/parches/`, `normas/etiquetas.json` ni `programa/parcheador.json` no
-    se mira. Un parche que apunta a un juego o a una edición que no existe es un error."""
+def juntar(archivos: dict, version_catalogo: int, canal: str = CANAL_OFICIAL, todos: bool = False) -> dict:
+    """El catálogo de esquema 1 (solo los juegos activos con parche de `canal`) a partir de los archivos sueltos
+    {ruta: bytes}. Lo que no es de `juegos/`, `canales/<canal>/parches/`, `normas/etiquetas.json` ni
+    `programa/parcheador.json` no se mira. Un parche que apunta a un juego o a una edición que no existe es un error.
+
+    Con `todos`, entran también los juegos sin parche del canal (con lo central solo) y los retirados o bloqueados:
+    es el catálogo con el que el robot juzga los roles, para que ningún juego se quede fuera de las reglas."""
     catalogo = {"esquema": 1, "versionCatalogo": version_catalogo}
     programa = _leer(archivos, RUTA_PARCHEADOR) if RUTA_PARCHEADOR in archivos else {}
     for clave in ("launcher", "grupo"):
@@ -161,18 +167,28 @@ def juntar(archivos: dict, version_catalogo: int, canal: str = CANAL_OFICIAL) ->
             catalogo[clave] = programa[clave]
     prefijo = f"canales/{canal}/parches/"
     juegos = []
-    for ruta in sorted(r for r in archivos if r.startswith(prefijo) and r.endswith(".json") and "/" not in r[len(prefijo):]):
-        parche = _leer(archivos, ruta)
-        ident = parche.get("juego")
-        if not id_valido(ident) or ruta != f"{prefijo}{ident}.json":
-            raise ErrorParticion(f"{ruta}: `juego` tiene que ser el nombre del archivo.")
+    rutas = {r: r for r in archivos if r.startswith(prefijo) and r.endswith(".json") and "/" not in r[len(prefijo):]}
+    if todos:
+        for r in archivos:
+            partes = r.split("/")
+            if len(partes) == 3 and partes[0] == "juegos" and partes[2] == "juego.json":
+                rutas.setdefault(f"{prefijo}{partes[1]}.json", None)
+    for ruta, de_verdad in sorted(rutas.items()):
+        if de_verdad is None:  # `todos`: juego sin parche de este canal
+            ident = ruta[len(prefijo):-len(".json")]
+            parche = {}
+        else:
+            parche = _leer(archivos, ruta)
+            ident = parche.get("juego")
+            if not id_valido(ident) or ruta != f"{prefijo}{ident}.json":
+                raise ErrorParticion(f"{ruta}: `juego` tiene que ser el nombre del archivo.")
         ruta_juego = f"juegos/{ident}/juego.json"
         if ruta_juego not in archivos:
             raise ErrorParticion(f"{ruta}: el juego «{ident}» no existe en `juegos/`.")
         central = _leer(archivos, ruta_juego)
         if central.get("id") != ident:
             raise ErrorParticion(f"{ruta_juego}: el `id` tiene que ser el nombre de la carpeta.")
-        if central.get("estado", "activo") != "activo":
+        if central.get("estado", "activo") != "activo" and not todos:
             continue  # retirado o bloqueado: no se ofrece (las ≤0.2.x no saben de canales)
         juego = {k: central[k] for k in JUEGO_CENTRAL if k in central}
         juego.update({k: parche[k] for k in JUEGO_CANAL + JUEGO_CANAL_ENCIMA if k in parche})
@@ -182,7 +198,12 @@ def juntar(archivos: dict, version_catalogo: int, canal: str = CANAL_OFICIAL) ->
         if len(orden_ediciones) > TOPE_EDICIONES:
             raise ErrorParticion(f"{ruta_juego}: {len(orden_ediciones)} ediciones; el tope es {TOPE_EDICIONES}.")
         _ids([{"id": e} for e in orden_ediciones], ruta_juego)
-        del_canal = {e.get("id"): e for e in parche.get("ediciones") or [] if isinstance(e, dict)}
+        ediciones_canal = parche.get("ediciones") or []
+        if not isinstance(ediciones_canal, list):
+            raise ErrorParticion(f"{ruta}: `ediciones` tiene que ser una lista.")
+        del_canal = {e["id"]: e for e in ediciones_canal if isinstance(e, dict) and isinstance(e.get("id"), str)}
+        if len(del_canal) != len(ediciones_canal):
+            raise ErrorParticion(f"{ruta}: cada edición del parche es un objeto con su `id`.")
         sobran = set(del_canal) - set(orden_ediciones)
         if sobran:
             raise ErrorParticion(f"{ruta}: ediciones que el juego no tiene: {', '.join(sorted(map(str, sobran)))[:200]}.")

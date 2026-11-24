@@ -107,6 +107,24 @@ def _alta_bien_formada(alta) -> bool:
             and (fecha is None or (isinstance(fecha, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha) is not None)))
 
 
+def _juego_de(tipo) -> str:
+    return tipo[2] if tipo[0] == "parche" else tipo[1]
+
+
+def _estado_central(archivos: dict, jid: str) -> str:
+    """El `estado` central del juego en `archivos` («activo» si no se puede leer: lo que no se lee ya lo para otra
+    regla)."""
+    datos = archivos.get(f"juegos/{jid}/juego.json")
+    if datos is None:
+        return "activo"
+    try:
+        objeto = lector_app.leer(datos)
+    except lector_app.JsonIlegible:
+        return "activo"
+    estado = objeto.get("estado", "activo") if isinstance(objeto, dict) else "activo"
+    return estado if isinstance(estado, str) else "activo"
+
+
 def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id, es_dueno: bool,
               hoy: datetime.date | None = None) -> list:
     """Motivos de rechazo de lo que la propuesta cambia en los archivos sueltos (lista vacía = nada que objetar aquí).
@@ -129,6 +147,20 @@ def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id
         if tipo[0] == "parche" and tipo[1] != particion.CANAL_OFICIAL and not es_dueno:
             motivos.append(f"`{ruta}`: por ahora solo el canal oficial (@{particion.CANAL_OFICIAL}) publica parches.")
             continue
+        if not es_dueno and (estado_main := _estado_central(antes, _juego_de(tipo))) != "activo":
+            motivos.append(f"`{ruta}`: el juego «{_juego_de(tipo)}» está {estado_main} por el Dueño del programa; "
+                           "sus archivos solo los cambia él.")
+            continue
+        if tipo[0] == "parche" and not es_dueno and (estado in ("A", "D") or ruta not in antes or ruta not in despues):
+            # Añadir un juego al canal o quitarlo es de Administrador o más del canal (docs/canales.md §4.2).
+            if rol_por_canal.get(tipo[1], 0) < ADMINISTRADOR:
+                motivos.append(f"`{ruta}`: añadir un juego al canal o quitarlo lo hace un Administrador o un "
+                               f"Propietario de @{tipo[1]}.")
+                continue
+        if estado == "D" and tipo[0] == "juego" and not es_dueno:
+            motivos.append(f"`{ruta}`: quitar un juego de `juegos/` es del Dueño del programa (lo central es de todos "
+                           "los canales).")
+            continue
         if estado == "D":
             # Quitar un juego o una edición lo deciden las reglas del catálogo (y la coherencia de abajo); quitar un
             # parche con versiones publicadas borraría su historial, que solo borra el Dueño.
@@ -150,9 +182,10 @@ def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id
         objeto = _leer(datos, ruta, motivos)
         if objeto is None:
             continue
-        motivos += _forma(ruta, tipo, objeto)
-        if es_dueno:
-            continue
+        forma = _forma(ruta, tipo, objeto)
+        motivos += forma
+        if es_dueno or forma:
+            continue  # con la forma mal, las reglas de abajo no se fían de nada
         previo = None
         if ruta in antes:
             previo = _leer(antes[ruta], ruta, [])
@@ -202,6 +235,16 @@ def _forma(ruta, tipo, objeto) -> list:
                 if e["id"].lower() in vistas:
                     motivos.append(f"`{ruta}`: la edición `{e['id']}` está repetida.")
                 vistas.add(e["id"].lower())
+                versiones = e.get("versiones")
+                if versiones is not None and not isinstance(versiones, list):
+                    motivos.append(f"`{ruta}` › edición `{e['id']}`: `versiones` es una lista.")
+                    continue
+                nombres = [v.get("version") for v in versiones or [] if isinstance(v, dict)]
+                if len(nombres) != len(versiones or []) or not all(isinstance(n, str) for n in nombres):
+                    motivos.append(f"`{ruta}` › edición `{e['id']}`: cada versión es un objeto con su `version`.")
+                elif len({n.casefold() for n in nombres}) != len(nombres):
+                    motivos.append(f"`{ruta}` › edición `{e['id']}`: hay versiones repetidas en `versiones`; cada "
+                                   "versión del parche sale una sola vez.")
     if tipo[0] in ("juego", "edicion") and "alta" in objeto and not _alta_bien_formada(objeto["alta"]):
         motivos.append(f"`{ruta}`: `alta` es `{{\"canal\", \"cuenta\", \"fecha\"}}` (canal, id numérico de la cuenta "
                        "y AAAA-MM-DD).")
@@ -229,7 +272,10 @@ def _reglas(ruta, tipo, previo, objeto, rol_por_canal, autor_id, hoy) -> list:
                     motivos.append(f"`{ruta}` › `alta.cuenta`: tiene que ser el id de tu cuenta ({autor_id}).")
                 if not _hoy_vale(alta["fecha"], hoy):
                     motivos.append(f"`{ruta}` › `alta.fecha`: tiene que ser la fecha de hoy ({hoy.isoformat()}, UTC).")
-                if rol_por_canal.get(alta["canal"], 0) < MINIMO_ALTA_EDICION:
+                if alta["canal"] != particion.CANAL_OFICIAL:
+                    motivos.append(f"`{ruta}` › `alta.canal`: por ahora solo da de alta el canal oficial "
+                                   f"(@{particion.CANAL_OFICIAL}).")
+                elif rol_por_canal.get(alta["canal"], 0) < MINIMO_ALTA_EDICION:
                     motivos.append(f"`{ruta}` › `alta.canal`: dar de alta una edición lo hace {QUIEN_ALTA_EDICION} "
                                    f"del canal, y en @{alta['canal']} no lo eres.")
             if tipo[0] == "juego" and objeto.get("estado", "activo") != "activo":
@@ -252,9 +298,10 @@ def _versiones_solo_crecen(ruta, previo, objeto) -> list:
     if not isinstance(previo, dict):
         return []
     motivos = []
-    nuevas = {e.get("id"): e for e in objeto.get("ediciones") or [] if isinstance(e, dict)}
-    for viejo in previo.get("ediciones") or []:
-        if not isinstance(viejo, dict):
+    nuevas = {e.get("id"): e for e in objeto.get("ediciones") or [] if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    viejas = previo.get("ediciones")
+    for viejo in viejas if isinstance(viejas, list) else []:
+        if not isinstance(viejo, dict) or not isinstance(viejo.get("id"), str):
             continue
         eid = viejo.get("id")
         antes_v = [v for v in viejo.get("versiones") or [] if isinstance(v, dict)]
@@ -380,6 +427,17 @@ def paquetes_de_los_canales(archivos_main: dict) -> dict:
 
 
 # ─────────────────────────────────── Catálogos para comparar ───────────────────────────────────
+
+def catalogos_para_reglas(antes: dict, despues: dict) -> tuple:
+    """(catálogo de `main`, catálogo tras la propuesta) con todos los juegos, también los que no tienen parche del
+    canal y los retirados o bloqueados: con ellos se juzgan los roles, campo a campo. ErrorParticion si los de la
+    propuesta no se pueden juntar."""
+    try:
+        cat_antes = particion.juntar(antes, 1, todos=True)
+    except particion.ErrorParticion:
+        cat_antes = {"esquema": 1, "versionCatalogo": 1, "juegos": []}
+    return cat_antes, particion.juntar(despues, 2, todos=True)
+
 
 def catalogos_para_comparar(antes: dict, despues: dict, version_main):
     """(texto del catálogo de `main`, bytes del catálogo tras la propuesta) juntando los archivos sueltos, con la
