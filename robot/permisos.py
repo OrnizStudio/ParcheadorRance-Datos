@@ -408,9 +408,11 @@ def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, cr
     if sol.canal in bloqueados:
         return [f"@{sol.canal} está bloqueado por el Dueño del programa ({bloqueados[sol.canal]})."]
     if sol.tipo == "verificacion":
+        consultas = listas.Consultas(leer_main, hoy)  # un canal con muchos paquetes: cada trozo, una vez
+
         def vetada(huella):
             try:
-                return listas.huella_vetada(huella, leer_main) is not None
+                return consultas.huella(huella) is not None
             except listas.ListaIlegible:
                 return True
         return solicitudes.comprobar_verificacion(sol, leer, permisos.cuenta_id,
