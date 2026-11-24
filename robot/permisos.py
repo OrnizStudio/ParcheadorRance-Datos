@@ -111,14 +111,20 @@ class Permisos:
                         self.cuenta_id if self.cuenta_id == otro.cuenta_id else None)
 
 
-# Campos que puede cambiar un Colaborador (ARQUITECTURA §8, rol 4): textos y notas, etiquetas y estado
-# de la traducción. Nada más: ni créditos, ni imágenes, ni paquetes.
-CAMPOS_COLABORADOR_JUEGO = ("sinopsis", "etiquetas", "estado", "progreso")
-CAMPOS_COLABORADOR_EDICION = ("notaEdicion", "etiquetas", "estado", "progreso", "contenido")
+# Campos que puede cambiar un Colaborador (ARQUITECTURA §8, rol 4; docs/canales.md §4.2): textos y notas y estado
+# de la traducción. Nada más: ni créditos, ni imágenes, ni paquetes, ni etiquetas.
+CAMPOS_COLABORADOR_JUEGO = ("sinopsis", "estado", "progreso")
+CAMPOS_COLABORADOR_EDICION = ("notaEdicion", "estado", "progreso", "contenido")
 CAMPOS_COLABORADOR_PARCHE = ("notas",)
 
-# Campos de un juego que deciden si el público lo ve. Un Editor no publica ni oculta juegos.
-CAMPOS_PUBLICAR_JUEGO = ("habilitado", "pruebas")
+# Campos de un juego que son de Administrador o más (docs/canales.md §4.2): si el público lo ve («Visible»), su
+# `orden` y sus etiquetas. Un Editor no publica ni oculta juegos ni los ordena.
+CAMPOS_PUBLICAR_JUEGO = ("habilitado", "pruebas", "orden", "etiquetas")
+# Lo mismo en cada edición.
+CAMPOS_ADMIN_EDICION = ("etiquetas",)
+
+# Paquetes nuevos (sin revisar) que el robot baja y revisa en una sola propuesta.
+TOPE_PAQUETES_NUEVOS = 20
 
 # Claves de la raíz del catálogo que cualquiera con permiso sobre un juego puede tocar.
 RAIZ_LIBRE = ("juegos", "versionCatalogo")
@@ -794,6 +800,10 @@ def comprobar_archivos_protegidos(cat_antes, cat_despues: dict, prohibidos, leer
             if clave in ya_publicados or clave in revisados:
                 continue  # ya se revisó cuando se publicó (o más arriba en esta misma propuesta)
             revisados.add(clave)
+            if len(revisados) > TOPE_PAQUETES_NUEVOS:
+                motivos.append(f"La propuesta trae más de {TOPE_PAQUETES_NUEVOS} paquetes nuevos y el robot los baja "
+                               "y revisa todos: repártelos en varias propuestas.")
+                break
             try:
                 rutas = leer_paquete(paquete)
             except PaqueteIlegible as error:
@@ -863,6 +873,15 @@ def _paquetes(catalogo):
     for juego in catalogo.get("juegos") or []:
         if isinstance(juego, dict):
             yield from recorrer(juego, f"`{juego.get('id')}`")
+            # El paquete de cada versión (`ediciones[].versiones[].paquete`): la app instala también las de
+            # `pruebas`. Va con el id de su edición, para mirar lo que esa edición ignora.
+            for edicion in juego.get("ediciones") or []:
+                if not isinstance(edicion, dict):
+                    continue
+                for version in edicion.get("versiones") or []:
+                    if isinstance(version, dict) and isinstance(version.get("paquete"), dict):
+                        yield (f"`{juego.get('id')}` › edición `{edicion.get('id')}` › versión "
+                               f"`{version.get('version')}`", {**version["paquete"], "edicion": edicion.get("id")})
 
 
 def _clave_paquete(paquete: dict):
@@ -1024,13 +1043,20 @@ def _comprobar_campos(antes: dict, despues: dict, permisos: Permisos) -> list:
         if rol == Rol.EDITOR:
             for clave in _claves_distintas(a, d):
                 if clave in CAMPOS_PUBLICAR_JUEGO:
-                    motivos.append(f"`{jid}` › `{clave}`: publicar u ocultar un juego entero es cosa de un "
-                                   "Administrador. Como Editor puedes publicar y retirar sus versiones.")
+                    motivos.append(f"`{jid}` › `{clave}`: publicar u ocultar un juego entero, ordenarlo y sus "
+                                   "etiquetas son cosa de un Administrador. Como Editor puedes publicar y retirar sus "
+                                   "versiones.")
+            ed_a, ed_d = _ediciones_por_id(a.get("ediciones")), _ediciones_por_id(d.get("ediciones"))
+            for eid in ed_a.keys() & ed_d.keys():
+                for clave in CAMPOS_ADMIN_EDICION:
+                    if ed_a[eid].get(clave) != ed_d[eid].get(clave):
+                        motivos.append(f"`{jid}` › edición `{eid}` › `{clave}`: las etiquetas son cosa de un "
+                                       "Administrador.")
         elif rol == Rol.COLABORADOR:
             for donde in _fuera_de_lo_permitido_al_colaborador(a, d):
                 motivos.append(f"`{jid}` › {donde}: un Colaborador solo puede cambiar textos y notas "
-                               "(`sinopsis`, `notaEdicion`, `parche.notas`), `etiquetas` y el estado de la "
-                               "traducción (`estado`, `progreso`, `contenido`).")
+                               "(`sinopsis`, `notaEdicion`, `parche.notas`) y el estado de la traducción (`estado`, "
+                               "`progreso`, `contenido`).")
         else:
             motivos.append(f"`{jid}`: no tienes ningún rol en este juego.")
     return _sin_repetidos(motivos)

@@ -168,5 +168,131 @@ class Extremos(unittest.TestCase):
         self.assertTrue(any("varias cuentas" in m for m in motivos), motivos)
 
 
+class RevisionD1(unittest.TestCase):
+    """Revisión de seguridad de la entrega 1: un caso por fallo."""
+
+    def con_paquetes(self, p, permisos, leer_paquete):
+        texto_main = particion.texto_json(CATALOGO).decode("utf-8")
+        lados = {"antes": p.antes, "despues": p.despues}
+        return comprobar(p.cambios(), texto_main, texto_main.encode(), permisos, leer_paquete=leer_paquete,
+                         leer_archivo=lambda ruta, lado: lados[lado].get(ruta),
+                         leer_sueltos=lambda lado: lados[lado], hoy=HOY)
+
+    # 1. Los paquetes de las versiones nuevas se bajan y se revisan, con tope.
+    def test_el_paquete_de_una_version_nueva_se_revisa(self):
+        vistos = []
+
+        def leer_paquete(paquete):
+            vistos.append(paquete["url"])
+            return ["Rance.exe"]
+        url = URL_ES.replace("rance-es.zip", "v2.zip")
+        p = Propuesta(main_con_dos_canales()).cambiar(PARCHE_ES, version_nueva(url, "blake3:" + "a" * 64))
+        self.assertEqual([], self.con_paquetes(p, de({OTRO: Rol.EDITOR}), leer_paquete))
+        self.assertEqual([url], vistos)
+
+    def test_el_paquete_de_una_version_nueva_que_no_se_puede_revisar(self):
+        from permisos import PaqueteIlegible
+
+        def leer_paquete(paquete):
+            raise PaqueteIlegible("no coincide el hash.")
+        url = URL_ES.replace("rance-es.zip", "v2.zip")
+        p = Propuesta(main_con_dos_canales()).cambiar(PARCHE_ES, version_nueva(url, "blake3:" + "a" * 64))
+        motivos = self.con_paquetes(p, de({OTRO: Rol.EDITOR}), leer_paquete)
+        self.assertTrue(any("no se ha podido revisar" in m for m in motivos), motivos)
+
+    def test_mil_quinientas_versiones_nuevas_no_se_bajan_todas(self):
+        llamadas = []
+
+        def muchas(parche):
+            for i in range(1500):
+                parche["ediciones"][0]["versiones"].append({
+                    "version": f"2.{i}.0", "estado": "pruebas", "fecha": "2026-11-24", "autor": "eva", "notas": "x",
+                    "paquete": {"url": URL_ES.replace("rance-es.zip", f"v{i}.zip"), "tamano": 6,
+                                "hash": f"blake3:{i:064x}"}})
+        p = Propuesta(main_con_dos_canales()).cambiar(PARCHE_ES, muchas)
+        motivos = self.con_paquetes(p, de({OTRO: Rol.EDITOR}), lambda q: llamadas.append(q) or [])
+        self.assertTrue(any("más de 20 paquetes nuevos" in m for m in motivos), motivos)
+        self.assertLessEqual(len(llamadas), 20)
+
+    # 2. Un canal retirado o bloqueado no publica.
+    def con_estado(self, estado):
+        main = main_con_dos_canales()
+        canal = json.loads(main_con_dos_canales()[f"canales/{OTRO}/canal.json"])
+        canal["estado"] = estado
+        main[f"canales/{OTRO}/canal.json"] = particion.texto_json(canal)
+        return main
+
+    def test_un_canal_retirado_no_publica_versiones(self):
+        p = Propuesta(self.con_estado("retirado")).cambiar(PARCHE_ES, version_nueva())
+        motivos = juzgar(p, de({OTRO: Rol.PROPIETARIO}))
+        self.assertTrue(any("está retirado" in m for m in motivos), motivos)
+        p = Propuesta(self.con_estado("retirado")).cambiar(PARCHE_ES, lambda q: q.update(orden=5))
+        self.assertTrue(any("está retirado" in m for m in juzgar(p, de({OTRO: Rol.PROPIETARIO}))))
+
+    def test_un_canal_retirado_retira_versiones_y_oculta(self):
+        def retirar(parche):
+            parche["ediciones"][0]["versiones"][0].update(estado="retirada", motivo="cerrado", motivoPublico=True,
+                                                          fechaRetirada="2026-11-24")
+        p = Propuesta(self.con_estado("retirado")).cambiar(PARCHE_ES, retirar)
+        self.assertFalse(any("está retirado" in m for m in juzgar(p, de({OTRO: Rol.PROPIETARIO}))))
+        p = Propuesta(self.con_estado("retirado")).cambiar(PARCHE_ES, lambda q: q.update(habilitado=False))
+        self.assertFalse(any("está retirado" in m for m in juzgar(p, de({OTRO: Rol.PROPIETARIO}))))
+
+    def test_un_canal_bloqueado_no_cambia_nada(self):
+        for cambio in (version_nueva(), lambda q: q.update(habilitado=False)):
+            p = Propuesta(self.con_estado("bloqueado")).cambiar(PARCHE_ES, cambio)
+            self.assertTrue(any("bloqueado" in m for m in juzgar(p, de({OTRO: Rol.PROPIETARIO}))))
+
+    def test_cerrar_el_canal_y_publicar_a_la_vez(self):
+        p = Propuesta(main_con_dos_canales()).cambiar(PARCHE_ES, version_nueva())
+        canal = json.loads(main_con_dos_canales()[f"canales/{OTRO}/canal.json"])
+        canal["estado"] = "retirado"
+        p.poner(f"canales/{OTRO}/canal.json", canal)
+        self.assertTrue(any("está retirado" in m for m in juzgar(p, de({OTRO: Rol.PROPIETARIO}))))
+
+    # 3. Una huella vetada no vuelve por otra versión ni des-retirando una.
+    def con_retirada_mala(self):
+        main = main_con_dos_canales()
+        main[LISTA_ES] = particion.texto_json(ListaNegraDelCanal().lista())
+        parche = json.loads(main[PARCHE_ES])
+        parche["ediciones"][0]["versiones"].append({
+            "version": "0.9.0", "estado": "retirada", "fecha": "2026-10-01", "autor": "ana", "notas": "mala",
+            "motivo": "minero", "fechaRetirada": "2026-10-02",
+            "paquete": {"url": URL_ES.replace("rance-es.zip", "malo.zip"), "tamano": 7, "hash": HASH_MALO}})
+        main[PARCHE_ES] = particion.texto_json(parche)
+        return main
+
+    def test_des_retirar_una_version_vetada(self):
+        def des_retirar(parche):
+            v = parche["ediciones"][0]["versiones"][1]
+            v["estado"] = "pruebas"
+            for k in ("motivo", "fechaRetirada"):
+                v.pop(k)
+        p = Propuesta(self.con_retirada_mala()).cambiar(PARCHE_ES, des_retirar)
+        motivos = juzgar(p, de({OTRO: Rol.EDITOR}))
+        self.assertTrue(any("lista negra de @rance_es" in m for m in motivos), motivos)
+
+    def test_la_huella_vetada_en_otra_version(self):
+        p = Propuesta(self.con_retirada_mala()).cambiar(
+            PARCHE_ES, version_nueva(URL_ES.replace("rance-es.zip", "malo.zip"), HASH_MALO))
+        motivos = juzgar(p, de({OTRO: Rol.EDITOR}))
+        self.assertTrue(any("lista negra de @rance_es" in m for m in motivos), motivos)
+
+    def test_la_retirada_mala_no_estorba_lo_demas(self):
+        p = Propuesta(self.con_retirada_mala()).cambiar(PARCHE_ES, lambda q: q.update(sinopsis="otra"))
+        self.assertFalse(any("lista negra" in m for m in juzgar(p, de({OTRO: Rol.EDITOR}))))
+
+    # 4. `habilitado`, `orden` y etiquetas son de Administrador o más (§4.2).
+    def test_orden_y_etiquetas_de_administrador(self):
+        for cambio in (lambda q: q.update(orden=7), lambda q: q.update(etiquetas=[]),
+                       lambda q: q.update(habilitado=False)):
+            for rol in (Rol.EDITOR, Rol.COLABORADOR):
+                with self.subTest(rol=rol):
+                    p = Propuesta(main_con_dos_canales()).cambiar(PARCHE_ES, cambio)
+                    self.assertTrue(juzgar(p, de({OTRO: rol})), rol)
+            p = Propuesta(main_con_dos_canales()).cambiar(PARCHE_ES, cambio)
+            self.assertEqual([], juzgar(p, de({OTRO: Rol.ADMINISTRADOR})))
+
+
 if __name__ == "__main__":
     unittest.main()

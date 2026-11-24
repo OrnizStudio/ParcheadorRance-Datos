@@ -140,10 +140,14 @@ class Editor(unittest.TestCase):
             j["parche"].update(version="1.1.0", pruebas=False)
             j["creditos"] = []
             j["titulo"] = "Otro título"
-            j["orden"] = 3
         archivos = [Cambio("catalogo/juegos/juego1/banner.jpg", "M", tamano=200_000),
                     Cambio("catalogo/juegos/juego1/viejo.png", "D")]
         self.assertEqual([], revisar(EDITOR, cambiar, archivos=archivos))
+
+    def test_no_ordena_ni_pone_etiquetas(self):
+        # docs/canales.md §4.2: `habilitado`, `orden` y etiquetas son de Administrador o más.
+        motivos = revisar(EDITOR, lambda c: juego(c).update(orden=3))
+        self.assertTrue(any("`orden`" in m for m in motivos), motivos)
 
     def test_no_da_de_alta_juegos(self):
         motivos = revisar(EDITOR, lambda c: c["juegos"].append({"id": "juego2"}),
@@ -186,13 +190,13 @@ class Editor(unittest.TestCase):
 
 
 class Colaborador(unittest.TestCase):
-    def test_textos_etiquetas_y_estado(self):
+    def test_textos_y_estado(self):
         def cambiar(c):
             j = juego(c)
-            j.update(sinopsis="Después", etiquetas=["beta", "adultos"], estado="en_revision",
+            j.update(sinopsis="Después", estado="en_revision",
                      progreso={"traduccion": 50, "revision": 5, "imagenes": 0})
             j["parche"]["notas"] = "Notas nuevas"
-            j["ediciones"][0].update(notaEdicion="Nota", contenido={"texto": True, "imagenes": True}, etiquetas=["beta"])
+            j["ediciones"][0].update(notaEdicion="Nota", contenido={"texto": True, "imagenes": True})
         self.assertEqual([], revisar(COLABORADOR, cambiar))
 
     def test_nada_mas(self):
@@ -206,6 +210,10 @@ class Colaborador(unittest.TestCase):
             "edición quitada": lambda c: juego(c)["ediciones"].clear(),
             "huella": lambda c: juego(c)["ediciones"][0].update(huella=[{"ruta": "a", "tamano": 1, "hashParcial": HASH, "hash": HASH}]),
             "habilitado": lambda c: juego(c).update(habilitado=False),
+            # docs/canales.md §4.2: las etiquetas y el orden son de Administrador o más.
+            "etiquetas": lambda c: juego(c).update(etiquetas=["beta", "adultos"]),
+            "edición `steam` › `etiquetas`": lambda c: juego(c)["ediciones"][0].update(etiquetas=["beta"]),
+            "orden": lambda c: juego(c).update(orden=9),
             "crear o quitar": lambda c: juego(c).pop("parche"),
         }
         for nombre, cambiar in casos.items():
