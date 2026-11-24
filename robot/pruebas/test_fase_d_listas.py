@@ -203,6 +203,18 @@ class HuellasVetadas(unittest.TestCase):
         self.assertTrue(any("la huella de la edición lleva" in m for m in motivos), motivos)
 
 
+class ArrobasDelPrograma(unittest.TestCase):
+    def test_nadie_crea_el_canal_programa(self):
+        # `programa/…` son las ramas de la zona PROGRAMA de Modo equipo: ni el Dueño crea @programa.
+        p = Propuesta(main_con_dos_canales()).poner("canales/programa/canal.json", canal_json("programa", "Programa"))
+        p.poner("canales/programa/miembros.json", miembros_es({"id": DUENO, "cuenta": "dueno", "rol": "propietario",
+                                                               "estado": "activo"}))
+        self.assertTrue(any("reservado por el programa" in m for m in juzgar(p, dueno())))
+
+    def test_un_nombre_con_programa_si_vale(self):
+        self.assertEqual([], Nombres().renombrar("Programa de traducción Rance"))
+
+
 class HuellasEnElManifiesto(unittest.TestCase):
     """§1.2 y §4.3: la lista negra de huellas se mira también en los archivos que escribe el paquete."""
 
