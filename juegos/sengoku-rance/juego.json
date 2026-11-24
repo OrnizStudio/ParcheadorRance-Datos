@@ -1,0 +1,15 @@
+{
+  "esquema": 1,
+  "id": "sengoku-rance",
+  "titulo": "Sengoku Rance",
+  "tituloCorto": "Sengoku Rance",
+  "tituloOriginal": "SengokuRance",
+  "sinopsis": "",
+  "estado": "activo",
+  "alta": {
+    "canal": "ornizen",
+    "cuenta": null,
+    "fecha": null
+  },
+  "ediciones": []
+}

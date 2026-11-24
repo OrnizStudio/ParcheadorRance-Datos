@@ -1,0 +1,58 @@
+{
+  "esquema": 1,
+  "juego": "prueba",
+  "habilitado": true,
+  "pruebas": true,
+  "orden": 9999,
+  "etiquetas": [
+    "adultos"
+  ],
+  "estado": "completo",
+  "progreso": {
+    "traduccion": 100,
+    "revision": 100,
+    "imagenes": 0
+  },
+  "parche": {
+    "version": "0.1.0",
+    "fecha": "2026-11-17",
+    "notas": "Parche de prueba: traduce Datos/textos.dat y añade Fuentes/fuente-de-prueba.ttf.",
+    "paquetes": [
+      {
+        "edicion": "unica",
+        "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/prueba-0.1.0/prueba-unica-0.1.0.zip",
+        "tamano": 20931,
+        "hash": "blake3:08ca910a35a60ef4d03a88794e0fdc3784ab4015a4942adbe09b6beac8c6bece"
+      }
+    ]
+  },
+  "ediciones": [
+    {
+      "id": "unica",
+      "huellasParcheadas": [
+        {
+          "version": "0.1.0",
+          "archivos": [
+            {
+              "ruta": "Datos/textos.dat",
+              "tamano": 312656,
+              "hashParcial": "blake3:479ab55536aeb04327b00decf4ed300112f9f8db716fc7745ccbf45b69d08f19",
+              "hash": "blake3:d80cdd418fa7d162feff7a22b826ff23525958ccc95b2550ce4a678c68fb88e6"
+            },
+            {
+              "ruta": "Fuentes/fuente-de-prueba.ttf",
+              "tamano": 20000,
+              "hashParcial": "blake3:8e5de6195e118a0b597481721d8f47133696bd1097518038aa367d5b30a8f795",
+              "hash": "blake3:84f2d3e039c7a48e00d24e8036a7519ff35f28a89401431ee6024fb091fce7b4"
+            }
+          ]
+        }
+      ],
+      "contenido": {
+        "texto": true,
+        "imagenes": false,
+        "testing": "hecho"
+      }
+    }
+  ]
+}

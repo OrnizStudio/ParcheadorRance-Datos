@@ -1,0 +1,71 @@
+{
+  "esquema": 1,
+  "etiquetas": [
+    {
+      "id": "adultos",
+      "nombre": "+18",
+      "color": "rojo",
+      "icono": "aviso",
+      "descripcion": "Contenido para adultos. Solo mayores de 18 años."
+    },
+    {
+      "id": "traduccion",
+      "nombre": "Traducción",
+      "color": "violeta",
+      "descripcion": "Textos del juego en español."
+    },
+    {
+      "id": "doblaje",
+      "nombre": "Doblaje",
+      "color": "violeta",
+      "descripcion": "Audio del juego en español.",
+      "icono": "aviso"
+    },
+    {
+      "id": "mod",
+      "nombre": "Mod",
+      "color": "ambar",
+      "descripcion": "Contenido nuevo o cambios en la jugabilidad."
+    },
+    {
+      "id": "arreglo",
+      "nombre": "Arreglo",
+      "color": "rojo",
+      "icono": "ia",
+      "descripcion": "Corrige errores que el estudio nunca arregló."
+    },
+    {
+      "id": "mejora-tecnica",
+      "nombre": "Mejora técnica",
+      "color": "gris",
+      "descripcion": "Panorámico, más fps o más resolución."
+    },
+    {
+      "id": "accesibilidad",
+      "nombre": "Accesibilidad",
+      "color": "azul",
+      "icono": "info",
+      "descripcion": "Subtítulos, modos para daltonismo o letra más legible."
+    },
+    {
+      "id": "restauracion",
+      "nombre": "Restauración",
+      "color": "violeta",
+      "descripcion": "Recupera contenido recortado del juego."
+    },
+    {
+      "id": "pack",
+      "nombre": "Pack",
+      "color": "gris",
+      "icono": "ia",
+      "descripcion": "Varios mods probados juntos."
+    },
+    {
+      "id": "en-pruebas",
+      "nombre": "En pruebas",
+      "color": "ambar",
+      "icono": "aviso",
+      "descripcion": "Versión que aún no es estable."
+    }
+  ]
+}
