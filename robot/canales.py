@@ -19,17 +19,20 @@ from dataclasses import dataclass, field
 
 CARPETA_CANALES = "canales/"
 CANAL_OFICIAL = "ornizen"
-ID_CANAL = re.compile(r"^[a-z0-9_]{3,20}$")
+ID_CANAL = re.compile(r"^[a-z0-9_]{3,20}\Z")
 # @ que ningún canal puede tener, ni siquiera creado por el Dueño: `programa` es el prefijo de las ramas de la zona
 # PROGRAMA de Modo equipo (`programa/…`), y la app descarta un canal con ese @ (LectorCanalesCuenta.IdValido). Solo el
 # @ exacto: un nombre como «Programa de traducción» sí vale.
 ARROBAS_DEL_PROGRAMA = ("programa",)
-CUENTA_GITHUB = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
-FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-HASH_VALIDO = re.compile(r"^blake3:[0-9a-f]{64}$")
-# «.» y «..» no son repositorios (la app usa esta lista como lista blanca de descargas).
-REPOSITORIO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$")
-RUTA_SEGURA = re.compile(r"^[a-z0-9._/-]+$")
+CUENTA_GITHUB = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
+FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
+HASH_VALIDO = re.compile(r"^blake3:[0-9a-f]{64}\Z")
+# «.» y «..» no son repositorios (la app usa esta lista como lista blanca de descargas). Todas las expresiones acaban
+# en `\Z` y no en `$`: `$` deja pasar un salto de línea al final («a/b\n»).
+REPOSITORIO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/(?!\.\.?\Z)[A-Za-z0-9._-]{1,100}\Z")
+RUTA_SEGURA = re.compile(r"^[a-z0-9._/-]+\Z")
+# Los repositorios de esta organización son del programa: solo los declara el canal oficial (sin distinguir mayúsculas).
+ORGANIZACION_OFICIAL = "ornizstudio"
 EXTENSIONES_LOGO = (".png", ".webp", ".jpg", ".jpeg")
 
 
@@ -210,7 +213,7 @@ _CONFUNDIBLES = str.maketrans({
     # cirílico
     "а": "a", "в": "b", "е": "e", "ё": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t",
     "у": "y", "х": "x", "ѕ": "s", "і": "i", "ї": "i", "ј": "j", "ԁ": "d", "ԛ": "q", "ԝ": "w", "һ": "h", "ӏ": "l",
-    "п": "n", "г": "r", "ь": "b", "з": "e",
+    "п": "n", "г": "r", "ь": "b", "з": "e", "я": "r", "ᴙ": "r",
     # griego
     "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "i", "κ": "k", "μ": "u", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
     "υ": "u", "χ": "x", "ω": "w", "ζ": "z", "γ": "y",
@@ -547,6 +550,26 @@ ROL_CAMPO_CANAL = {
 }
 
 
+def dueno_de_repositorio(repositorio: str) -> str:
+    """La cuenta u organización de un «dueño/nombre», para comparar (sin distinguir mayúsculas, como GitHub)."""
+    return repositorio.split("/", 1)[0].casefold()
+
+
+def repositorios_ajenos(paquetes, canal: str, de_otros: dict, antes=()) -> list:
+    """Motivos si `paquetes` declara un repositorio que en `main` ya es de otro canal (`de_otros` = {repositorio en
+    minúsculas: @}). Los que el canal ya tenía (`antes`) no cuentan: un canal no se queda sin poder cambiar nada por algo
+    que ya estaba así."""
+    if not isinstance(paquetes, list):
+        return []
+    tenia = {p.casefold() for p in antes if isinstance(p, str)} if isinstance(antes, list) else set()
+    motivos = []
+    for p in paquetes:
+        if isinstance(p, str) and p.casefold() not in tenia and de_otros.get(p.casefold(), canal) != canal:
+            motivos.append(f"`paquetes`: `{p}` ya es el repositorio de @{de_otros[p.casefold()]}. Cada repositorio de "
+                           "paquetes es de un solo canal.")
+    return motivos
+
+
 def validar_canal(objeto, carpeta: str, ruta: str) -> list:
     if not isinstance(objeto, dict):
         return [f"`{ruta}` tiene que ser un objeto `{{ … }}`."]
@@ -577,7 +600,7 @@ def validar_canal(objeto, carpeta: str, ruta: str) -> list:
             errores.append(f"`{ruta}`: `contacto.issues` tiene que ser true o false.")
         correo = contacto.get("correo")
         if correo is not None and (not isinstance(correo, str) or len(correo) > 254
-                                   or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", correo)):
+                                   or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+\Z", correo)):
             errores.append(f"`{ruta}`: `contacto.correo` no es una dirección de correo.")
         if contacto.get("web") is not None and not _url_https(contacto["web"]):
             errores.append(f"`{ruta}`: `contacto.web` tiene que empezar por `https://`.")
@@ -588,10 +611,13 @@ def validar_canal(objeto, carpeta: str, ruta: str) -> list:
             errores.append(f"`{ruta}`: `contacto.enlaces` tiene que ser una lista de como mucho {MAX_ENLACES} "
                            "`{ \"tipo\": …, \"url\": \"https://…\" }`.")
     paquetes = objeto.get("paquetes", [])
-    if not isinstance(paquetes, list) or len(paquetes) > MAX_PAQUETES or len(set(map(str, paquetes))) != len(paquetes) \
+    if not isinstance(paquetes, list) or len(paquetes) > MAX_PAQUETES \
+            or len({str(p).casefold() for p in paquetes}) != len(paquetes) \
             or not all(isinstance(p, str) and REPOSITORIO.match(p) for p in paquetes):
         errores.append(f"`{ruta}`: `paquetes` tiene que ser una lista de como mucho {MAX_PAQUETES} repositorios "
-                       "`dueño/nombre`, sin repetir.")
+                       "`dueño/nombre`, sin repetir (sin distinguir mayúsculas).")
+    elif carpeta != CANAL_OFICIAL and any(dueno_de_repositorio(p) == ORGANIZACION_OFICIAL for p in paquetes):
+        errores.append(f"`{ruta}`: `paquetes` no puede llevar repositorios de OrnizStudio: son del canal oficial.")
     for campo in ("adultos", "oculto"):
         if campo in objeto and not isinstance(objeto[campo], bool):
             errores.append(f"`{ruta}`: `{campo}` tiene que ser true o false.")
@@ -824,7 +850,7 @@ NOMBRE_ROL = {0: "sin rol", 1: "Colaborador", 2: "Editor", 3: "Administrador", 4
 
 def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_dueno: bool, leer=None,
                       ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, veto_general=None,
-                      nombre_parecido=None) -> list:
+                      nombre_parecido=None, paquetes_de_otros=None) -> list:
     """Motivos de rechazo de lo que la propuesta cambia en `canales/` (lista vacía = se acepta).
 
     `cambios` son `CambioCanal` (solo los de `canales/`). `rol_por_canal` = {canal: rol del autor en `main`} (1–4;
@@ -836,6 +862,7 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
     oficial): con él se sabe el rol real de a quién se veta, igual que lo calcula el robot para los permisos.
     `veto_general(id)` da el motivo si la cuenta está en la lista negra general (fase D) y `nombre_parecido(canal,
     nombre)` por qué el nombre de un canal se confunde con otro canal o con un nombre reservado.
+    `paquetes_de_otros` = {repositorio en minúsculas: @} de los `canal.json` de `main`: nadie declara el de otro canal.
     """
     leer = leer or (lambda ruta, lado: None)
     veto_general = veto_general or (lambda cuenta_id: None)
@@ -883,7 +910,7 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
         try:
             motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer, frozenset(ids_duenos), cuenta_de,
                                            lambda cuenta_id, _c=canal: rol_externo(_c, cuenta_id), veto_general,
-                                           nombre_parecido)
+                                           nombre_parecido, paquetes_de_otros)
         except DemasiadasConsultas:
             motivos.append(f"La propuesta cambia demasiadas cuentas de @{canal} a la vez (el robot tendría que consultar "
                            f"más de {TOPE_CONSULTAS_DUENO if es_dueno else TOPE_CONSULTAS} a GitHub). Divídela en "
@@ -904,7 +931,7 @@ def _leer(c: CambioCanal, lado: str, nombre: str):
 
 def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids_duenos, cuenta_de,
                        rol_externo=lambda cuenta_id: 0, veto_general=lambda cuenta_id: None,
-                       nombre_parecido=None) -> list:
+                       nombre_parecido=None, paquetes_de_otros=None) -> list:
     motivos = []
     arroba = f"@{canal}"
     solo_aceptar = False
@@ -943,7 +970,7 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
                 if c.despues is None:
                     continue
             if resto == "canal.json":
-                propios = _comprobar_canal_json(canal, c.ruta, antes, despues, rol, nombre_parecido)
+                propios = _comprobar_canal_json(canal, c.ruta, antes, despues, rol, nombre_parecido, paquetes_de_otros)
             elif resto == "miembros.json":
                 vetados, ilegibles = _vetados(canal, archivos, leer, rol)
                 motivos += ilegibles
@@ -997,8 +1024,12 @@ def _solo_orniz(canal, nombre):
     return PARECE_ORNIZ if canal != CANAL_OFICIAL and nombre_reservado(nombre) else None
 
 
-def _comprobar_canal_json(canal, ruta, antes, despues, rol, nombre_parecido=None) -> list:
+def _comprobar_canal_json(canal, ruta, antes, despues, rol, nombre_parecido=None, paquetes_de_otros=None) -> list:
     motivos = validar_canal(despues, canal, ruta)
+    if not motivos and isinstance(despues, dict):
+        motivos += [f"`{ruta}` › {m}" for m in repositorios_ajenos(
+            despues.get("paquetes", []), canal, paquetes_de_otros or {},
+            antes.get("paquetes", []) if isinstance(antes, dict) else [])]
     nombre_parecido = nombre_parecido or _solo_orniz
     if rol < 5 and isinstance(despues, dict) and isinstance(despues.get("nombre"), str) \
             and not (isinstance(antes, dict) and antes.get("nombre") == despues.get("nombre")) \
