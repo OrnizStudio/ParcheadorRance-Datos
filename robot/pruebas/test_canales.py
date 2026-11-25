@@ -343,7 +343,7 @@ class CanalJson(unittest.TestCase):
     def test_crear_o_borrar_un_canal_solo_el_dueno(self):
         self.assertIn("No eres miembro de @nuevo", proponer(ADMIN_ID, {"canales/nuevo/canal.json": self.canal(id="nuevo")})[0])
         self.assertIn("solo lo hace el Dueño", proponer(PROP_ID, {C: None})[0])
-        self.assertEqual([], proponer(DUENO_ID, {"canales/nuevo/canal.json": self.canal(id="nuevo")}))
+        self.assertEqual([], proponer(DUENO_ID, {"canales/nuevo/canal.json": self.canal(id="nuevo", paquetes=[])}))
 
 
 class RutasYTopes(unittest.TestCase):
@@ -902,7 +902,7 @@ class SegundaRevision(unittest.TestCase):
         self.assertEqual([], canales.validar_canal({**CANAL, "nombre": "Équipe Ñandú 🎮"}, "ornizen", C))
 
     def test_solo_el_dueno_y_el_canal_oficial_se_llaman_como_orniz(self):
-        otro = {**CANAL, "id": "otro_canal", "nombre": "Rance Fans"}
+        otro = {**CANAL, "id": "otro_canal", "nombre": "Rance Fans", "paquetes": []}
         ruta = "canales/otro_canal/canal.json"
 
         def renombrar(nombre, rol, es_dueno=False):

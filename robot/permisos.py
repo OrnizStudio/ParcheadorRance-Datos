@@ -67,8 +67,8 @@ CARPETA_JUEGOS = "catalogo/juegos/"
 TAMANO_MAXIMO_CATALOGO = 8 * 1024 * 1024  # el mismo tope que aplica el parcheador al descargarlo
 TAMANO_MAXIMO_IMAGEN = 5 * 1024 * 1024
 EXTENSIONES_IMAGEN = (".png", ".jpg", ".jpeg", ".webp")
-ID_VALIDO = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-HASH_VALIDO = re.compile(r"^blake3:[0-9a-f]{64}$")
+ID_VALIDO = re.compile(r"^[a-z0-9][a-z0-9._-]*\Z")
+HASH_VALIDO = re.compile(r"^blake3:[0-9a-f]{64}\Z")
 
 
 # ───────────────────────────────────────── Roles y permisos ─────────────────────────────────────────
@@ -275,7 +275,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             [canales.CambioCanal(c.ruta, c.estado, c.tamano, leer(c.ruta, "antes"),
                                  None if c.estado == "D" else leer(c.ruta, "despues")) for c in de_canales],
             {k: int(v) for k, v in permisos.por_canal.items()}, permisos.cuenta_id, permisos.es_dueno, leer,
-            ids_duenos, cuenta_de, rol_externo, veto_general, nombre_parecido)
+            ids_duenos, cuenta_de, rol_externo, veto_general, nombre_parecido, _paquetes_de(main_sueltos))
     # La lista negra general y los nombres reservados: solo los cambia el Dueño, y con reglas que valen también para él.
     motivos += listas.comprobar_normas([(c.ruta, c.estado) for c in cambios], leer, frozenset(ids_duenos),
                                        frozenset(c for c, (_, verificado, _) in info.items() if verificado))
@@ -444,7 +444,7 @@ def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, cr
         sol, leer, permisos.cuenta_id, cuenta_de or (lambda cuenta_id: None), creada_el or (lambda cuenta_id: None),
         hoy, solicitudes.version_de_normas(leer_main(solicitudes.RUTA_NORMAS)),
         lambda texto: listas.parecido(texto, reservados, existentes, verificados),
-        lambda: (solicitudes_abiertas or (lambda etiqueta: 0))(sol.etiqueta))
+        lambda: (solicitudes_abiertas or (lambda etiqueta: 0))(sol.etiqueta), _paquetes_de(main_sueltos))
 
 
 def _canales_de(archivos_main: dict) -> dict:
@@ -464,6 +464,24 @@ def _canales_de(archivos_main: dict) -> dict:
                       and isinstance(a.get("id"), str)]
         resultado[partes[1]] = (canal.get("nombre") if isinstance(canal.get("nombre"), str) else partes[1],
                                 isinstance(verificacion, dict) and verificacion.get("verificado") is True, anteriores)
+    return resultado
+
+
+def _paquetes_de(archivos_main: dict) -> dict:
+    """{repositorio en minúsculas: @} de los `paquetes` de los `canal.json` de `main` (los ilegibles no cuentan)."""
+    resultado = {}
+    for ruta, datos in archivos_main.items():
+        partes = ruta.split("/")
+        if len(partes) != 3 or partes[0] != "canales" or partes[2] != "canal.json":
+            continue
+        try:
+            canal = json.loads(datos)
+        except (ValueError, RecursionError):
+            continue
+        paquetes = canal.get("paquetes") if isinstance(canal, dict) else None
+        for p in paquetes if isinstance(paquetes, list) else []:
+            if isinstance(p, str):
+                resultado.setdefault(p.casefold(), partes[1])
     return resultado
 
 
@@ -690,7 +708,7 @@ def regex_ignorar(patron: str):
             continue
         partes.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
         i += 1
-    return re.compile("".join(partes) + "$", re.IGNORECASE)
+    return re.compile("".join(partes) + r"\Z", re.IGNORECASE)
 
 
 def error_de_patron(patron):
@@ -1667,7 +1685,7 @@ def aviso_fallo_instalacion(fusionar: bool) -> str:
             "escritura), o sube cualquier cambio a esta misma propuesta.")
 
 
-SHA = re.compile(r"^[0-9a-f]{40}$")
+SHA = re.compile(r"^[0-9a-f]{40}\Z")
 
 
 def cabeza_del_evento(propuesta: dict, entorno) -> str:

@@ -101,12 +101,13 @@ def version_de_normas(datos) -> int:
 
 
 def comprobar_canal_nuevo(sol: Solicitud, leer, autor_id, cuenta_de, creada_el, hoy: datetime.date,
-                          version_normas: int, parecido, abiertas) -> list:
+                          version_normas: int, parecido, abiertas, paquetes_de_otros=None) -> list:
     """Motivos de rechazo de una solicitud de canal nuevo.
 
     `leer(ruta, lado)` da los bytes; `cuenta_de(id)` el nombre actual de la cuenta; `creada_el(id)` la fecha en que se
     creó (None si no se sabe); `parecido(texto)` por qué un @ o un nombre se confunde con otro canal o uno reservado;
-    `abiertas()` cuántas solicitudes de canal nuevo tiene abiertas esta cuenta (sin contar esta).
+    `abiertas()` cuántas solicitudes de canal nuevo tiene abiertas esta cuenta (sin contar esta);
+    `paquetes_de_otros` = {repositorio en minúsculas: @} de los canales de `main`.
     """
     c = sol.canal
     ruta_canal, ruta_miembros = f"canales/{c}/canal.json", f"canales/{c}/miembros.json"
@@ -133,6 +134,9 @@ def comprobar_canal_nuevo(sol: Solicitud, leer, autor_id, cuenta_de, creada_el, 
     except canales.JsonMalo as error:
         return motivos + [str(error)]
     errores = canales.validar_canal(canal, c, ruta_canal)
+    if not errores:
+        errores = [f"`{ruta_canal}` › {m}" for m in canales.repositorios_ajenos(
+            canal.get("paquetes", []), c, paquetes_de_otros or {})]
     motivos += errores
     if not errores:
         if (problema := parecido(canal["nombre"])):
