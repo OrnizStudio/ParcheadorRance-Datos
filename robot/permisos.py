@@ -521,9 +521,8 @@ def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, ho
                            "espera a que el Dueño del programa las resuelva o retira alguna.")
     for cambio in cambios:
         if cambio.ruta.startswith(solicitudes.CARPETA_IMAGENES):
-            if not cambio.ruta.lower().endswith(EXTENSIONES_IMAGEN):
-                motivos.append(f"`{cambio.ruta}`: en la carpeta de un juego solo van imágenes "
-                               f"({', '.join(EXTENSIONES_IMAGEN)}).")
+            if (problema := solicitudes.error_de_ruta_de_imagen(cambio.ruta)):
+                motivos.append(problema)
             elif cambio.tamano > TAMANO_MAXIMO_IMAGEN:
                 motivos.append(f"`{cambio.ruta}`: la imagen pesa {cambio.tamano / 1048576:.1f} MB y el máximo son 5 MB.")
     de_sueltos = [(cambio.ruta, cambio.estado) for cambio in cambios if sueltos.de_los_sueltos(cambio.ruta)]
@@ -593,9 +592,20 @@ def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, cr
     if sol.canal in bloqueados:
         return [f"@{sol.canal} está bloqueado por el Dueño del programa ({bloqueados[sol.canal]})."]
     if sol.tipo == "etiqueta":
+        try:
+            reservados = listas.reservados(leer_main)
+        except listas.ListaIlegible as error:
+            return [str(error)]
+
+        def parecido_reservado(nombre):
+            # Como en los canales, pero solo frente a los reservados (las etiquetas no se comparan con los canales). Un
+            # nombre que no se puede comparar (todo en otro alfabeto: «百合») no se parece a ninguno latino.
+            problema = listas.parecido(nombre, reservados, {}, set())
+            return None if problema == canales.NO_COMPARABLE else problema
         return solicitudes.comprobar_etiqueta(
             sol, leer, permisos.cuenta_id, _rol_en(permisos, sol.canal), hoy,
-            (listar_main or (lambda carpeta: {}))(solicitudes.CARPETA_ETIQUETAS), leer_main(particion.RUTA_ETIQUETAS))
+            (listar_main or (lambda carpeta: {}))(solicitudes.CARPETA_ETIQUETAS), leer_main(particion.RUTA_ETIQUETAS),
+            parecido_reservado)
     if sol.tipo == "verificacion":
         consultas = listas.Consultas(leer_main, hoy)  # un canal con muchos paquetes: cada trozo, una vez
 
@@ -1372,9 +1382,8 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
             motivos.append(f"`{c.ruta}`: las imágenes de un juego las cambian los Editores y los "
                            f"Administradores (tu rol en `{juego}`: {rol.nombre}).")
         elif c.estado != "D":
-            if not c.ruta.lower().endswith(EXTENSIONES_IMAGEN):
-                motivos.append(f"`{c.ruta}`: en la carpeta de un juego solo van imágenes "
-                               f"({', '.join(EXTENSIONES_IMAGEN)}).")
+            if (problema := solicitudes.error_de_ruta_de_imagen(c.ruta)):
+                motivos.append(problema)
             elif c.tamano > TAMANO_MAXIMO_IMAGEN:
                 motivos.append(f"`{c.ruta}`: la imagen pesa {c.tamano / 1048576:.1f} MB y el máximo son 5 MB.")
     return _sin_repetidos(motivos)

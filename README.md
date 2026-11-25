@@ -17,7 +17,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo** que descarga el parcheador al abrirse (esquema 1). Desde la fase B **no se edita a mano**: lo escribe el robot juntando `juegos/` y `canales/ornizen/parches/`, `normas/etiquetas.json` y `programa/parcheador.json`. |
 | `catalogo/canales.json` | **Los canales para la app** (fase D): de cada canal, `id`, `estado`, `verificado`, `paquetes` (sus repositorios de paquetes: la lista blanca de descargas) y `adultos`. Lo escribe el robot con el catálogo y con su misma `versionCatalogo`; la app solo lo usa si la versión coincide. **No se edita a mano**: una propuesta que lo cambie se rechaza, salvo si la hace el Dueño. Tope: 4 MB (unos 7 900 canales en el peor caso); si se pasara, no se actualiza y el catálogo se publica igual (la app se queda con el oficial). Cada repositorio de `paquetes` es de un solo canal (sin distinguir mayúsculas) y los de `OrnizStudio` solo los declara el oficial: el robot lo comprueba y, por si acaso, al publicar se quitan los repetidos. |
 | Rama [`publicado`](../../tree/publicado) | Lo que genera el robot para el parcheador y el Modo equipo: `indice.json`, el índice por juego de Programa › Juegos originales y, desde la 0.3.0, los juegos, canales, logos y etiquetas en trozos. No se toca a mano. |
-| `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
+| `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. Solo valen `<tipo>.<ext>` o `<tipo>-<aaaammdd>-<hhmmss>.<ext>` (`.png`, `.jpg`, `.jpeg`, `.webp`), en minúsculas y sin subcarpetas. |
 | [Releases](../../releases) | Las versiones del propio parcheador y los **paquetes de parche** publicados hasta la fase B (`<juego>-<edición>-<versión>.zip`). Desde la fase B, los paquetes nuevos van a las Releases de [`OrnizStudio/Ornizen-Parches`](https://github.com/OrnizStudio/Ornizen-Parches) (`canal.json` → `paquetes`); los ya publicados se quedan aquí. |
 | [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. Solo lo cambia el Propietario. |
 | [`normas/`](normas/) | Las normas generales, que solo cambia el Propietario: los archivos que **ningún parche puede tocar** (protección anticopia y cracks) y la cuenta del Propietario. |
@@ -367,8 +367,9 @@ Lo que alguien no puede hacer directamente lo pide con una propuesta normal que 
   oficial siguen con las reglas por campo de siempre (un Editor del oficial registra ediciones).
 - **Etiqueta global**: `solicitudes/etiquetas/<n>.json` (`esquema`, `canal`, `nombre` ≤ 24, `paraQue` ≤ 300,
   `pedidaPor`, `fecha`), con `<n>` el nombre en minúsculas, sin acentos y con `-` (`solicitudes.nombre_de_archivo`).
-  La sube un Administrador o un Propietario del canal, solo si no existe ya ese archivo ni una etiqueta con ese nombre,
-  y con como mucho 10 pendientes (sin `estado`) por canal. Se publica sola; el Dueño la resuelve con su propia
+  La sube un Administrador o un Propietario del canal, solo si no existe ya ese archivo ni una etiqueta (ni otra pedida)
+  con ese nombre (sin contar espacios ni guiones: «Hen tai» es «Hentai»), si el nombre no se parece a uno reservado
+  (como los canales: «Orniz…» es del Dueño) y con como mucho 10 pendientes (sin `estado`) por canal. Se publica sola; el Dueño la resuelve con su propia
   propuesta (crea la etiqueta en `normas/etiquetas.json` y pone `estado`, `respuesta` y `resuelta`).
 - **Rechazar** una solicitud que espera: la app comenta con `<!-- rechazo -->` y la cierra. El robot no lo lee.
 

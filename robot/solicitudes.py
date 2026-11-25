@@ -46,6 +46,20 @@ CARPETA_ETIQUETAS = "solicitudes/etiquetas/"
 RUTA_ETIQUETA = re.compile(r"solicitudes/etiquetas/([a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?)\.json")
 RUTA_NORMAS = "normas/normas.json"
 CARPETA_IMAGENES = "catalogo/juegos/"
+# Las únicas rutas de imagen de un juego (como las escribe el parcheador): `catalogo/juegos/<j>/<tipo>[-<fecha>].<ext>`,
+# en minúsculas y sin subcarpetas.
+TIPOS_IMAGEN = ("icono", "banner", "fondo", "logo", "portada")
+RUTA_IMAGEN = re.compile(r"catalogo/juegos/([A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?)/"
+                         r"(?:" + "|".join(TIPOS_IMAGEN) + r")(?:-\d{8}-\d{6})?\.(?:png|jpg|jpeg|webp)")
+
+
+def error_de_ruta_de_imagen(ruta: str):
+    """Por qué `ruta` no es la de una imagen de juego, o None."""
+    if RUTA_IMAGEN.fullmatch(ruta):
+        return None
+    return (f"`{ruta}`: las imágenes de un juego van en `{CARPETA_IMAGENES}<juego>/<tipo>.<ext>` (o "
+            f"`<tipo>-<aaaammdd>-<hhmmss>.<ext>`), con `<tipo>` uno de {', '.join(TIPOS_IMAGEN)} y `.png`, `.jpg`, "
+            "`.jpeg` o `.webp`, en minúsculas y sin subcarpetas.")
 # La marca con la que la app dice de qué canal es un cambio en la ficha central (en el cuerpo de la propuesta).
 MARCA_CANAL = re.compile(r"<!--[ \t]*canal:[ \t]*([^\s>]*)[ \t]*-->")
 DE_PROGRAMA = ("juego", "edicion", "central")
@@ -370,12 +384,18 @@ def comprobar_verificacion(sol: Solicitud, leer, autor_id, rol_en_canal: int, ho
     return motivos
 
 
+def _compacta(clave) -> str:
+    """La clave de una etiqueta sin guiones: «hen-tai», «hentai» y «hen tai» son la misma."""
+    return (clave or "").replace("-", "")
+
+
 def comprobar_etiqueta(sol: Solicitud, leer, autor_id, rol_en_canal: int, hoy: datetime.date, archivos_main: dict,
-                       etiquetas_main) -> list:
+                       etiquetas_main, parecido_reservado=None) -> list:
     """Motivos de rechazo de una solicitud de etiqueta global (`solicitudes/etiquetas/<n>.json`) que envía un
     Administrador o un Propietario del canal. `archivos_main` son {ruta: bytes} de `solicitudes/etiquetas/` en `main`
     (para el tope de 10 pendientes por canal) y `etiquetas_main` los bytes de `normas/etiquetas.json` de `main` (o
-    None)."""
+    None). `parecido_reservado(nombre)` da por qué el nombre se confunde con un nombre reservado (como en los canales:
+    «Orniz…» solo es del Dueño), o None. Dos nombres que solo se distinguen por espacios o guiones son el mismo."""
     ruta = f"{CARPETA_ETIQUETAS}{sol.clave}.json"
     if autor_id is None:
         return ["La solicitud la abre y la sube una sola cuenta: abre una propuesta nueva desde la tuya."]
@@ -411,6 +431,8 @@ def comprobar_etiqueta(sol: Solicitud, leer, autor_id, rol_en_canal: int, hoy: d
         motivos.append(f"`{ruta}` › `nombre`: necesita al menos una letra (a-z) o un número.")
     elif nombre_de_archivo(nombre) != sol.clave:
         motivos.append(f"`{ruta}`: el archivo tiene que llamarse `{nombre_de_archivo(nombre)}.json`, como el nombre.")
+    elif parecido_reservado is not None and (problema := parecido_reservado(nombre)):
+        motivos.append(f"`{ruta}` › `nombre`: «{nombre}» {problema}.")
     if (problema := canales.error_de_texto(objeto.get("paraQue"), LARGO_MOTIVO, 1, 3)):
         motivos.append(f"`{ruta}` › `paraQue`: {problema}.")
     if objeto.get("pedidaPor") != autor_id:
@@ -428,8 +450,8 @@ def comprobar_etiqueta(sol: Solicitud, leer, autor_id, rol_en_canal: int, hoy: d
     for e in lista if isinstance(lista, list) else []:
         if not isinstance(e, dict):
             continue
-        claves = {nombre_de_archivo(e.get("id")), nombre_de_archivo(e.get("nombre"))}
-        if sol.clave in claves:
+        claves = {_compacta(nombre_de_archivo(e.get("id"))), _compacta(nombre_de_archivo(e.get("nombre")))}
+        if _compacta(sol.clave) in claves - {""}:
             visible = e.get("nombre") if isinstance(e.get("nombre"), str) else e.get("id")
             motivos.append(f"Ya existe la etiqueta «{visible}»: ponla en tus parches, no hace falta pedirla.")
             break
@@ -438,6 +460,13 @@ def comprobar_etiqueta(sol: Solicitud, leer, autor_id, rol_en_canal: int, hoy: d
                        "resuelva.")
     else:
         pendientes = 0
+        # Una pedida con el mismo nombre salvo espacios o guiones («hentai.json» frente a «hen-tai.json»): ya está.
+        for otra_ruta in archivos_main:
+            otra_clave = m[1] if (m := RUTA_ETIQUETA.fullmatch(otra_ruta)) else None
+            if otra_clave is not None and otra_clave != sol.clave and _compacta(otra_clave) == _compacta(sol.clave):
+                motivos.append(f"Ya se pidió una etiqueta con ese nombre (`{otra_ruta}`): si está resuelta, mira la "
+                               "respuesta.")
+                break
         for datos in archivos_main.values():
             otra = _leer_suelto(lambda _r: datos, "")
             if isinstance(otra, dict) and otra.get("canal") == c and "estado" not in otra:

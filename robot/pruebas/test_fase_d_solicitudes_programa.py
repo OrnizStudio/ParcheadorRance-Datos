@@ -159,7 +159,7 @@ class JuegoNuevo(unittest.TestCase):
         bien = Cambio("catalogo/juegos/rance-2/portada.png", "A", tamano=1000)
         self.assertEqual([], juzgar(p, extra=[bien]))
         exe = Cambio("catalogo/juegos/rance-2/virus.exe", "A", tamano=10)
-        self.assertTrue(hay(juzgar(p, extra=[exe]), "solo van imágenes"))
+        self.assertTrue(hay(juzgar(p, extra=[exe]), "las imágenes de un juego van en"))
         enorme = Cambio("catalogo/juegos/rance-2/portada.png", "A", tamano=6 * 1024 * 1024)
         self.assertTrue(hay(juzgar(p, extra=[enorme]), "5 MB"))
         enlace = Cambio("catalogo/juegos/rance-2/portada.png", "A", modo="120000", tamano=10)

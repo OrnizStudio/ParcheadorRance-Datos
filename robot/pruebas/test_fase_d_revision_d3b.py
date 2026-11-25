@@ -13,6 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import particion  # noqa: E402
 import permisos  # noqa: E402
 import test_fase_d_solicitudes as S  # noqa: E402
+import test_fase_d_solicitudes_programa as P  # noqa: E402
 from test_fase_d_solicitudes_programa import (EDICION, JUEGO, MARCA, PARCHE_ES, Propuesta, con_edicion_nueva,  # noqa: E402
                                               con_juego_nuevo, hay, juzgar, main_es, sol)
 
@@ -113,6 +114,58 @@ class CanalNuevoConRepositoriosAjenos(unittest.TestCase):
             with self.subTest(paquetes=paquetes):
                 self.assertTrue(S.hay(S.juzgar(S.nuevo_canal(main, paquetes=paquetes)), texto))
         self.assertEqual([], S.juzgar(S.nuevo_canal(main, paquetes=["galos/parches"])))
+
+
+class EtiquetasParecidas(unittest.TestCase):
+    def main_con_hentai(self):
+        main = main_es()
+        main["normas/etiquetas.json"] = particion.texto_json({"esquema": 1, "etiquetas": [{"id": "hentai", "nombre": "Hentai"}]})
+        return main
+
+    def pedir(self, nombre, main=None, pendientes=None):
+        from solicitudes import nombre_de_archivo
+        p = P.con_etiqueta(main if main is not None else self.main_con_hentai(),
+                           ruta=f"solicitudes/etiquetas/{nombre_de_archivo(nombre)}.json", nombre=nombre)
+        return juzgar(p, etiquetas_main=pendientes)
+
+    def test_sin_espacios_ni_guiones_es_la_misma(self):
+        for nombre in ("Hen tai", "Hen-tai", "H en tai", "hentai"):
+            with self.subTest(nombre=nombre):
+                self.assertTrue(hay(self.pedir(nombre), "Ya existe la etiqueta «Hentai»"))
+        self.assertEqual([], self.pedir("Hentai clásico"))
+
+    def test_una_ya_pedida_que_solo_cambia_en_guiones(self):
+        pendiente = {"solicitudes/etiquetas/yuri-suave.json": particion.texto_json(
+            P.etiqueta(nombre="Yuri suave"))}
+        self.assertTrue(hay(self.pedir("Yurisuave", pendientes=pendiente), "Ya se pidió una etiqueta"))
+        self.assertEqual([], self.pedir("Yuri fuerte", pendientes=pendiente))
+
+    def test_los_nombres_reservados_como_en_los_canales(self):
+        for nombre in ("Orniz oficial", "0rniz", "ORNIZ", "Traducciones Orniz"):
+            with self.subTest(nombre=nombre):
+                self.assertTrue(hay(self.pedir(nombre), "Orniz"), self.pedir(nombre))
+        # Con letras de otro alfabeto mezcladas, ya se rechaza antes (mezcla alfabetos).
+        self.assertTrue(self.pedir("OЯNIZ"))
+        # En otro alfabeto no se parece a ningún nombre latino: vale.
+        self.assertEqual([], self.pedir("百合 ligero"))
+
+
+class ImagenesSoloEnSuRuta(unittest.TestCase):
+    def test_rutas(self):
+        from permisos import Cambio
+        p = con_juego_nuevo()
+        for ruta in ("catalogo/juegos/rance-2/portada.png", "catalogo/juegos/rance-2/logo-20261125-101500.webp",
+                     "catalogo/juegos/rance-2/icono.jpeg", "catalogo/juegos/rance-2/banner.jpg",
+                     "catalogo/juegos/rance-2/fondo-20261125-000000.png"):
+            with self.subTest(ruta=ruta):
+                self.assertEqual([], juzgar(p, extra=[Cambio(ruta, "A", tamano=1000)]))
+        for ruta in ("catalogo/juegos/rance-2/sub/portada.png", "catalogo/juegos/rance-2/sub/x.png",
+                     "catalogo/juegos/rance-2/x.png", "catalogo/juegos/rance-2/Portada.png",
+                     "catalogo/juegos/rance-2/portada.PNG", "catalogo/juegos/rance-2/portada.svg",
+                     "catalogo/juegos/rance-2/portada-2026.png", "catalogo/juegos/rance-2/portada.png/x.png",
+                     "catalogo/juegos/rance-2/portada.png\n"):
+            with self.subTest(ruta=ruta):
+                self.assertTrue(hay(juzgar(p, extra=[Cambio(ruta, "A", tamano=1000)]), "las imágenes de un juego van en"))
 
 
 if __name__ == "__main__":
