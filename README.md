@@ -360,7 +360,10 @@ Lo que alguien no puede hacer directamente lo pide con una propuesta normal que 
   cuerpo de la propuesta (si están las dos, tienen que coincidir; en la ficha central el canal tiene que tener parche
   del juego en `main`). El canal tiene que existir en `main`, activo y sin bloquear. Si está **verificado** en `main`,
   se publica sola; si no, etiqueta y `aprobada`, como el canal nuevo, con un tope de 10 abiertas entre las tres por
-  cuenta. Un juego nuevo no puede llevar el mismo id de Steam o de GOG que otro. Las ediciones y la ficha del canal
+  cuenta. Una edición nueva solo añade la edición: sus archivos y, en `juego.json`, su id al final de `ediciones`; si
+  además cambia la ficha, una edición que ya estaba o una imagen, se juzga como cambio en la ficha central (pide
+  parche del juego). Un juego nuevo no puede llevar el mismo id de Steam o de GOG que otro, ni una ficha central o
+  edición nueva añadirlo (`123`, `"0123"`, `"+123"` y `123.0` son el mismo id). Las ediciones y la ficha del canal
   oficial siguen con las reglas por campo de siempre (un Editor del oficial registra ediciones).
 - **Etiqueta global**: `solicitudes/etiquetas/<n>.json` (`esquema`, `canal`, `nombre` ≤ 24, `paraQue` ≤ 300,
   `pedidaPor`, `fecha`), con `<n>` el nombre en minúsculas, sin acentos y con `-` (`solicitudes.nombre_de_archivo`).

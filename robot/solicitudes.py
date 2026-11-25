@@ -127,11 +127,12 @@ def marca_de_canal(cuerpo):
     return marca
 
 
-def clasificar(cambios, existe_en_main, leer_despues=None, cuerpo=None, migrado=True):
+def clasificar(cambios, existe_en_main, leer_despues=None, cuerpo=None, migrado=True, leer_antes=None):
     """La solicitud que es la propuesta, o None si no es una. `cambios` son (ruta, estado), `existe_en_main(ruta)`
     dice si ese archivo está en `main`, `leer_despues(ruta)` da sus bytes tras la propuesta (o None) y `cuerpo` es el
     texto de la propuesta (por la marca del canal). Sin `migrado` (`main` aún sin archivos sueltos) no hay solicitudes
-    de juegos. ValueError con el motivo si mezcla una solicitud con otros cambios."""
+    de juegos. `leer_antes(ruta)` da los bytes de `main` (sin él, una edición nueva que cambie `juego.json` se juzga
+    como ficha central). ValueError con el motivo si mezcla una solicitud con otros cambios."""
     rutas = [r for r, _ in cambios]
     if any(r.startswith(CARPETA) for r in rutas):
         if len(rutas) == 1 and cambios[0][1] != "D":
@@ -148,7 +149,7 @@ def clasificar(cambios, existe_en_main, leer_despues=None, cuerpo=None, migrado=
         raise ValueError("Una solicitud va sola: la propuesta solo puede añadir o cambiar "
                          "`solicitudes/verificacion/<canal>.json` o añadir `solicitudes/etiquetas/<nombre>.json` (lo "
                          "demás, en propuestas aparte).")
-    if migrado and (programa := _de_programa(cambios, existe_en_main, leer_despues, cuerpo)) is not None:
+    if migrado and (programa := _de_programa(cambios, existe_en_main, leer_despues, cuerpo, leer_antes)) is not None:
         return programa
     nuevos ={canales.canal_de_la_ruta(r)[0] for r, e in cambios
               if r.startswith(canales.CARPETA_CANALES) and r.endswith("/canal.json") and e == "A"
@@ -166,7 +167,32 @@ def clasificar(cambios, existe_en_main, leer_despues=None, cuerpo=None, migrado=
     return Solicitud("canal", canal)
 
 
-def _de_programa(cambios, existe_en_main, leer_despues, cuerpo):
+def _solo_anade_ediciones(cambios, nuevos, leer_antes, leer_despues) -> bool:
+    """¿La propuesta solo añade ediciones? Sus archivos nuevos y, en `juego.json`, solo los ids de esas ediciones
+    añadidos al final de `ediciones` (nada más cambia). Una edición que ya existe, una imagen o cualquier otro cambio de
+    la ficha: no (se juzga como ficha central, que pide tener parche del juego)."""
+    ids_nuevos = [r.rsplit("/", 1)[1][:-len(".json")] for r in nuevos if "/ediciones/" in r and r.endswith(".json")]
+    for ruta, estado in cambios:
+        if ruta in nuevos:
+            continue
+        if estado != "M" or not (ruta.endswith("/juego.json") and ruta.count("/") == 2) or leer_antes is None:
+            return False
+        antes, despues = _leer_suelto(leer_antes, ruta), _leer_suelto(leer_despues, ruta)
+        if not isinstance(antes, dict) or not isinstance(despues, dict):
+            return False
+        if {k: v for k, v in antes.items() if k != "ediciones"} != {k: v for k, v in despues.items() if k != "ediciones"}:
+            return False
+        lista_antes, lista_despues = antes.get("ediciones"), despues.get("ediciones")
+        if not isinstance(lista_antes, list) or not isinstance(lista_despues, list):
+            return False
+        anadidas = lista_despues[len(lista_antes):]
+        if lista_despues[:len(lista_antes)] != lista_antes or not all(isinstance(e, str) for e in anadidas) \
+                or sorted(anadidas) != sorted(ids_nuevos):
+            return False
+    return True
+
+
+def _de_programa(cambios, existe_en_main, leer_despues, cuerpo, leer_antes=None):
     """Juego nuevo, edición nueva o cambio en la ficha central de un canal (ver arriba), o None."""
     por_juego = {}
     for ruta, estado in cambios:
@@ -195,6 +221,10 @@ def _de_programa(cambios, existe_en_main, leer_despues, cuerpo):
         raise ValueError(f"Una solicitud va sola: un juego nuevo, una edición nueva o un cambio en la ficha central "
                          f"solo toca `juegos/{juego}/` (y sus imágenes en `{CARPETA_IMAGENES}{juego}/`), sin borrar "
                          "nada. El parche del canal va en una propuesta aparte, cuando el juego esté publicado.")
+    # Una «edición nueva» solo añade la edición: si de paso cambia la ficha (o una edición que ya está), es un cambio en
+    # la ficha central y se juzga como tal (hace falta tener parche del juego).
+    if tipo == "edicion" and not _solo_anade_ediciones(cambios, nuevos, leer_antes, leer_despues):
+        tipo = "central"
     return Solicitud(tipo, canal or "", juego)
 
 

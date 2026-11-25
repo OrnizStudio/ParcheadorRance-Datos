@@ -197,7 +197,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     if not permisos.es_dueno:
         try:
             sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios], *_lectores(leer, leer_sueltos), cuerpo,
-                                         leer_sueltos is not None and sueltos.migrado(leer_sueltos("antes")))
+                                         leer_sueltos is not None and sueltos.migrado(leer_sueltos("antes")),
+                                         leer_antes=_lector_antes(leer, leer_sueltos))
         except ValueError as error:
             return [str(error)]
         if sol is not None:
@@ -432,11 +433,21 @@ def _lectores(leer, leer_sueltos):
     return (lambda ruta: lado(ruta, "antes") is not None), (lambda ruta: lado(ruta, "despues"))
 
 
+def _lector_antes(leer, leer_sueltos):
+    """`leer_antes(ruta)` de `main` para `solicitudes.clasificar` (lo de `juegos/`, de los archivos sueltos)."""
+    def antes(ruta):
+        if sueltos.de_los_sueltos(ruta) and leer_sueltos is not None:
+            return leer_sueltos("antes").get(ruta)
+        return leer(ruta, "antes") if leer is not None else None
+    return antes
+
+
 def solicitud_de(cambios, leer_archivo, leer_sueltos, cuerpo=None):
     """La solicitud que es la propuesta (con `directa` si es de un canal verificado en `main`), o None."""
     try:
         sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios], *_lectores(leer_archivo, leer_sueltos),
-                                     cuerpo, leer_sueltos is not None and sueltos.migrado(leer_sueltos("antes")))
+                                     cuerpo, leer_sueltos is not None and sueltos.migrado(leer_sueltos("antes")),
+                                     leer_antes=_lector_antes(leer_archivo, leer_sueltos))
     except ValueError:
         return None
     if sol is not None and sol.tipo in solicitudes.DE_PROGRAMA:
@@ -446,15 +457,28 @@ def solicitud_de(cambios, leer_archivo, leer_sueltos, cuerpo=None):
 
 
 def _ids_de_tienda(juego) -> set:
-    """{("steamAppId", n), ("gogId", x)} de la `deteccion` de un juego (lo que se pueda leer)."""
+    """{("steamAppId", "n"), ("gogId", "n")} de la `deteccion` de un juego (lo que se pueda leer). Un número escrito de
+    otra forma es el mismo id: `123`, `"0123"`, `"+123"`, `" 123 "` y `123.0` dan `"123"`."""
     deteccion = juego.get("deteccion") if isinstance(juego, dict) else None
     ids = set()
     for clave in ("steamAppId", "gogId"):
         valor = deteccion.get(clave) if isinstance(deteccion, dict) else None
-        if isinstance(valor, bool) or valor is None or valor == "" or valor == 0:
+        if isinstance(valor, bool) or valor is None:
             continue
-        if isinstance(valor, (int, str)):
-            ids.add((clave, str(valor).strip().lower()))
+        if isinstance(valor, float):
+            if not valor.is_integer():
+                continue
+            valor = int(valor)
+        if isinstance(valor, str):
+            texto = valor.strip()
+            try:
+                valor = int(texto, 10)
+            except ValueError:
+                if texto:
+                    ids.add((clave, texto.casefold()))
+                continue
+        if isinstance(valor, int) and valor != 0:
+            ids.add((clave, str(valor)))
     return ids
 
 
@@ -517,14 +541,20 @@ def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, ho
     motivos += sueltos.comprobar_huellas(de_sueltos, main_sueltos, prop_sueltos, vetada, False)
     if motivos:
         return motivos
-    # Un juego que ya está con otro id: con el mismo id de Steam o de GOG, no (docs/canales.md §7.3).
-    if sol.tipo == "juego":
+    # Un juego que ya está con otro id: con el mismo id de Steam o de GOG, no (docs/canales.md §7.3). También si una
+    # ficha central o una edición nueva cambian la `deteccion` del juego (solo cuentan los ids que añaden).
+    ruta_juego = f"juegos/{jid}/juego.json"
+
+    def leido(archivos):
         try:
-            nuevo = lector_app.leer(prop_sueltos[f"juegos/{jid}/juego.json"])
+            return lector_app.leer(archivos[ruta_juego])
         except (lector_app.JsonIlegible, KeyError):
-            nuevo = None
-        mios = _ids_de_tienda(nuevo)
-        for ruta, datos in sorted(main_sueltos.items()) if mios else ():
+            return None
+    mios = _ids_de_tienda(leido(prop_sueltos))
+    if sol.tipo != "juego":
+        mios -= _ids_de_tienda(leido(main_sueltos))
+    if mios:
+        for ruta, datos in sorted(main_sueltos.items()):
             tipo = sueltos.tipo_de_ruta(ruta)
             if not tipo or tipo[0] != "juego" or tipo[1] == jid:
                 continue
