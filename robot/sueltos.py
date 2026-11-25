@@ -324,12 +324,9 @@ def _reglas(ruta, tipo, previo, objeto, rol_por_canal, autor_id, hoy) -> list:
     motivos = []
     if tipo[0] in ("juego", "edicion"):
         que = "el juego" if tipo[0] == "juego" else "la edición"
-        if previo is None and tipo[0] == "juego":
-            # Decisión del usuario (docs/vocabulario.md, «Quién da de alta un juego»): en la fase B solo el Dueño, en
-            # PROGRAMA › Juegos. Con la fase D se sumarán los canales verificados (docs/canales.md §4.2).
-            return [f"`{ruta}`: dar de alta un juego nuevo es del Dueño del programa (PROGRAMA › Juegos). Pídeselo y, "
-                    "cuando esté, añade su parche al canal."]
         if previo is None:
+            # Fase D3b (docs/canales.md §2.2 y §4.2): un juego lo da de alta un Administrador o más del canal; una
+            # edición, también un Editor del canal oficial. Si va directo o por solicitud lo decide `permisos.py`.
             alta = objeto.get("alta")
             if not _alta_bien_formada(alta):
                 motivos.append(f"`{ruta}`: {que} es nuevo y le falta `alta` (quién lo da de alta). Hazlo desde el "
@@ -339,12 +336,12 @@ def _reglas(ruta, tipo, previo, objeto, rol_por_canal, autor_id, hoy) -> list:
                     motivos.append(f"`{ruta}` › `alta.cuenta`: tiene que ser el id de tu cuenta ({autor_id}).")
                 if not _hoy_vale(alta["fecha"], hoy):
                     motivos.append(f"`{ruta}` › `alta.fecha`: tiene que ser la fecha de hoy ({hoy.isoformat()}, UTC).")
-                if alta["canal"] != particion.CANAL_OFICIAL:
-                    motivos.append(f"`{ruta}` › `alta.canal`: por ahora solo da de alta el canal oficial "
-                                   f"(@{particion.CANAL_OFICIAL}).")
-                elif rol_por_canal.get(alta["canal"], 0) < MINIMO_ALTA_EDICION:
-                    motivos.append(f"`{ruta}` › `alta.canal`: dar de alta una edición lo hace {QUIEN_ALTA_EDICION} "
-                                   f"del canal, y en @{alta['canal']} no lo eres.")
+                minimo, quien = ((MINIMO_ALTA_EDICION, QUIEN_ALTA_EDICION)
+                                 if tipo[0] == "edicion" and alta["canal"] == particion.CANAL_OFICIAL
+                                 else (ADMINISTRADOR, "un Administrador o un Propietario"))
+                if rol_por_canal.get(alta["canal"], 0) < minimo:
+                    motivos.append(f"`{ruta}` › `alta.canal`: dar de alta {'un juego' if tipo[0] == 'juego' else 'una edición'} "
+                                   f"lo hace {quien} del canal, y en @{alta['canal']} no lo eres.")
             if tipo[0] == "juego" and objeto.get("estado", "activo") != "activo":
                 motivos.append(f"`{ruta}`: un juego nuevo empieza `activo`; retirarlo o bloquearlo es del Dueño del "
                                "programa.")

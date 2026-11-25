@@ -153,12 +153,18 @@ class LoDeSiempre(unittest.TestCase):
 
 
 class Alta(unittest.TestCase):
-    def test_un_juego_nuevo_solo_lo_da_de_alta_el_dueno(self):
+    def test_un_juego_nuevo_va_solo_y_lo_da_de_alta_un_administrador(self):
+        # Fase D3b: con su parche a la vez, no (el parche, después); solo, un Administrador o más (aquí el oficial no
+        # está verificado, así que es una solicitud: lo prueba test_fase_d_solicitudes_programa).
         for rol in (Rol.COLABORADOR, Rol.EDITOR, Rol.ADMINISTRADOR, Rol.PROPIETARIO):
             with self.subTest(rol=rol):
                 motivos = juego_nuevo(Propuesta()).juzgar(rol)
-                self.assertTrue(any("del Dueño del programa (PROGRAMA › Juegos)" in m for m in motivos), motivos)
+                self.assertTrue(any("Una solicitud va sola" in m for m in motivos), motivos)
         self.assertEqual([], juego_nuevo(Propuesta()).juzgar(Rol.DUENO))
+        solo = juego_nuevo(Propuesta()).quitar("canales/ornizen/parches/rance-2.json")
+        for rol in (Rol.COLABORADOR, Rol.EDITOR):
+            self.assertTrue(any("Administrador o un Propietario" in m for m in solo.juzgar(rol)), rol)
+        self.assertEqual([], solo.juzgar(Rol.ADMINISTRADOR))
 
     def edicion_nueva(self, con_alta=None, quitar_alta=False):
         p = Propuesta().cambiar(JUEGO, lambda j: j["ediciones"].append("gog"))
@@ -169,7 +175,7 @@ class Alta(unittest.TestCase):
 
     def test_alta_de_otra_cuenta_otro_dia_u_otro_canal(self):
         for malo, texto in ((alta(cuenta=1), "alta.cuenta"), (alta(fecha="2026-11-20"), "alta.fecha"),
-                            (alta(canal="otro_canal"), "alta.canal"), (alta(cuenta=None), "alta.cuenta")):
+                            (alta(canal="otro_canal"), "otro_canal"), (alta(cuenta=None), "alta.cuenta")):
             with self.subTest(alta=malo):
                 motivos = self.edicion_nueva(malo).juzgar(Rol.ADMINISTRADOR)
                 self.assertTrue(any(texto in m for m in motivos), motivos)
@@ -504,7 +510,7 @@ class JuegosFueraDelCatalogo(unittest.TestCase):
             self.assertTrue(con_parche().juzgar(rol), rol)
         self.assertEqual([], con_parche().juzgar(Rol.ADMINISTRADOR))
 
-    def test_edicion_nueva_solo_del_canal_oficial_y_con_rol(self):
+    def test_edicion_nueva_del_canal_oficial_con_rol(self):
         def ed_nueva(canal):
             p = Propuesta(con_juego_sin_parche()).cambiar("juegos/nuevo/juego.json", lambda j: j["ediciones"].append("e2"))
             return p.poner("juegos/nuevo/ediciones/e2.json", {"esquema": 1, "id": "e2", "nombre": "E2", "huella": HUELLA,
@@ -513,7 +519,7 @@ class JuegosFueraDelCatalogo(unittest.TestCase):
         self.assertEqual([], ed_nueva("ornizen").juzgar(Rol.EDITOR))
         motivos = juzgar_con(ed_nueva("otro"), Permisos(Rol.NINGUNO, por_juego={"rance": Rol.COLABORADOR},
                                                         por_canal={"otro": Rol.ADMINISTRADOR}, cuenta_id=YO))
-        self.assertTrue(any("canal oficial" in m for m in motivos), motivos)
+        self.assertTrue(any("@otro no existe" in m for m in motivos), motivos)  # D3b: va por solicitud
 
     def test_sustituto_suelto_en_un_juego_sin_parche(self):
         p = Propuesta(con_juego_sin_parche())

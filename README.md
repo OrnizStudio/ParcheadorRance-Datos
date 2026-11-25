@@ -347,13 +347,27 @@ Lo que alguien no puede hacer directamente lo pide con una propuesta normal que 
   vigentes aceptadas. Si todo está bien, el robot le pone la etiqueta `solicitud:canal`, deja la comprobación en
   verde y **no** la publica: la publica cuando el Dueño del programa pone la etiqueta `aprobada`, solo en esa
   ejecución y con el commit de ese momento. Si `aprobada` la pone otra cuenta, el robot la quita; si después se sube
-  otro cambio, la `aprobada` de antes se quita y hay que volver a ponerla. Para rechazarla, el Dueño la cierra con un
-  comentario.
+  otro cambio, la `aprobada` de antes se quita y hay que volver a ponerla.
 - **Verificación**: `solicitudes/verificacion/<c>.json` (`esquema`, `canal`, `motivo`, `pedidaPor`, `fecha`), que
   sube el Propietario del canal. Hacen falta una versión pública, 2 miembros activos, un enlace de contacto y ninguna
   versión retirada en los últimos 90 días con un paquete en la lista negra. Si cumple, se publica sola; el Dueño la
   resuelve luego con su propia propuesta (`verificacion` en `canal.json`; `estado`, `respuesta` y `resuelta` en la
   solicitud).
+- **Juego nuevo, edición nueva y cambio en la ficha central** (`solicitud:juego`, `solicitud:edicion`,
+  `solicitud:central`): una propuesta que solo toca `juegos/<j>/` y sus imágenes en `catalogo/juegos/<j>/`, sin
+  borrar nada (el parche del canal, aparte, cuando el juego esté). La envía un Administrador o un Propietario del
+  canal, que sale de `alta.canal` de los archivos nuevos o, en la ficha central, de la marca `<!-- canal: <c> -->` del
+  cuerpo de la propuesta (si están las dos, tienen que coincidir; en la ficha central el canal tiene que tener parche
+  del juego en `main`). El canal tiene que existir en `main`, activo y sin bloquear. Si está **verificado** en `main`,
+  se publica sola; si no, etiqueta y `aprobada`, como el canal nuevo, con un tope de 10 abiertas entre las tres por
+  cuenta. Un juego nuevo no puede llevar el mismo id de Steam o de GOG que otro. Las ediciones y la ficha del canal
+  oficial siguen con las reglas por campo de siempre (un Editor del oficial registra ediciones).
+- **Etiqueta global**: `solicitudes/etiquetas/<n>.json` (`esquema`, `canal`, `nombre` ≤ 24, `paraQue` ≤ 300,
+  `pedidaPor`, `fecha`), con `<n>` el nombre en minúsculas, sin acentos y con `-` (`solicitudes.nombre_de_archivo`).
+  La sube un Administrador o un Propietario del canal, solo si no existe ya ese archivo ni una etiqueta con ese nombre,
+  y con como mucho 10 pendientes (sin `estado`) por canal. Se publica sola; el Dueño la resuelve con su propia
+  propuesta (crea la etiqueta en `normas/etiquetas.json` y pone `estado`, `respuesta` y `resuelta`).
+- **Rechazar** una solicitud que espera: la app comenta con `<!-- rechazo -->` y la cierra. El robot no lo lee.
 
 ## Contenido de pruebas
 
