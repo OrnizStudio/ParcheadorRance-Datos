@@ -24,7 +24,9 @@ on:
     branches: [main]
     # `edited`: también al cambiar la base de la propuesta (si no, se podría abrir contra otra rama, dejar en verde
     # un trabajo `permisos` propio y luego pasarla a `main` sin que este robot la mire).
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    # `labeled`: las solicitudes (canal nuevo) se publican solo en la ejecución del evento en que el Dueño del programa
+    # pone la etiqueta `aprobada` (robot/solicitudes.py); si la pone otra cuenta, el robot la quita.
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled]
 
 permissions: {}
 
@@ -77,6 +79,8 @@ jobs:
           PR_DISPARADOR: ${{ github.triggering_actor }}
           # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
           PR_ACCION: ${{ github.event.action }}
+          # labeled: la etiqueta que se acaba de poner (quien la pone es `PR_ACTOR_ID`).
+          PR_ETIQUETA: ${{ github.event.label.name }}
           # synchronize: el commit sobre el que se ha subido la cabeza (el robot tiene que haberlo visto subir).
           PR_ANTES: ${{ github.event.before }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py'
@@ -131,6 +135,8 @@ jobs:
           PR_DISPARADOR: ${{ github.triggering_actor }}
           # opened/synchronize: quien lanza es quien ha subido la cabeza; si no, el robot busca quién la subió.
           PR_ACCION: ${{ github.event.action }}
+          # labeled: la etiqueta que se acaba de poner (quien la pone es `PR_ACTOR_ID`).
+          PR_ETIQUETA: ${{ github.event.label.name }}
           # synchronize: el commit sobre el que se ha subido la cabeza (el robot tiene que haberlo visto subir).
           PR_ANTES: ${{ github.event.before }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'

@@ -322,6 +322,26 @@ directa a `main`, a mano y una vez al día. Hace dos cosas:
 Si algo no se puede publicar (archivos que no se juntan, un catálogo que la app no leería, un archivo de más de
 8 MB), para y lo dice en el resumen del trabajo. `main` se queda como estaba.
 
+## Solicitudes (fase D de los canales)
+
+Lo que alguien no puede hacer directamente lo pide con una propuesta normal que lleva el cambio pedido, y va sola
+(si toca algo más, se rechaza). Reglas en `robot/solicitudes.py`.
+
+- **Canal nuevo**: solo `canales/<c>/canal.json` y `canales/<c>/miembros.json` de un @ que no existe ni existió, con
+  quien propone como único miembro, Propietario activo, con el nombre actual de su cuenta. La cuenta tiene al menos
+  30 días y como mucho 3 solicitudes de canal abiertas; el @ y el nombre no se parecen a otro canal, a uno bloqueado
+  ni a un nombre reservado; el canal empieza `activo`, sin ocultar, sin verificar, creado hoy y con las normas
+  vigentes aceptadas. Si todo está bien, el robot le pone la etiqueta `solicitud:canal`, deja la comprobación en
+  verde y **no** la publica: la publica cuando el Dueño del programa pone la etiqueta `aprobada`, solo en esa
+  ejecución y con el commit de ese momento. Si `aprobada` la pone otra cuenta, el robot la quita; si después se sube
+  otro cambio, la `aprobada` de antes se quita y hay que volver a ponerla. Para rechazarla, el Dueño la cierra con un
+  comentario.
+- **Verificación**: `solicitudes/verificacion/<c>.json` (`esquema`, `canal`, `motivo`, `pedidaPor`, `fecha`), que
+  sube el Propietario del canal. Hacen falta una versión pública, 2 miembros activos, un enlace de contacto y ninguna
+  versión retirada en los últimos 90 días con un paquete en la lista negra. Si cumple, se publica sola; el Dueño la
+  resuelve luego con su propia propuesta (`verificacion` en `canal.json`; `estado`, `respuesta` y `resuelta` en la
+  solicitud).
+
 ## Contenido de pruebas
 
 Los juegos, ediciones y versiones marcados con `"pruebas": true` **no los ve el público**: el parcheador
