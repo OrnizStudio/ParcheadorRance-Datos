@@ -16,6 +16,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | `canales/<canal>/` | Cada canal: `canal.json`, `miembros.json`, `lista-negra.json` y **`parches/<juego>.json`**, su parche de ese juego (visible, estado de la traducción, opciones, versiones, huellas parcheadas…). |
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo** que descarga el parcheador al abrirse (esquema 1). Desde la fase B **no se edita a mano**: lo escribe el robot juntando `juegos/` y `canales/ornizen/parches/`, `normas/etiquetas.json` y `programa/parcheador.json`. |
 | `catalogo/canales.json` | **Los canales para la app** (fase D): de cada canal, `id`, `estado`, `verificado`, `paquetes` (sus repositorios de paquetes: la lista blanca de descargas) y `adultos`. Lo escribe el robot con el catálogo y con su misma `versionCatalogo`; la app solo lo usa si la versión coincide. **No se edita a mano**: una propuesta que lo cambie se rechaza, salvo si la hace el Dueño. Tope: 4 MB (unos 7 900 canales en el peor caso); si se pasara, no se actualiza y el catálogo se publica igual (la app se queda con el oficial). Cada repositorio de `paquetes` es de un solo canal (sin distinguir mayúsculas) y los de `OrnizStudio` solo los declara el oficial: el robot lo comprueba y, por si acaso, al publicar se quitan los repetidos. |
+| `historial/central/<AAAA-MM>.json` | **El Historial global** (fase D9): una fila por cada juego nuevo, edición nueva o cambio en la ficha central que publica un canal (directo si está verificado, o aprobado por el Dueño): `fecha`, `canal`, `cuenta`, `cuentaId`, `tipo` (`juego`, `edicion` o `central`), `juego`, `directa`, `propuesta`, `commit` y `cambios` (cada archivo de `juegos/<juego>/` con sus campos de primer nivel que cambian, o `nuevo`, `borrado`, `cambiado`). Lo escribe el robot; **no se edita a mano** (solo el Dueño puede). Tope: 2 MB por mes; si se pasara, se quedan las filas más nuevas y `recortadas` dice cuántas faltan. |
 | Rama [`publicado`](../../tree/publicado) | Lo que genera el robot para el parcheador y el Modo equipo: `indice.json`, el índice por juego de Programa › Juegos originales y, desde la 0.3.0, los juegos, canales, logos y etiquetas en trozos. No se toca a mano. |
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. Solo valen `<tipo>.<ext>` o `<tipo>-<aaaammdd>-<hhmmss>.<ext>` (`.png`, `.jpg`, `.jpeg`, `.webp`), en minúsculas y sin subcarpetas. |
 | [Releases](../../releases) | Las versiones del propio parcheador y los **paquetes de parche** publicados hasta la fase B (`<juego>-<edición>-<versión>.zip`). Desde la fase B, los paquetes nuevos van a las Releases de [`OrnizStudio/Ornizen-Parches`](https://github.com/OrnizStudio/Ornizen-Parches) (`canal.json` → `paquetes`); los ya publicados se quedan aquí. |
@@ -299,6 +300,16 @@ directa a `main`, a mano y una vez al día. Hace dos cosas:
   la misma `versionCatalogo`; si solo cambian los canales, el catálogo sube de versión igual). Un canal de la lista
   negra general de canales sale `bloqueado`. Lo deja en la rama `robot/catalogo` y abre su propuesta. Como las propuestas que abre GitHub Actions no lanzan el robot, el propio trabajo marca `permisos` en
   verde en ese commit: su contenido sale entero de `main`. Después la fusiona.
+- **Apunta el Historial global** en la misma propuesta: al fusionar una solicitud de juego, edición o ficha central,
+  el robot pone como mensaje del commit una línea `Historial-central: {…}` (canal, cuenta, tipo, juego, propuesta).
+  El título y el mensaje de **todas** sus fusiones los pone el robot, nunca los de la propuesta ni los de sus commits.
+  `publicar` busca esas líneas en `main` y, antes de aceptar una, pregunta a GitHub por la propuesta: tiene que estar
+  fusionada justo en ese commit y ser de esa cuenta (id y nombre); si no, no sale y se avisa. Mira qué cambió cada
+  commit en `juegos/<juego>/` (un juego o una ficha sin cambios no sale) y añade la fila a
+  `historial/central/<AAAA-MM>.json`. Solo mira los commits posteriores a la fila más nueva que ya está en `main`
+  (lo recortado no vuelve a entrar), pregunta como mucho 50 propuestas por pasada y, si GitHub no contesta, sigue en
+  la siguiente. Un mes solo se escribe si cambian sus bytes. Si solo hay filas nuevas, la propuesta se llama
+  «Historial global del programa» y el catálogo no sube de versión.
 - **Escribe la rama `publicado`**, un único commit sin historia. En los trozos, `xx` son los dos primeros caracteres
   hexadecimales del SHA-256 del id (del juego o del canal): 256 trozos como mucho.
   - `indice.json` (esquema 1): `generado`, `main`, `versionCatalogo`, `launcher`, `grupo` (el de

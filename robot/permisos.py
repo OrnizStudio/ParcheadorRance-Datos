@@ -2388,8 +2388,8 @@ def main() -> int:
         comentar(api, numero, texto)
         resumen(texto)
         return 1
-    resultado = api("PUT", f"/pulls/{numero}/merge",
-                    {"sha": cabeza, "merge_method": "squash"}, tolerar=(405, 409, 422))
+    fusion = datos_de_fusion(cabeza, numero, propuesta.get("title"), sol, autor, autor_id)
+    resultado = api("PUT", f"/pulls/{numero}/merge", fusion, tolerar=(405, 409, 422))
     if resultado is None:
         texto = (aprobado + "\n\n⚠️ Pero no se ha podido publicar sola: se ha cruzado con otro cambio. "
                  "Actualiza la propuesta con lo último de `main` y el robot lo vuelve a intentar.")
@@ -2399,6 +2399,24 @@ def main() -> int:
     comentar(api, numero, aprobado + "\n\nPublicada. Los parcheadores la verán en unos minutos.", solo_si_existe=True)
     resumen(aprobado + "\n\nPublicada.")
     return 0
+
+
+def datos_de_fusion(cabeza: str, numero: int, titulo, sol, autor: str, autor_id: int) -> dict:
+    """Lo que se manda a GitHub al fusionar. El título y el mensaje del commit los pone siempre el robot: si no, GitHub
+    copia los mensajes de los commits de la rama y cualquiera podría colar una línea `Historial-central:` en `main`
+    (publicar.py, además, la comprueba con GitHub antes de aceptarla). Del título de la propuesta solo queda el texto,
+    en una línea y sin la marca."""
+    marca = solicitudes.MARCA_HISTORIAL.strip()
+    limpio = " ".join(str(titulo or "").split())[:200]
+    while marca.lower() in limpio.lower():
+        inicio = limpio.lower().index(marca.lower())
+        limpio = limpio[:inicio] + "Historial central" + limpio[inicio + len(marca):]
+    fusion = {"sha": cabeza, "merge_method": "squash", "commit_title": f"{limpio or 'Propuesta'} (#{numero})",
+              "commit_message": f"Publicada por el robot de permisos (propuesta #{numero})."}
+    if sol is not None and sol.tipo in solicitudes.DE_PROGRAMA:
+        # De esta línea sale la fila del Historial global.
+        fusion["commit_message"] = solicitudes.linea_historial(sol, autor, autor_id, numero)
+    return fusion
 
 
 if __name__ == "__main__":
