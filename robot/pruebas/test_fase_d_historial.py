@@ -7,7 +7,9 @@ propuesta que el catálogo.
 """
 
 import json
+import os
 import pathlib
+import re
 import subprocess
 import sys
 import unittest
@@ -17,11 +19,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import particion  # noqa: E402
+import permisos  # noqa: E402
 import publicar  # noqa: E402
 import solicitudes  # noqa: E402
 from test_fase_d_solicitudes_programa import admin, juzgar, main_es  # noqa: E402
 from test_particion import todo_el_modelo  # noqa: E402
-from test_publicar import TrabajoEntero, g, sueltos_de  # noqa: E402
+from test_publicar import ApiFalsa, TrabajoEntero, g, sueltos_de  # noqa: E402
 from permisos import Permisos, Rol  # noqa: E402
 from test_sueltos import YO, Propuesta  # noqa: E402
 
@@ -64,6 +67,44 @@ class LineaDelHistorial(unittest.TestCase):
         self.assertIsNone(publicar.fila_de_la_linea(solicitudes.MARCA_HISTORIAL + json.dumps({**base, "juego": "ä"})))
 
 
+class LaLineaEstricta(unittest.TestCase):
+    def test_json_estricto(self):
+        linea = solicitudes.linea_historial(sol(), "eva", 7, 42)
+        self.assertIsNone(publicar.fila_de_la_linea(linea[:-1] + ', "cuenta": "otra"}'))   # clave repetida
+        self.assertIsNone(publicar.fila_de_la_linea(linea[:-1] + ', "x": NaN}'))
+        self.assertIsNone(publicar.fila_de_la_linea(linea[:-1] + ', "x": ' + "9" * 400 + "}"))
+
+    def test_solo_lineas_de_verdad(self):
+        linea = solicitudes.linea_historial(sol(), "eva", 7, 42)
+        # Separadores que `splitlines()` sí cortaría: la marca no está al principio de una línea.
+        for separador in ("\x1c", "\x0b", "\u2028", "\x85"):
+            with self.subTest(separador=repr(separador)):
+                self.assertIsNone(publicar.fila_de_la_linea(f"texto{separador}{linea}"))
+        self.assertIsNone(publicar.fila_de_la_linea(f"{linea}\x0bbasura"))
+        self.assertEqual(42, publicar.fila_de_la_linea(f"Título\r\n\r\n{linea}\r\n")["propuesta"])
+        self.assertIsNone(publicar.fila_de_la_linea(linea[:-1] + ', "relleno": "' + "x" * 5000 + '"}'))
+
+
+class LaFusionDelRobot(unittest.TestCase):
+    def test_titulo_y_mensaje_siempre_del_robot(self):
+        for titulo in ("Historial-central: {\"v\":1}", "x HISTORIAL-CENTRAL: {}", "a\nHistorial-central: {}", None, ""):
+            with self.subTest(titulo=titulo):
+                fusion = permisos.datos_de_fusion("c" * 40, 60, titulo, None, "eva", 7)
+                self.assertEqual(("c" * 40, "squash"), (fusion["sha"], fusion["merge_method"]))
+                self.assertNotIn("historial-central:", (fusion["commit_title"] + fusion["commit_message"]).lower())
+                self.assertNotIn("\n", fusion["commit_title"])
+                self.assertTrue(fusion["commit_title"].endswith("(#60)"))
+                self.assertIsNone(publicar.fila_de_la_linea(fusion["commit_title"] + "\n\n" + fusion["commit_message"]))
+
+    def test_solo_las_de_programa_llevan_la_linea(self):
+        fusion = permisos.datos_de_fusion("c" * 40, 61, "Ficha", sol(), "eva", 7)
+        self.assertEqual({"canal": "rance_es", "cuenta": "eva", "cuentaId": 7, "tipo": "central", "juego": "rance-x",
+                          "directa": True, "propuesta": 61}, publicar.fila_de_la_linea(fusion["commit_message"]))
+        otra = permisos.datos_de_fusion("c" * 40, 62, "Parche", solicitudes.Solicitud("canal", "rance_es", None, False),
+                                        "eva", 7)
+        self.assertIsNone(publicar.fila_de_la_linea(otra["commit_message"]))
+
+
 class NadieMasLoEscribe(unittest.TestCase):
     def test_un_canal_no_toca_el_historial(self):
         p = Propuesta(main_es(verificado=True)).poner("historial/central/2026-11.json",
@@ -75,12 +116,56 @@ class NadieMasLoEscribe(unittest.TestCase):
         self.assertTrue(any("historial/central/2026-11.json" in m for m in motivos), motivos)
 
 
+class ApiConPropuestas(ApiFalsa):
+    """Además, `GET /pulls/<n>`: lo que GitHub sabe de cada propuesta (o un fallo de red si `caida`)."""
+
+    def __init__(self, remoto, propuestas, caida=False):
+        super().__init__(remoto)
+        self.de_github, self.caida = propuestas, caida
+
+    def __call__(self, metodo, ruta, datos=None, tolerar=()):
+        if metodo == "GET" and re.fullmatch(r"/pulls/\d+", ruta):
+            self.llamadas.append((metodo, ruta, datos))
+            if self.caida:
+                raise RuntimeError(f"GitHub respondió 502 a GET {ruta}")
+            propuesta = self.de_github.get(int(ruta.rsplit("/", 1)[1]))
+            if propuesta is None and 404 not in tolerar:
+                raise RuntimeError(f"GitHub respondió 404 a GET {ruta}")
+            return propuesta
+        return super().__call__(metodo, ruta, datos, tolerar)
+
+
 class EnElTrabajo(unittest.TestCase):
     # Lo de TrabajoEntero sin heredar sus pruebas (si no, se correrían otra vez aquí).
-    setUp, tearDown, correr, del_remoto = (TrabajoEntero.setUp, TrabajoEntero.tearDown, TrabajoEntero.correr,
-                                           TrabajoEntero.del_remoto)
+    tearDown, del_remoto = TrabajoEntero.tearDown, TrabajoEntero.del_remoto
 
-    def subir_main(self, archivos, mensaje="cambio", vacio=False):
+    def setUp(self):
+        TrabajoEntero.setUp(self)
+        self.de_github, self.caida = {}, False
+
+    def correr(self):
+        if not self.local.exists():
+            g("init", "-q", str(self.local), cwd=self.tmp.name)
+        os.chdir(self.local)
+        api, avisos = ApiConPropuestas(self.remoto, self.de_github, self.caida), []
+        base = publicar.regenerar_catalogo(api, self.remoto, dict(os.environ), avisos.append)
+        escrito = publicar.escribir_publicado(self.remoto, dict(os.environ), base, avisos.append)
+        os.chdir(self.antes)
+        return api, avisos, escrito
+
+    def preguntas(self, api):
+        return [c for c in api.llamadas if c[0] == "GET" and re.fullmatch(r"/pulls/\d+", c[1])]
+
+    def subir_main(self, archivos, mensaje="cambio", vacio=False, confirmar=True):
+        """Sube un commit a `main`. Con `confirmar`, GitHub dice que su propuesta se fusionó ahí y es de esa cuenta."""
+        sha = self._subir(archivos, mensaje, vacio)
+        fila = publicar.fila_de_la_linea(mensaje)
+        if confirmar and fila:
+            self.de_github[fila["propuesta"]] = {"merged": True, "merge_commit_sha": sha,
+                                                 "user": {"login": fila["cuenta"], "id": fila["cuentaId"]}}
+        return sha
+
+    def _subir(self, archivos, mensaje, vacio):
         trabajo = pathlib.Path(self.tmp.name) / "trabajo"
         if not trabajo.exists():
             g("clone", "-q", self.remoto, str(trabajo), cwd=self.tmp.name)
@@ -170,7 +255,7 @@ class EnElTrabajo(unittest.TestCase):
     def test_un_mes_que_no_cabe_se_queda_con_lo_nuevo(self):
         self.preparar()
         for n in range(1, 6):
-            self.subir_main({}, solicitudes.linea_historial(sol(), "eva", 7, n), vacio=True)
+            self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, n), vacio=True)
         with mock.patch.object(publicar, "TOPE_HISTORIAL", 900):
             api, avisos, _ = self.correr()
         datos = next(iter(self.meses().values()))
@@ -182,12 +267,96 @@ class EnElTrabajo(unittest.TestCase):
 
     def test_un_historial_ilegible_en_main_se_rehace(self):
         self.preparar()
-        sha = self.subir_main({}, solicitudes.linea_historial(sol(), "eva", 7, 3), vacio=True)
+        sha = self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, 3), vacio=True)
         self.correr()
         ruta = next(iter(self.meses()))
         self.subir_main({ruta: b"{roto"})
         self.correr()
         self.assertEqual([sha], [f["commit"] for f in self.meses()[ruta]["filas"]])
+
+
+    def test_falsa_en_rama_ajena(self):
+        # Un miembro escribe la línea en un commit de su parche (o el Dueño fusiona a mano una propuesta así): GitHub
+        # no confirma la propuesta, la cuenta o el commit, y no sale nada.
+        self.preparar()
+        linea = solicitudes.linea_historial(sol(tipo="edicion", canal="ornizen"), "0rnizL", 1, 60)
+        self.subir_main({}, f"Parche (#60)\n\n* traducción\n\n{linea}", vacio=True, confirmar=False)
+        self.de_github[60] = {"merged": True, "merge_commit_sha": "f" * 40, "user": {"login": "eva", "id": 7}}
+        otra = self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, 61), vacio=True,
+                               confirmar=False)
+        self.de_github[61] = {"merged": True, "merge_commit_sha": otra, "user": {"login": "eva", "id": 8}}
+        sin_fusionar = self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, 62), vacio=True,
+                                       confirmar=False)
+        self.de_github[62] = {"merged": False, "merge_commit_sha": sin_fusionar, "user": {"login": "eva", "id": 7}}
+        self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, 63), vacio=True,
+                        confirmar=False)  # #63 no existe (404)
+        api, avisos, _ = self.correr()
+        self.assertEqual({}, self.meses())
+        self.assertEqual(4, len([a for a in avisos if "no lo confirma" in a]), avisos)
+        self.assertFalse([c for c in api.llamadas if c[0] == "PUT"])
+
+    def test_un_cambio_central_que_no_cambia_nada_no_sale(self):
+        self.preparar()
+        self.subir_main({}, solicitudes.linea_historial(sol(), "eva", 7, 5), vacio=True)
+        api, avisos, _ = self.correr()
+        self.assertEqual({}, self.meses())
+        self.assertEqual([], self.preguntas(api))
+
+    def test_el_mes_lleno_no_se_recorta_otra_vez_en_cada_pasada(self):
+        self.preparar()
+        for n in range(1, 6):
+            self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, n), vacio=True)
+        with mock.patch.object(publicar, "TOPE_HISTORIAL", 900):
+            self.correr()
+            primera = self.meses()
+            for _ in range(2):  # segunda y tercera pasada: nada cambia, ni propuestas ni preguntas a GitHub
+                api, avisos, _ = self.correr()
+                self.assertEqual(primera, self.meses())
+                self.assertFalse([c for c in api.llamadas if c[0] in ("PUT", "POST")])
+                self.assertEqual([], self.preguntas(api))
+                self.assertFalse([a for a in avisos if "recortadas" in a])
+            self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, 6), vacio=True)
+            self.correr()
+            datos = next(iter(self.meses().values()))
+            self.assertEqual(6, datos["recortadas"] + len(datos["filas"]))
+            self.assertEqual(6, datos["filas"][-1]["propuesta"])
+            self.assertEqual([], self.preguntas(self.correr()[0]))  # otra pasada: no pregunta nada
+
+    def test_sin_respuesta_de_github_se_espera_a_la_siguiente(self):
+        self.preparar()
+        for n in (1, 2):
+            self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, n), vacio=True)
+        self.caida = True
+        api, avisos, _ = self.correr()
+        self.assertEqual({}, self.meses())
+        self.assertEqual(1, len(self.preguntas(api)))  # se para en la primera, no salta a la segunda
+        self.assertTrue(any("No se ha podido preguntar" in a for a in avisos))
+        self.caida = False
+        self.correr()
+        self.assertEqual([1, 2], [f["propuesta"] for f in next(iter(self.meses().values()))["filas"]])
+
+    def test_tope_de_preguntas_por_pasada(self):
+        self.preparar()
+        for n in range(1, 5):
+            self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, n), vacio=True)
+        with mock.patch.object(publicar, "TOPE_COMPROBACIONES", 3):
+            api, avisos, _ = self.correr()
+            self.assertEqual(3, len(self.preguntas(api)))
+            self.assertEqual([1, 2, 3], [f["propuesta"] for f in next(iter(self.meses().values()))["filas"]])
+            api, _, _ = self.correr()
+            self.assertEqual(1, len(self.preguntas(api)))
+        self.assertEqual([1, 2, 3, 4], [f["propuesta"] for f in next(iter(self.meses().values()))["filas"]])
+
+    def test_mismo_segundo_en_el_orden_de_main(self):
+        self.preparar()
+        entorno = dict(os.environ, GIT_COMMITTER_DATE="2026-11-21T10:00:00Z", GIT_AUTHOR_DATE="2026-11-21T10:00:00Z")
+        with mock.patch.dict(os.environ, entorno):
+            for n in range(1, 8):
+                self.subir_main({}, solicitudes.linea_historial(sol(tipo="edicion"), "eva", 7, n), vacio=True)
+        self.correr()
+        filas = next(iter(self.meses().values()))["filas"]
+        self.assertEqual(list(range(1, 8)), [f["propuesta"] for f in filas])
+        self.assertEqual({"2026-11-21T10:00:00Z"}, {f["fecha"] for f in filas})
 
 
 if __name__ == "__main__":

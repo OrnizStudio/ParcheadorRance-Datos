@@ -180,19 +180,24 @@ def catalogo_regenerado(archivos: dict, catalogo_main: bytes | None, forzar: boo
 CARPETA_HISTORIAL = "historial/central/"
 TOPE_HISTORIAL = 2 * 1024 * 1024   # por mes; la app tiene el mismo tope. Si no cabe, se quedan las más nuevas.
 TOPE_CAMBIOS_FILA = 50             # archivos de `juegos/<juego>/` por fila (y campos por archivo)
-_LINEA_HISTORIAL = re.compile(r"^" + re.escape(solicitudes.MARCA_HISTORIAL) + r"(\{.*\})[ \t]*$", re.MULTILINE)
+TOPE_COMPROBACIONES = 50          # propuestas que se preguntan a GitHub en cada pasada (el resto, en la siguiente)
+TOPE_LINEA = 4096
+_LINEA_HISTORIAL = re.compile(re.escape(solicitudes.MARCA_HISTORIAL) + r"(\{.*\})[ \t]*\Z")
 _CUENTA = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\Z")
 _MES = re.compile(r"^historial/central/(\d{4}-\d{2})\.json\Z")
 
 
 def fila_de_la_linea(mensaje: str):
     """Los datos de la última línea `Historial-central:` del mensaje, validados, o None."""
-    lineas = _LINEA_HISTORIAL.findall(mensaje or "")
+    # Por líneas de verdad (`\n`; no `splitlines()`, que también corta en \x1c, \u2028…), la marca al principio.
+    lineas = [m.group(1) for linea in (mensaje or "").split("\n")
+              if len(linea) <= TOPE_LINEA and (m := _LINEA_HISTORIAL.fullmatch(linea.rstrip("\r")))]
     if not lineas:
         return None
     try:
-        datos = json.loads(lineas[-1])
-    except ValueError:
+        # El mismo JSON estricto que el catálogo: sin claves repetidas, sin NaN ni números enormes.
+        datos = lector_app.leer(lineas[-1])
+    except lector_app.JsonIlegible:
         return None
     if not isinstance(datos, dict) or datos.get("v") != 1:
         return None
@@ -276,28 +281,78 @@ def _historial_de_main(revision: str) -> dict:
     return meses
 
 
-def historial_central(revision: str, avisos: list | None = None) -> dict:
-    """{ruta: bytes} de los `historial/central/<AAAA-MM>.json` que hay que escribir en `main` (solo los que cambian)."""
-    meses = _historial_de_main(revision)
+def _confirmada(api, fila: dict, sha: str):
+    """Si GitHub confirma la fila: la propuesta está fusionada justo en ese commit y es de esa cuenta (id y nombre).
+    True o False; None si no se ha podido preguntar (se vuelve a intentar en la siguiente pasada)."""
+    try:
+        datos = api("GET", f"/pulls/{fila['propuesta']}", tolerar=(404,))
+    except RuntimeError:
+        return None
+    if not isinstance(datos, dict):
+        return False
+    usuario = datos.get("user")
+    return (datos.get("merged") is True and datos.get("merge_commit_sha") == sha and isinstance(usuario, dict)
+            and type(usuario.get("id")) is int and usuario["id"] == fila["cuentaId"]
+            and isinstance(usuario.get("login"), str) and usuario["login"].lower() == fila["cuenta"].lower())
+
+
+def _nuevos(commits: list, meses: dict) -> list:
+    """Los commits posteriores a la fila más nueva que ya está en `main` (la marca de agua). Lo de antes ya se miró:
+    las filas recortadas de un mes lleno no vuelven a entrar, y lo rechazado antes de una fila buena no se vuelve a
+    preguntar."""
     conocidos = {f.get("commit") for mes in meses.values() for f in mes["filas"]}
+    ultimo = max((i for i, (sha, _, _) in enumerate(commits) if sha in conocidos), default=None)
+    if ultimo is not None:
+        return commits[ultimo + 1:]
+    # Ninguna fila de `main` está en la historia (reescrita): lo de la misma fecha o después de la más nueva.
+    fechas = [f["fecha"] for mes in meses.values() for f in mes["filas"] if isinstance(f.get("fecha"), str)]
+    if not fechas:
+        return commits
+    tope = max(fechas)
+    return [c for c in commits if c[1] >= tope and c[0] not in conocidos]
+
+
+def historial_central(revision: str, api, avisos: list | None = None) -> dict:
+    """{ruta: bytes} de los `historial/central/<AAAA-MM>.json` que hay que escribir en `main` (solo los que cambian)."""
+    def avisar(texto):
+        if avisos is not None:
+            avisos.append(texto)
+
+    meses = _historial_de_main(revision)
     tocados = set()
-    for sha, fecha, mensaje in _commits_con_historial(revision):
-        if sha in conocidos:
-            continue
+    comprobadas = 0
+    for sha, fecha, mensaje in _nuevos(_commits_con_historial(revision), meses):
         fila = fila_de_la_linea(mensaje)
         if fila is None:
-            if avisos is not None:
-                avisos.append(f"El commit {sha[:7]} lleva una línea `{solicitudes.MARCA_HISTORIAL.strip()}` que no se "
-                              "entiende: no sale en el Historial global.")
+            avisar(f"El commit {sha[:7]} lleva una línea `{solicitudes.MARCA_HISTORIAL.strip()}` que no se entiende: "
+                   "no sale en el Historial global.")
             continue
-        fila = {"fecha": fecha, **fila, "commit": sha, "cambios": cambios_del_commit(sha, fila["juego"])}
+        cambios = cambios_del_commit(sha, fila["juego"])
+        if not cambios and fila["tipo"] != "edicion":
+            continue  # no cambió nada de lo central: no hay nada que contar
+        if comprobadas >= TOPE_COMPROBACIONES:
+            avisar("Quedan filas del Historial global por comprobar: siguen en la próxima pasada.")
+            break
+        comprobadas += 1
+        confirmada = _confirmada(api, fila, sha)
+        if confirmada is None:
+            # Se para aquí (no se salta): lo de después espera a que esta se pueda comprobar.
+            avisar(f"No se ha podido preguntar a GitHub por la propuesta #{fila['propuesta']}: el Historial global "
+                   "sigue en la próxima pasada.")
+            break
+        if not confirmada:
+            avisar(f"El commit {sha[:7]} dice venir de la propuesta #{fila['propuesta']} de @{fila['cuenta']}, pero "
+                   "GitHub no lo confirma: no sale en el Historial global.")
+            continue
+        fila = {"fecha": fecha, **fila, "commit": sha, "cambios": cambios}
         mes = fecha[:7]
         meses.setdefault(mes, {"filas": [], "recortadas": 0})["filas"].append(fila)
         tocados.add(mes)
     resultado = {}
     for mes in sorted(tocados):
         filas, recortadas = meses[mes]["filas"], meses[mes]["recortadas"]
-        filas.sort(key=lambda f: (str(f.get("fecha")), str(f.get("commit"))))
+        # Por fecha y, en el mismo segundo, en el orden de `main` (la ordenación es estable).
+        filas.sort(key=lambda f: str(f.get("fecha")))
 
         def texto():
             datos = {"esquema": 1, "mes": mes, "filas": filas}
@@ -309,10 +364,13 @@ def historial_central(revision: str, avisos: list | None = None) -> dict:
             quitar = max(1, len(filas) // 10)
             filas, recortadas = filas[quitar:], recortadas + quitar
             datos = texto()
-        if recortadas and avisos is not None:
-            avisos.append(f"`{CARPETA_HISTORIAL}{mes}.json` no cabe en {TOPE_HISTORIAL // 1048576} MB: se quedan las "
-                          f"{len(filas)} filas más nuevas ({recortadas} recortadas).")
-        resultado[f"{CARPETA_HISTORIAL}{mes}.json"] = datos
+        ruta = f"{CARPETA_HISTORIAL}{mes}.json"
+        if datos == _leer_de_git(revision, ruta):
+            continue
+        if recortadas > meses[mes]["recortadas"]:
+            avisar(f"`{ruta}` no cabe en {TOPE_HISTORIAL // 1048576} MB: se quedan las {len(filas)} filas más nuevas "
+                   f"({recortadas} recortadas).")
+        resultado[ruta] = datos
     return resultado
 
 
@@ -839,7 +897,7 @@ def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
         avisos = []
         cambios = regenerados(archivos, _leer_de_git(base, permisos.RUTA_CATALOGO),
                               _leer_de_git(base, RUTA_CANALES_MAIN), avisos)
-        historial = historial_central(base, avisos)
+        historial = historial_central(base, api, avisos)
         for texto in avisos:
             aviso(texto)
         if cambios is None and not historial:
@@ -859,7 +917,10 @@ def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
                                                "summary": "Sale entero de los archivos sueltos de `main`."}})
         if _main(remoto, entorno) != base:
             continue  # `main` se ha movido: se vuelve a juntar con lo último
-        hecho = api("PUT", f"/pulls/{propuesta}/merge", {"sha": commit, "merge_method": "squash"},
+        # Título y mensaje propios (como en permisos.datos_de_fusion): nada de la rama acaba en el mensaje de `main`.
+        hecho = api("PUT", f"/pulls/{propuesta}/merge", {"sha": commit, "merge_method": "squash",
+                                                         "commit_title": f"{titulo} (#{propuesta})",
+                                                         "commit_message": "Regenerado por el robot."},
                     tolerar=(405, 409, 422))
         if hecho is not None:
             que = f"Catálogo regenerado (versión {version})" if version is not None else "Historial global"

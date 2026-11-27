@@ -301,10 +301,15 @@ directa a `main`, a mano y una vez al día. Hace dos cosas:
   negra general de canales sale `bloqueado`. Lo deja en la rama `robot/catalogo` y abre su propuesta. Como las propuestas que abre GitHub Actions no lanzan el robot, el propio trabajo marca `permisos` en
   verde en ese commit: su contenido sale entero de `main`. Después la fusiona.
 - **Apunta el Historial global** en la misma propuesta: al fusionar una solicitud de juego, edición o ficha central,
-  el robot pone como mensaje del commit una línea `Historial-central: {…}` (canal, cuenta, tipo, juego, propuesta),
-  nunca el texto de la propuesta. `publicar` busca esas líneas en `main`, mira qué cambió cada commit en
-  `juegos/<juego>/` y añade la fila a `historial/central/<AAAA-MM>.json`. Las filas que ya están no se recalculan; si
-  solo hay filas nuevas, la propuesta se llama «Historial global del programa» y el catálogo no sube de versión.
+  el robot pone como mensaje del commit una línea `Historial-central: {…}` (canal, cuenta, tipo, juego, propuesta).
+  El título y el mensaje de **todas** sus fusiones los pone el robot, nunca los de la propuesta ni los de sus commits.
+  `publicar` busca esas líneas en `main` y, antes de aceptar una, pregunta a GitHub por la propuesta: tiene que estar
+  fusionada justo en ese commit y ser de esa cuenta (id y nombre); si no, no sale y se avisa. Mira qué cambió cada
+  commit en `juegos/<juego>/` (un juego o una ficha sin cambios no sale) y añade la fila a
+  `historial/central/<AAAA-MM>.json`. Solo mira los commits posteriores a la fila más nueva que ya está en `main`
+  (lo recortado no vuelve a entrar), pregunta como mucho 50 propuestas por pasada y, si GitHub no contesta, sigue en
+  la siguiente. Un mes solo se escribe si cambian sus bytes. Si solo hay filas nuevas, la propuesta se llama
+  «Historial global del programa» y el catálogo no sube de versión.
 - **Escribe la rama `publicado`**, un único commit sin historia. En los trozos, `xx` son los dos primeros caracteres
   hexadecimales del SHA-256 del id (del juego o del canal): 256 trozos como mucho.
   - `indice.json` (esquema 1): `generado`, `main`, `versionCatalogo`, `launcher`, `grupo` (el de
