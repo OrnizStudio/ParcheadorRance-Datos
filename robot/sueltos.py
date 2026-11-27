@@ -486,28 +486,47 @@ def _hashes_vivos(parche) -> set:
     return vivos
 
 
-def comprobar_huellas(cambios, antes: dict, despues: dict, huellas_por_canal: dict, es_dueno: bool) -> list:
-    """Ningún paquete vivo (no retirado) de un parche que cambia lleva una huella de la lista negra de su canal
-    (`lista-negra.json` → `huellas`; cuentan la de `main` y la de la propuesta). No solo los nuevos: una huella vetada
-    no vuelve por otra versión ni des-retirando una. `huellas_por_canal` = {canal: {hash: motivo}}."""
+def _hashes_de_huella(edicion) -> set:
+    """Los hashes de la huella de una edición (`hash` y `hashParcial` de cada archivo)."""
+    if not isinstance(edicion, dict):
+        return set()
+    return {f[k].strip().lower() for f in edicion.get("huella") or [] if isinstance(f, dict)
+            for k in ("hash", "hashParcial") if isinstance(f.get(k), str)}
+
+
+TOPE_HUELLAS_CONSULTADAS = 2000
+
+
+def comprobar_huellas(cambios, antes: dict, despues: dict, vetada, es_dueno: bool) -> list:
+    """Ningún paquete vivo (no retirado) de un parche que cambia lleva una huella vetada, y ninguna edición nueva o
+    cambiada añade a su huella un hash vetado. En los parches cuentan todos los paquetes vivos, no solo los nuevos: una
+    huella vetada no vuelve por otra versión ni des-retirando una. `vetada(canal, hash)` da el motivo (lista negra del
+    canal, con `canal`, o la general) o None."""
     if es_dueno:
         return []
-    motivos = []
+    motivos, consultas = [], 0
     for ruta, estado in cambios:
         tipo = tipo_de_ruta(ruta)
-        if estado == "D" or tipo is None or tipo[0] != "parche" or ruta not in despues:
-            continue
-        vetadas = huellas_por_canal.get(tipo[1]) or {}
-        if not vetadas:
+        if estado == "D" or tipo is None or tipo[0] == "juego" or ruta not in despues:
             continue
         try:
             nuevo = lector_app.leer(despues[ruta])
         except lector_app.JsonIlegible:
             continue
-        for huella in sorted(_hashes_vivos(nuevo)):
-            if huella in vetadas:
-                motivos.append(f"`{ruta}`: un paquete lleva la huella `{huella[:20]}…`, que está en la lista negra de "
-                               f"@{tipo[1]} ({vetadas[huella]}).")
+        try:
+            viejo = lector_app.leer(antes[ruta]) if ruta in antes else None
+        except lector_app.JsonIlegible:
+            viejo = None
+        if tipo[0] == "parche":
+            canal, nuevos, que = tipo[1], _hashes_vivos(nuevo), "un paquete lleva"
+        else:
+            canal, nuevos, que = None, _hashes_de_huella(nuevo) - _hashes_de_huella(viejo), "la huella de la edición lleva"
+        for huella in sorted(nuevos):
+            consultas += 1
+            if consultas > TOPE_HUELLAS_CONSULTADAS:
+                return motivos + [f"La propuesta añade más de {TOPE_HUELLAS_CONSULTADAS} hashes: divídela en varias."]
+            if motivo := vetada(canal, huella):
+                motivos.append(f"`{ruta}`: {que} `{huella[:20]}…`, que está en la lista negra ({motivo}).")
     return motivos
 
 

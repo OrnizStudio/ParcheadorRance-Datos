@@ -12,16 +12,23 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import hashlib
+import pathlib
 import unicodedata
 from dataclasses import dataclass, field
 
 CARPETA_CANALES = "canales/"
 CANAL_OFICIAL = "ornizen"
 ID_CANAL = re.compile(r"^[a-z0-9_]{3,20}$")
+# @ que ningún canal puede tener, ni siquiera creado por el Dueño: `programa` es el prefijo de las ramas de la zona
+# PROGRAMA de Modo equipo (`programa/…`), y la app descarta un canal con ese @ (LectorCanalesCuenta.IdValido). Solo el
+# @ exacto: un nombre como «Programa de traducción» sí vale.
+ARROBAS_DEL_PROGRAMA = ("programa",)
 CUENTA_GITHUB = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 HASH_VALIDO = re.compile(r"^blake3:[0-9a-f]{64}$")
-REPOSITORIO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
+# «.» y «..» no son repositorios (la app usa esta lista como lista blanca de descargas).
+REPOSITORIO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$")
 RUTA_SEGURA = re.compile(r"^[a-z0-9._/-]+$")
 EXTENSIONES_LOGO = (".png", ".webp", ".jpg", ".jpeg")
 
@@ -214,7 +221,7 @@ _CONFUNDIBLES = str.maketrans({
     "ß": "b",
     # dígitos y signos que pasan por letras
     "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g", "|": "l", "!": "l", "$": "s",
-    "@": "a", "ǀ": "l",
+    "@": "a", "ǀ": "l", "¡": "i",
     # i y l se confunden entre sí
     "i": "l",
 })
@@ -224,17 +231,80 @@ _PARES_CONFUNDIBLES = (("rn", "m"), ("vv", "w"), ("cl", "d"))
 RESERVADOS = ("orniz",)
 
 
+# Los confundibles completos de Unicode (UTS #39, `confusables.txt` 16.0.0, copiado sin tocar). Su SHA-256 está fijado:
+# si el archivo falta o cambia, el robot falla (no compara nombres con media tabla).
+RUTA_CONFUSABLES = pathlib.Path(__file__).resolve().parent / "confusables.txt"
+SHA256_CONFUSABLES = "95bd0aad6dced5ebc63436f459c06ab21a8d107cd842fb57f5c3a1e91bca8611"
+_uts39 = None
+
+
+def _tabla_uts39() -> dict:
+    """{carácter: su prototipo} de `confusables.txt` (solo las filas de un carácter)."""
+    global _uts39
+    if _uts39 is None:
+        datos = RUTA_CONFUSABLES.read_bytes()
+        if hashlib.sha256(datos).hexdigest() != SHA256_CONFUSABLES:
+            raise RuntimeError(f"`{RUTA_CONFUSABLES.name}` no es el de Unicode 16.0.0 (el SHA-256 no coincide).")
+        tabla = {}
+        for linea in datos.decode("utf-8-sig").splitlines():
+            if not linea.strip() or linea.startswith("#"):
+                continue
+            origen, destino = linea.split(";")[:2]
+            origen = [int(x, 16) for x in origen.split()]
+            if len(origen) == 1:
+                tabla[origen[0]] = "".join(chr(int(x, 16)) for x in destino.split())
+        _uts39 = tabla
+    return _uts39
+
+
+# Con lo que lleve delante («NEGATIVE CIRCLED», «NEGATIVE SQUARED»…) y las letras de bandera (REGIONAL INDICATOR).
+_LETRA_LATINA = re.compile(r"(?:[A-Z]+ )*(?:LATIN (?:SMALL|CAPITAL) LETTER|REGIONAL INDICATOR SYMBOL LETTER) ([A-Z])"
+                           r"(?: WITH .*| [A-Z]+)?")
+
+
+def _letra_base(c: str) -> str:
+    """Una letra latina con adorno que ni NFKC ni UTS #39 llevan a su letra («LATIN SMALL LETTER R WITH FISHHOOK»,
+    «… DOTLESS J», «… Z WITH RETROFLEX HOOK»): su letra base, por el nombre Unicode. Lo demás, tal cual."""
+    if "a" <= c <= "z" or ord(c) < 0x80:
+        return c
+    try:
+        m = _LETRA_LATINA.fullmatch(unicodedata.name(c))
+    except ValueError:
+        return c
+    return m[1].lower() if m else c
+
+
+def esqueleto_uts39(texto: str) -> str:
+    """El esqueleto de UTS #39: NFD, cada carácter a su prototipo y NFD otra vez."""
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", texto).translate(_tabla_uts39()))
+
+
 def esqueleto(texto: str) -> str:
-    """La forma «de cómo se ve» de un nombre, para comparar: NFKC, minúsculas, sin tildes, confundibles a latinas y solo
-    a–z. Dos nombres con el mismo esqueleto se confunden a simple vista (fase B: el @ y el nombre de un canal nuevo)."""
-    t = unicodedata.normalize("NFKC", texto).casefold()
+    """La forma «de cómo se ve» de un nombre, para comparar: los confundibles de Unicode (UTS #39), NFKC, minúsculas,
+    sin tildes, nuestra tabla de confundibles a latinas y solo a–z. Dos nombres con el mismo esqueleto se confunden a
+    simple vista (el @ y el nombre de un canal)."""
+    t = unicodedata.normalize("NFKC", esqueleto_uts39(unicodedata.normalize("NFKC", texto))).casefold()
     t = "".join(c for c in unicodedata.normalize("NFD", t) if not unicodedata.combining(c))
     # Dos pasadas: una letra puede llevar a otra que también se confunde (ɪ → i → l).
     t = unicodedata.normalize("NFKC", t).translate(_CONFUNDIBLES).translate(_CONFUNDIBLES)
+    t = "".join(map(_letra_base, t)).translate(_CONFUNDIBLES)
     t = "".join(c for c in t if "a" <= c <= "z")  # antes de los pares: «O r n i z» también cuenta
     for par, letra in _PARES_CONFUNDIBLES:
         t = t.replace(par, letra)
     return t
+
+
+NO_COMPARABLE = ("casi no tiene letras normales (a–z) y no se puede comparar con los demás canales: escríbelo con "
+                 "letras latinas")
+
+
+def esqueleto_dudoso(texto: str) -> bool:
+    """¿Se pierde casi todo al sacar el esqueleto? (letras raras que ni NFKC ni las tablas llevan a a–z: el esqueleto
+    vacío o de menos de la mitad de las letras y cifras del texto no sirve para comparar, y se rechaza)."""
+    if not isinstance(texto, str):
+        return False
+    visibles = sum(1 for c in texto if unicodedata.category(c)[0] in "LNS")
+    return visibles > 0 and len(esqueleto(texto)) * 2 < visibles
 
 
 def nombre_reservado(texto) -> bool:
@@ -753,7 +823,8 @@ NOMBRE_ROL = {0: "sin rol", 1: "Colaborador", 2: "Editor", 3: "Administrador", 4
 
 
 def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_dueno: bool, leer=None,
-                      ids_duenos=frozenset(), cuenta_de=None, rol_externo=None) -> list:
+                      ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, veto_general=None,
+                      nombre_parecido=None) -> list:
     """Motivos de rechazo de lo que la propuesta cambia en `canales/` (lista vacía = se acepta).
 
     `cambios` son `CambioCanal` (solo los de `canales/`). `rol_por_canal` = {canal: rol del autor en `main`} (1–4;
@@ -763,8 +834,12 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
     GitHub (None si no existe): sirve para que nadie escriba el nombre de otra persona junto a un id. `rol_externo(canal,
     id)` es el rol que esa cuenta tiene en el canal por fuera del archivo (en la fase A, el equipo de GitHub en el canal
     oficial): con él se sabe el rol real de a quién se veta, igual que lo calcula el robot para los permisos.
+    `veto_general(id)` da el motivo si la cuenta está en la lista negra general (fase D) y `nombre_parecido(canal,
+    nombre)` por qué el nombre de un canal se confunde con otro canal o con un nombre reservado.
     """
     leer = leer or (lambda ruta, lado: None)
+    veto_general = veto_general or (lambda cuenta_id: None)
+    nombre_parecido = nombre_parecido or _solo_orniz
     quedan = [TOPE_CONSULTAS_DUENO if es_dueno else TOPE_CONSULTAS]
 
     def con_tope(consultar):
@@ -793,6 +868,9 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
         if not ID_CANAL.match(canal):
             motivos.append(f"`{c.ruta}`: `{canal}` no puede ser el @ de un canal (de 3 a 20 minúsculas, números y `_`).")
             continue
+        if canal in ARROBAS_DEL_PROGRAMA:
+            motivos.append(f"`{c.ruta}`: @{canal} está reservado por el programa y no puede ser el @ de un canal.")
+            continue
         por_canal.setdefault(canal, []).append((resto, c))
 
     if len(por_canal) > 1 and not es_dueno:
@@ -804,7 +882,8 @@ def comprobar_canales(cambios: list, rol_por_canal: dict, autor_id: int, es_duen
         rol = 5 if es_dueno else rol_por_canal.get(canal, 0)
         try:
             motivos += _comprobar_un_canal(canal, archivos, rol, autor_id, leer, frozenset(ids_duenos), cuenta_de,
-                                           lambda cuenta_id, _c=canal: rol_externo(_c, cuenta_id))
+                                           lambda cuenta_id, _c=canal: rol_externo(_c, cuenta_id), veto_general,
+                                           nombre_parecido)
         except DemasiadasConsultas:
             motivos.append(f"La propuesta cambia demasiadas cuentas de @{canal} a la vez (el robot tendría que consultar "
                            f"más de {TOPE_CONSULTAS_DUENO if es_dueno else TOPE_CONSULTAS} a GitHub). Divídela en "
@@ -824,7 +903,8 @@ def _leer(c: CambioCanal, lado: str, nombre: str):
 
 
 def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids_duenos, cuenta_de,
-                       rol_externo=lambda cuenta_id: 0) -> list:
+                       rol_externo=lambda cuenta_id: 0, veto_general=lambda cuenta_id: None,
+                       nombre_parecido=None) -> list:
     motivos = []
     arroba = f"@{canal}"
     solo_aceptar = False
@@ -863,11 +943,12 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
                 if c.despues is None:
                     continue
             if resto == "canal.json":
-                propios = _comprobar_canal_json(canal, c.ruta, antes, despues, rol)
+                propios = _comprobar_canal_json(canal, c.ruta, antes, despues, rol, nombre_parecido)
             elif resto == "miembros.json":
                 vetados, ilegibles = _vetados(canal, archivos, leer, rol)
                 motivos += ilegibles
-                propios = _comprobar_miembros(c.ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de)
+                propios = _comprobar_miembros(c.ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de,
+                                              veto_general)
             else:
                 propios = _comprobar_lista_negra(c.ruta, antes, despues, rol, autor_id, ids_duenos,
                                                  _miembros_de_main(canal, archivos, leer), cuenta_de, rol_externo)
@@ -906,11 +987,23 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
     return motivos
 
 
-def _comprobar_canal_json(canal, ruta, antes, despues, rol) -> list:
+PARECE_ORNIZ = "se parece a Orniz, que es del Dueño del programa"
+
+
+def _solo_orniz(canal, nombre):
+    """Sin la lista de canales y reservados de `main` (pruebas sueltas de este módulo): solo «Orniz»."""
+    if esqueleto_dudoso(nombre):
+        return NO_COMPARABLE
+    return PARECE_ORNIZ if canal != CANAL_OFICIAL and nombre_reservado(nombre) else None
+
+
+def _comprobar_canal_json(canal, ruta, antes, despues, rol, nombre_parecido=None) -> list:
     motivos = validar_canal(despues, canal, ruta)
-    if rol < 5 and canal != CANAL_OFICIAL and isinstance(despues, dict) and nombre_reservado(despues.get("nombre")) \
-            and not (isinstance(antes, dict) and antes.get("nombre") == despues.get("nombre")):
-        motivos.append(f"`{ruta}` › `nombre`: «{despues.get('nombre')}» se parece a Orniz, que es del Dueño del programa.")
+    nombre_parecido = nombre_parecido or _solo_orniz
+    if rol < 5 and isinstance(despues, dict) and isinstance(despues.get("nombre"), str) \
+            and not (isinstance(antes, dict) and antes.get("nombre") == despues.get("nombre")) \
+            and (parecido := nombre_parecido(canal, despues["nombre"])):
+        motivos.append(f"`{ruta}` › `nombre`: «{despues['nombre']}» {parecido}.")
     if motivos or not isinstance(antes, dict):
         return motivos
     for campo in _diferencias(antes, despues):
@@ -973,7 +1066,8 @@ def _cuenta_que_no_es(cuenta_de, cuenta_id, cuenta: str, donde: str):
     return None
 
 
-def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de=None) -> list:
+def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetados, cuenta_de=None,
+                        veto_general=lambda cuenta_id: None) -> list:
     m_despues, motivos = leer_miembros(despues, ruta)
     if motivos:
         return motivos
@@ -981,6 +1075,12 @@ def _comprobar_miembros(ruta, antes, despues, rol, autor_id, solo_aceptar, vetad
 
     for mid in sorted(set(m_despues) & vetados):
         motivos.append(f"`{ruta}`: `{m_despues[mid].cuenta}` está en la lista negra del canal: no puede ser miembro.")
+    # Lista negra general (fase D): ni entrar ni seguir. Se mira a todos los que la propuesta añade o cambia (los
+    # demás ya se revisan al vetarlos); cada trozo se lee una vez (`listas.Consultas`).
+    for mid in [m for m in sorted(m_despues) if m_antes.get(m) != m_despues[m]]:
+        if motivo := veto_general(mid):
+            motivos.append(f"`{ruta}`: `{m_despues[mid].cuenta}` está en la lista negra del programa ({motivo}): no "
+                           "puede ser miembro de ningún canal.")
 
     # El nombre que acompaña a un id nuevo o cambiado tiene que ser el de esa cuenta (también para el Dueño). Se pregunta
     # a GitHub, así que antes se mira qué filas puede tocar quien propone: sin rol (o con rol bajo) solo la suya, y el
