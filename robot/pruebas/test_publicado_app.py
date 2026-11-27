@@ -90,7 +90,7 @@ class Formato(unittest.TestCase):
         canal = canal_de(salida, "ornizen")
         self.assertEqual({"id": "ornizen", "nombre": "Ornizen", "descripcion": "Canal ornizen", "verificado": True,
                           "adultos": True, "estado": "activo", "oculto": False, "contacto": {"issues": True},
-                          "logo": None}, canal)
+                          "logo": None, "paquetes": []}, canal)
         # Índice: grupo, trozos nuevos con su hash, sin detalle ni logos en `trozos`.
         indice = json.loads(salida["indice.json"])
         self.assertEqual(1, indice["esquema"])
