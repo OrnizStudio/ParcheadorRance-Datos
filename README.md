@@ -13,7 +13,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | Sitio | Qué es |
 |---|---|
 | [`juegos/`](juegos/) | **Lo central de cada juego** (desde la fase B de los canales): `juegos/<juego>/juego.json` (títulos, sinopsis, imágenes, detección, quién lo dio de alta) y `juegos/<juego>/ediciones/<edición>.json` (nombre, huella, tiendas, lanzamiento). |
-| `canales/<canal>/` | Cada canal: `canal.json`, `miembros.json`, `lista-negra.json` y **`parches/<juego>.json`**, su parche de ese juego (visible, estado de la traducción, opciones, versiones, huellas parcheadas…). |
+| `canales/<canal>/` | Cada canal: `canal.json`, `miembros.json`, `lista-negra.json`, `ficha.json` (su ficha pública, opcional) y **`parches/<juego>.json`**, su parche de ese juego (visible, estado de la traducción, opciones, versiones, huellas parcheadas…). |
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo** que descarga el parcheador al abrirse (esquema 1). Desde la fase B **no se edita a mano**: lo escribe el robot juntando `juegos/` y `canales/ornizen/parches/`, `normas/etiquetas.json` y `programa/parcheador.json`. |
 | `catalogo/canales.json` | **Los canales para la app** (fase D): de cada canal, `id`, `estado`, `verificado`, `paquetes` (sus repositorios de paquetes: la lista blanca de descargas) y `adultos`. Lo escribe el robot con el catálogo y con su misma `versionCatalogo`; la app solo lo usa si la versión coincide. **No se edita a mano**: una propuesta que lo cambie se rechaza, salvo si la hace el Dueño. Tope: 4 MB (unos 7 900 canales en el peor caso); si se pasara, no se actualiza y el catálogo se publica igual (la app se queda con el oficial). Cada repositorio de `paquetes` es de un solo canal (sin distinguir mayúsculas) y los de `OrnizStudio` solo los declara el oficial: el robot lo comprueba y, por si acaso, al publicar se quitan los repetidos. |
 | `historial/central/<AAAA-MM>.json` | **El Historial global** (fase D9): una fila por cada juego nuevo, edición nueva o cambio en la ficha central que publica un canal (directo si está verificado, o aprobado por el Dueño): `fecha`, `canal`, `cuenta`, `cuentaId`, `tipo` (`juego`, `edicion` o `central`), `juego`, `directa`, `propuesta`, `commit` y `cambios` (cada archivo de `juegos/<juego>/` con sus campos de primer nivel que cambian, o `nuevo`, `borrado`, `cambiado`). Lo escribe el robot; **no se edita a mano** (solo el Dueño puede). Tope: 2 MB por mes; si se pasara, se quedan las filas más nuevas y `recortadas` dice cuántas faltan. |
@@ -337,6 +337,11 @@ directa a `main`, a mano y una vez al día. Hace dos cosas:
   - `logos/<canal>.<png|webp|jpg>`: el logo de cada canal, si pesa 512 KB o menos y es PNG, WebP o JPEG de verdad
     (se mira el contenido); si no, el canal sale con `logo: null`.
   - `etiquetas.json`: `{"esquema":1,"etiquetas":[…]}`, las de `normas/etiquetas.json`.
+  - Para la ficha de cada canal (app 0.4.3), cada entrada de `canales/<xx>.json` lleva además `creado` (de
+    `canal.json`), `ficha` (lo de `ficha.json` sin `esquema`, o null si no hay o no vale entera; un `destacado` que
+    no es un juego con parche publicado de ese canal sale null), `equipo` (los miembros activos, sin invitados ni
+    vetados, del rol más alto al más bajo y luego por cuenta, como mucho 100) y `miembrosActivos` (cuántos son).
+    Nada de esto va a `catalogo/canales.json`.
 
   Todo sale de `main`, en JSON compacto y con las listas ordenadas: publicar dos veces lo mismo da los mismos bytes.
   Lo dañado de un juego o de un canal (un archivo que no se lee, un parche que no se junta, un `canal.json` con
