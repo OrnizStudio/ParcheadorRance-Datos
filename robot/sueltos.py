@@ -14,7 +14,9 @@ prohibidos, largos y lo que la app puede leer). Aquí va lo que no existía en e
 - `versiones` solo crece: nadie quita una versión ni le cambia la versión, la fecha, el autor o el paquete;
 - cada edición tiene su archivo y está en su juego, y cada parche apunta a un juego que existe;
 - los paquetes nuevos de un canal están en uno de sus repositorios (`canal.json` → `paquetes`);
-- en la fase B solo hay parches del canal oficial.
+- ningún paquete nuevo de un canal lleva una huella de su lista negra (`lista-negra.json` → `huellas`).
+
+Desde la fase D publica parches cualquier canal: cada parche se juzga con el rol del autor en su canal.
 
 Solo usa la biblioteca estándar.
 """
@@ -107,6 +109,71 @@ def _alta_bien_formada(alta) -> bool:
             and (fecha is None or (isinstance(fecha, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha) is not None)))
 
 
+def _estado_canal(archivos: dict, canal: str) -> str:
+    """El `estado` del `canal.json` del canal en `archivos`: «activo» si no hay `canal.json` (sin él, sus parches no se
+    publican) y «ilegible» si no se puede leer o el estado no es uno conocido."""
+    datos = archivos.get(f"canales/{canal}/canal.json")
+    if datos is None:
+        return "activo"
+    try:
+        objeto = lector_app.leer(datos)
+    except lector_app.JsonIlegible:
+        return "ilegible"
+    estado = objeto.get("estado", "activo") if isinstance(objeto, dict) else None
+    return estado if estado in ("activo", "retirado", "bloqueado") else "ilegible"
+
+
+def _cerrado(ruta: str, estado: str, canal: str, antes: dict, despues: dict):
+    """Por qué no vale cambiar este parche si su canal no está activo (docs/canales.md §7.5), o None. Cuenta el peor
+    estado de `main` y de la propuesta: cerrar el canal y publicar a la vez tampoco vale. Un canal `retirado` solo
+    retira versiones u oculta sus parches; uno `bloqueado` (o ilegible), nada."""
+    estados = {_estado_canal(antes, canal), _estado_canal(despues, canal)}
+    if estados == {"activo"}:
+        return None
+    if "bloqueado" in estados or "ilegible" in estados:
+        que = "está bloqueado por el Dueño del programa" if "bloqueado" in estados else "tiene un `canal.json` ilegible"
+        return f"`{ruta}`: @{canal} {que}; sus parches ya no se cambian."
+    aviso = (f"`{ruta}`: @{canal} está retirado: sus parches no reciben versiones nuevas ni cambios; solo se pueden "
+             "retirar versiones u ocultar el parche (docs/canales.md §7.5).")
+    if estado in ("A", "D") or ruta not in antes or ruta not in despues:
+        return aviso
+    try:
+        viejo, nuevo = lector_app.leer(antes[ruta]), lector_app.leer(despues[ruta])
+    except lector_app.JsonIlegible:
+        return aviso
+    return None if _solo_retira_u_oculta(viejo, nuevo) else aviso
+
+
+CAMPOS_RETIRAR = ("estado", "motivo", "motivoPublico", "fechaRetirada")
+
+
+def _solo_retira_u_oculta(viejo, nuevo) -> bool:
+    """¿`nuevo` es `viejo` con versiones que pasan a `retirada` (y sus campos de retirada) o el parche oculto
+    (`habilitado: false`), y nada más?"""
+    if not isinstance(viejo, dict) or not isinstance(nuevo, dict):
+        return False
+    import copy
+    n = copy.deepcopy(nuevo)
+    if n.get("habilitado") is False and viejo.get("habilitado") is not False:
+        if "habilitado" in viejo:
+            n["habilitado"] = viejo["habilitado"]
+        else:
+            del n["habilitado"]
+    ed_viejas = {e.get("id"): e for e in viejo.get("ediciones") or [] if isinstance(e, dict)}
+    for e in n.get("ediciones") or []:
+        if not isinstance(e, dict) or e.get("id") not in ed_viejas:
+            continue
+        v_viejas = {v.get("version"): v for v in ed_viejas[e["id"]].get("versiones") or [] if isinstance(v, dict)}
+        for i, v in enumerate(e.get("versiones") or []):
+            previa = v_viejas.get(v.get("version")) if isinstance(v, dict) else None
+            if previa is None or v.get("estado") != "retirada" or previa.get("estado") == "retirada":
+                continue
+            resto = {k: x for k, x in v.items() if k not in CAMPOS_RETIRAR}
+            if resto == {k: x for k, x in previa.items() if k not in CAMPOS_RETIRAR}:
+                e["versiones"][i] = previa
+    return n == viejo
+
+
 def _juego_de(tipo) -> str:
     return tipo[2] if tipo[0] == "parche" else tipo[1]
 
@@ -144,12 +211,12 @@ def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id
                                "`<juego>.json` (ids con letras, números, `.`, `_` y `-`). Las imágenes siguen en "
                                "`catalogo/juegos/<juego>/`.")
             continue
-        if tipo[0] == "parche" and tipo[1] != particion.CANAL_OFICIAL and not es_dueno:
-            motivos.append(f"`{ruta}`: por ahora solo el canal oficial (@{particion.CANAL_OFICIAL}) publica parches.")
-            continue
         if not es_dueno and (estado_main := _estado_central(antes, _juego_de(tipo))) != "activo":
             motivos.append(f"`{ruta}`: el juego «{_juego_de(tipo)}» está {estado_main} por el Dueño del programa; "
                            "sus archivos solo los cambia él.")
+            continue
+        if tipo[0] == "parche" and not es_dueno and (motivo := _cerrado(ruta, estado, tipo[1], antes, despues)):
+            motivos.append(motivo)
             continue
         if tipo[0] == "parche" and not es_dueno and (estado in ("A", "D") or ruta not in antes or ruta not in despues):
             # Añadir un juego al canal o quitarlo es de Administrador o más del canal (docs/canales.md §4.2).
@@ -364,25 +431,84 @@ def _coherencia(cambios, despues, es_dueno) -> list:
 
 # ─────────────────────────────────── Paquetes del canal ───────────────────────────────────
 
-def _urls(parche) -> set:
-    urls = set()
+def _paquetes(parche) -> list:
+    """Todos los paquetes (objetos con `url` y `hash`) de un archivo de parche: el del juego, los de cada edición y
+    los de cada versión."""
+    paquetes = []
     if not isinstance(parche, dict):
-        return urls
+        return paquetes
 
     def del_parche(p):
         if isinstance(p, dict):
-            for paquete in p.get("paquetes") or []:
-                if isinstance(paquete, dict) and isinstance(paquete.get("url"), str):
-                    urls.add(paquete["url"])
+            paquetes.extend(q for q in p.get("paquetes") or [] if isinstance(q, dict))
     del_parche(parche.get("parche"))
     for e in parche.get("ediciones") or []:
         if not isinstance(e, dict):
             continue
         del_parche(e.get("parche"))
         for v in e.get("versiones") or []:
-            if isinstance(v, dict) and isinstance(v.get("paquete"), dict) and isinstance(v["paquete"].get("url"), str):
-                urls.add(v["paquete"]["url"])
-    return urls
+            if isinstance(v, dict) and isinstance(v.get("paquete"), dict):
+                paquetes.append(v["paquete"])
+    return paquetes
+
+
+def _urls(parche) -> set:
+    return {p["url"] for p in _paquetes(parche) if isinstance(p.get("url"), str)}
+
+
+def _hashes(parche) -> set:
+    return {p["hash"].strip().lower() for p in _paquetes(parche) if isinstance(p.get("hash"), str)}
+
+
+def _hashes_vivos(parche) -> set:
+    """Los hashes de los paquetes de un parche que siguen en uso: los de `parche.paquetes` (del juego y de cada
+    edición) y los de cada versión que no está retirada."""
+    vivos = set()
+    if not isinstance(parche, dict):
+        return vivos
+
+    def anadir(paquete):
+        if isinstance(paquete, dict) and isinstance(paquete.get("hash"), str):
+            vivos.add(paquete["hash"].strip().lower())
+
+    def del_parche(p):
+        if isinstance(p, dict):
+            for q in p.get("paquetes") or []:
+                anadir(q)
+    del_parche(parche.get("parche"))
+    for e in parche.get("ediciones") or []:
+        if not isinstance(e, dict):
+            continue
+        del_parche(e.get("parche"))
+        for v in e.get("versiones") or []:
+            if isinstance(v, dict) and v.get("estado") != "retirada":
+                anadir(v.get("paquete"))
+    return vivos
+
+
+def comprobar_huellas(cambios, antes: dict, despues: dict, huellas_por_canal: dict, es_dueno: bool) -> list:
+    """Ningún paquete vivo (no retirado) de un parche que cambia lleva una huella de la lista negra de su canal
+    (`lista-negra.json` → `huellas`; cuentan la de `main` y la de la propuesta). No solo los nuevos: una huella vetada
+    no vuelve por otra versión ni des-retirando una. `huellas_por_canal` = {canal: {hash: motivo}}."""
+    if es_dueno:
+        return []
+    motivos = []
+    for ruta, estado in cambios:
+        tipo = tipo_de_ruta(ruta)
+        if estado == "D" or tipo is None or tipo[0] != "parche" or ruta not in despues:
+            continue
+        vetadas = huellas_por_canal.get(tipo[1]) or {}
+        if not vetadas:
+            continue
+        try:
+            nuevo = lector_app.leer(despues[ruta])
+        except lector_app.JsonIlegible:
+            continue
+        for huella in sorted(_hashes_vivos(nuevo)):
+            if huella in vetadas:
+                motivos.append(f"`{ruta}`: un paquete lleva la huella `{huella[:20]}…`, que está en la lista negra de "
+                               f"@{tipo[1]} ({vetadas[huella]}).")
+    return motivos
 
 
 def _cola_de_release(url: str, prefijos: tuple) -> bool:
@@ -437,26 +563,26 @@ def paquetes_de_los_canales(archivos_main: dict) -> dict:
 
 # ─────────────────────────────────── Catálogos para comparar ───────────────────────────────────
 
-def catalogos_para_reglas(antes: dict, despues: dict) -> tuple:
-    """(catálogo de `main`, catálogo tras la propuesta) con todos los juegos, también los que no tienen parche del
-    canal y los retirados o bloqueados: con ellos se juzgan los roles, campo a campo. ErrorParticion si los de la
-    propuesta no se pueden juntar."""
+def catalogos_para_reglas(antes: dict, despues: dict, canal: str = particion.CANAL_OFICIAL) -> tuple:
+    """(catálogo de `main`, catálogo tras la propuesta) del canal `canal`, con todos los juegos, también los que no
+    tienen parche del canal y los retirados o bloqueados: con ellos se juzgan los roles, campo a campo. ErrorParticion
+    si los de la propuesta no se pueden juntar."""
     try:
-        cat_antes = particion.juntar(antes, 1, todos=True)
+        cat_antes = particion.juntar(antes, 1, canal=canal, todos=True)
     except particion.ErrorParticion:
         cat_antes = {"esquema": 1, "versionCatalogo": 1, "juegos": []}
-    return cat_antes, particion.juntar(despues, 2, todos=True)
+    return cat_antes, particion.juntar(despues, 2, canal=canal, todos=True)
 
 
-def catalogos_para_comparar(antes: dict, despues: dict, version_main):
+def catalogos_para_comparar(antes: dict, despues: dict, version_main, canal: str = particion.CANAL_OFICIAL):
     """(texto del catálogo de `main`, bytes del catálogo tras la propuesta) juntando los archivos sueltos, con la
     versión de `main` y la siguiente: así las reglas de siempre ven lo que cambia como si fuera `catalogo.json`.
     ErrorParticion si los de la propuesta no se pueden juntar (los de `main`, si no se pueden, cuentan como vacíos)."""
     version = version_main if isinstance(version_main, int) and not isinstance(version_main, bool) \
         and 0 < version_main < lector_app.VERSION_MAXIMA else 1
     try:
-        cat_antes = particion.juntar(antes, version)
+        cat_antes = particion.juntar(antes, version, canal=canal)
     except particion.ErrorParticion:
         cat_antes = {"esquema": 1, "versionCatalogo": version, "juegos": []}
-    cat_despues = particion.juntar(despues, version + 1)
+    cat_despues = particion.juntar(despues, version + 1, canal=canal)
     return (particion.texto_json(cat_antes).decode("utf-8"), particion.texto_json(cat_despues))
