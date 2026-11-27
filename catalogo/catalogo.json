@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 35,
+  "versionCatalogo": 36,
   "launcher": {
-    "ultimaVersion": "0.4.0",
+    "ultimaVersion": "0.4.1",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Canales: además del canal oficial de Ornizen, ahora puedes descubrir y seguir otros canales de traducción desde el directorio de canales.", "Primera vez: eliges a qué canales te suscribes; con un botón te suscribes al oficial.", "Cada juego muestra los parches de los canales que sigues y puedes elegir cuál instalar.", "Modo equipo: CMS por canal con selector de canal, cola de subidas por canal y solicitudes al Dueño del programa.", "Crear mi canal: pide tu propio canal desde la app (se activará cuando el directorio de canales esté abierto).", "Textos en inglés revisados y muchos arreglos de estabilidad."],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.4.0/ParcheadorOrnizen-0.4.0-win-x64.zip",
-    "tamano": 25684081,
-    "hash": "blake3:33fe127c3a7312a1c84547b8384530d6e659771b9daa8d32317c0cd1f52aad44"
+    "novedades": ["Los juegos se ven siempre, sigas o no algún canal: la suscripción solo decide qué parches ves.", "En la página de un juego sin parches de tus canales se indica qué canales tienen parches para él, con un botón para seguirlos.", "Los parches que ya tienes instalados se pueden comprobar, reparar y desinstalar aunque no sigas su canal.", "Varios arreglos de estabilidad."],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.4.1/ParcheadorOrnizen-0.4.1-win-x64.zip",
+    "tamano": 25706118,
+    "hash": "blake3:4bbeaf8c7bdeb77951dbed1c7776d5af4d69e4edd02f265630e2906607dda38d"
   },
   "juegos": [
     {
