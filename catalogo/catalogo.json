@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 32,
+  "versionCatalogo": 34,
   "launcher": {
-    "ultimaVersion": "0.2.4",
+    "ultimaVersion": "0.3.0",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Modo equipo · Miembros: roles, invitaciones y lista negra del canal guardados en el archivo del canal (preparado para varios canales)", "Modo equipo: las pestañas ya no se ven sombreadas dos a la vez; el foco del teclado se distingue de la pestaña elegida", "El parcheador ya no se queda sin cambios del catálogo si este trae datos raros"],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.2.4/ParcheadorOrnizen-0.2.4-win-x64.zip",
-    "tamano": 24085172,
-    "hash": "blake3:9f6da7d7f1c045c05e0e563074e9408e99de15d6d1e8c888c73fb3e58069851d"
+    "novedades": ["Varios parches por juego: cada parche muestra el canal que lo hace, con su @ y su logo", "Puedes elegir de qué canal usar el parche de cada juego", "Avisos claros si un canal está retirado o bloqueado", "Más seguridad: los parches solo se descargan de direcciones permitidas", "Modo equipo: «Actualizar» en el historial siempre trae lo último"],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.3.0/ParcheadorOrnizen-0.3.0-win-x64.zip",
+    "tamano": 24487753,
+    "hash": "blake3:3c1eb9c1a8e6a5ec2a645d4a83d201b7efd9177b877b02fe037cc7a6d6cbce66"
   },
   "juegos": [
     {
