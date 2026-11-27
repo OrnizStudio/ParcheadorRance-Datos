@@ -35,10 +35,13 @@ import os
 import subprocess
 import sys
 
+import re
+
 import lector_app
 import listas
 import particion
 import permisos
+import solicitudes
 import sueltos
 
 RAMA_PUBLICADO = "publicado"
@@ -165,6 +168,152 @@ def catalogo_regenerado(archivos: dict, catalogo_main: bytes | None, forzar: boo
     if len(datos) > TOPE_ARCHIVO:
         raise ErrorPublicar(f"El catálogo juntado pesa {len(datos) / 1048576:.1f} MB y el máximo son 8 MB.")
     return datos
+
+
+# ───────────────────────────────────────── El Historial global ─────────────────────────────────────────
+#
+# `historial/central/<AAAA-MM>.json` en `main` (docs/canales.md §1): una fila por cada juego nuevo, edición nueva o
+# cambio en la ficha central que un canal ha publicado (directo si está verificado, o aprobado por el Dueño). La fila
+# sale del mensaje que el robot pone al fusionar (`solicitudes.linea_historial`) y de lo que cambió ese commit en
+# `juegos/<juego>/`. Va en la misma propuesta que el catálogo. Las filas que ya están en `main` no se recalculan.
+
+CARPETA_HISTORIAL = "historial/central/"
+TOPE_HISTORIAL = 2 * 1024 * 1024   # por mes; la app tiene el mismo tope. Si no cabe, se quedan las más nuevas.
+TOPE_CAMBIOS_FILA = 50             # archivos de `juegos/<juego>/` por fila (y campos por archivo)
+_LINEA_HISTORIAL = re.compile(r"^" + re.escape(solicitudes.MARCA_HISTORIAL) + r"(\{.*\})[ \t]*$", re.MULTILINE)
+_CUENTA = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\Z")
+_MES = re.compile(r"^historial/central/(\d{4}-\d{2})\.json\Z")
+
+
+def fila_de_la_linea(mensaje: str):
+    """Los datos de la última línea `Historial-central:` del mensaje, validados, o None."""
+    lineas = _LINEA_HISTORIAL.findall(mensaje or "")
+    if not lineas:
+        return None
+    try:
+        datos = json.loads(lineas[-1])
+    except ValueError:
+        return None
+    if not isinstance(datos, dict) or datos.get("v") != 1:
+        return None
+    canal, juego, cuenta = datos.get("canal"), datos.get("juego"), datos.get("cuenta")
+    cuenta_id, propuesta, tipo = datos.get("cuentaId"), datos.get("propuesta"), datos.get("tipo")
+    if not (isinstance(canal, str) and permisos.canales.ID_CANAL.match(canal)
+            and isinstance(juego, str) and len(juego) <= 64 and permisos.ID_VALIDO.match(juego)
+            and isinstance(cuenta, str) and _CUENTA.match(cuenta)
+            and type(cuenta_id) is int and cuenta_id > 0 and type(propuesta) is int and propuesta > 0
+            and tipo in solicitudes.DE_PROGRAMA and isinstance(datos.get("directa"), bool)):
+        return None
+    return {"canal": canal, "cuenta": cuenta, "cuentaId": cuenta_id, "tipo": tipo, "juego": juego,
+            "directa": datos["directa"], "propuesta": propuesta}
+
+
+def _campos(antes: bytes | None, despues: bytes | None):
+    """Las claves de primer nivel que cambian entre dos JSON (`nuevo`/`borrado` si falta uno; `?` si no se leen)."""
+    if antes is None:
+        return "nuevo"
+    if despues is None:
+        return "borrado"
+    a, d = _objeto(antes), _objeto(despues)
+    if a is None or d is None:
+        return "?"
+    campos = sorted(c for c in set(a) | set(d) if a.get(c, _NADA) != d.get(c, _NADA))
+    return campos[:TOPE_CAMBIOS_FILA]
+
+
+_NADA = object()
+
+
+def cambios_del_commit(sha: str, juego: str) -> dict:
+    """{archivo dentro de `juegos/<juego>/`: campos} de lo que cambió el commit `sha` respecto a su primer padre."""
+    carpeta = f"juegos/{juego}/"
+    salida = subprocess.run(["git", "diff-tree", "-r", "-z", "--no-commit-id", "--name-only", "--no-renames",
+                             f"{sha}^1", sha, "--", carpeta], capture_output=True)
+    if salida.returncode != 0:
+        return {}
+    rutas = sorted(r for r in salida.stdout.decode("utf-8", errors="replace").split("\0") if r.startswith(carpeta))
+    cambios = {}
+    for ruta in rutas[:TOPE_CAMBIOS_FILA]:
+        archivo = ruta[len(carpeta):]
+        if archivo.endswith(".json"):
+            cambios[archivo] = _campos(_leer_de_git(f"{sha}^1", ruta), _leer_de_git(sha, ruta))
+        else:
+            cambios[archivo] = "borrado" if _leer_de_git(sha, ruta) is None else "cambiado"
+    return cambios
+
+
+def _commits_con_historial(revision: str) -> list:
+    """[(sha, fecha UTC, mensaje)] de los commits de `main` (primer padre) con la línea del historial, del más viejo
+    al más nuevo."""
+    salida = _git("log", "--first-parent", "--reverse", "-z", "--format=%H%x1f%ct%x1f%B", "--fixed-strings",
+                  f"--grep={solicitudes.MARCA_HISTORIAL.strip()}", revision).decode("utf-8", errors="replace")
+    commits = []
+    for entrada in (e for e in salida.split("\0") if e.strip()):
+        partes = entrada.strip("\n").split("\x1f", 2)
+        if len(partes) != 3:
+            continue
+        fecha = datetime.datetime.fromtimestamp(int(partes[1]), datetime.timezone.utc)
+        commits.append((partes[0], fecha.strftime("%Y-%m-%dT%H:%M:%SZ"), partes[2]))
+    return commits
+
+
+def _historial_de_main(revision: str) -> dict:
+    """{mes: {"filas": [...], "recortadas": n}} de los `historial/central/<AAAA-MM>.json` de `revision` (lo ilegible,
+    vacío: se rehace)."""
+    salida = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", "--full-tree", revision, "--",
+                             CARPETA_HISTORIAL], capture_output=True)
+    meses = {}
+    for ruta in salida.stdout.decode("utf-8", errors="replace").split("\0"):
+        mes = _MES.match(ruta)
+        if not mes:
+            continue
+        datos = _objeto(_leer_de_git(revision, ruta) or b"")
+        filas = datos.get("filas") if isinstance(datos, dict) else None
+        if isinstance(filas, list):
+            recortadas = datos.get("recortadas")
+            meses[mes.group(1)] = {"filas": [f for f in filas if isinstance(f, dict)],
+                                   "recortadas": recortadas if type(recortadas) is int and recortadas > 0 else 0}
+    return meses
+
+
+def historial_central(revision: str, avisos: list | None = None) -> dict:
+    """{ruta: bytes} de los `historial/central/<AAAA-MM>.json` que hay que escribir en `main` (solo los que cambian)."""
+    meses = _historial_de_main(revision)
+    conocidos = {f.get("commit") for mes in meses.values() for f in mes["filas"]}
+    tocados = set()
+    for sha, fecha, mensaje in _commits_con_historial(revision):
+        if sha in conocidos:
+            continue
+        fila = fila_de_la_linea(mensaje)
+        if fila is None:
+            if avisos is not None:
+                avisos.append(f"El commit {sha[:7]} lleva una línea `{solicitudes.MARCA_HISTORIAL.strip()}` que no se "
+                              "entiende: no sale en el Historial global.")
+            continue
+        fila = {"fecha": fecha, **fila, "commit": sha, "cambios": cambios_del_commit(sha, fila["juego"])}
+        mes = fecha[:7]
+        meses.setdefault(mes, {"filas": [], "recortadas": 0})["filas"].append(fila)
+        tocados.add(mes)
+    resultado = {}
+    for mes in sorted(tocados):
+        filas, recortadas = meses[mes]["filas"], meses[mes]["recortadas"]
+        filas.sort(key=lambda f: (str(f.get("fecha")), str(f.get("commit"))))
+
+        def texto():
+            datos = {"esquema": 1, "mes": mes, "filas": filas}
+            if recortadas:
+                datos["recortadas"] = recortadas
+            return _json(datos)
+        datos = texto()
+        while len(datos) > TOPE_HISTORIAL and filas:
+            quitar = max(1, len(filas) // 10)
+            filas, recortadas = filas[quitar:], recortadas + quitar
+            datos = texto()
+        if recortadas and avisos is not None:
+            avisos.append(f"`{CARPETA_HISTORIAL}{mes}.json` no cabe en {TOPE_HISTORIAL // 1048576} MB: se quedan las "
+                          f"{len(filas)} filas más nuevas ({recortadas} recortadas).")
+        resultado[f"{CARPETA_HISTORIAL}{mes}.json"] = datos
+    return resultado
 
 
 # ───────────────────────────────────────── La rama `publicado` ─────────────────────────────────────────
@@ -690,13 +839,18 @@ def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
         avisos = []
         cambios = regenerados(archivos, _leer_de_git(base, permisos.RUTA_CATALOGO),
                               _leer_de_git(base, RUTA_CANALES_MAIN), avisos)
+        historial = historial_central(base, avisos)
         for texto in avisos:
             aviso(texto)
-        if cambios is None:
+        if cambios is None and not historial:
             return base
+        cambios = {**(cambios or {}), **historial}
         arbol = _arbol_con(base, cambios)
-        version = json.loads(cambios[permisos.RUTA_CATALOGO])["versionCatalogo"]
-        commit = _commit(arbol, f"Catálogo para las ≤0.2.x regenerado (versión {version})", [base])
+        version = (json.loads(cambios[permisos.RUTA_CATALOGO])["versionCatalogo"]
+                   if permisos.RUTA_CATALOGO in cambios else None)
+        titulo = (f"Catálogo para las ≤0.2.x regenerado (versión {version})" if version is not None
+                  else "Historial global del programa")
+        commit = _commit(arbol, titulo, [base])
         _git("push", "--quiet", "--force", remoto, f"{commit}:refs/heads/{RAMA_CATALOGO}", entorno=entorno)
         propuesta = _propuesta_del_catalogo(api, version)
         api("POST", "/check-runs", {"name": COMPROBACION, "head_sha": commit, "status": "completed",
@@ -708,7 +862,10 @@ def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
         hecho = api("PUT", f"/pulls/{propuesta}/merge", {"sha": commit, "merge_method": "squash"},
                     tolerar=(405, 409, 422))
         if hecho is not None:
-            aviso(f"Catálogo regenerado (versión {version}) y publicado con la propuesta #{propuesta}.")
+            que = f"Catálogo regenerado (versión {version})" if version is not None else "Historial global"
+            if historial:
+                que += f" con {len(historial)} mes(es) del Historial global" if version is not None else ""
+            aviso(f"{que} publicado con la propuesta #{propuesta}.")
             return _main(remoto, entorno)
     raise ErrorPublicar("`main` se ha movido varias veces seguidas mientras se regeneraba el catálogo; la siguiente "
                         "publicación lo intentará otra vez.")
@@ -727,9 +884,11 @@ def _propuesta_del_catalogo(api, version: int) -> int:
         if buena:
             return pr["number"]
         api("PATCH", f"/pulls/{pr['number']}", {"state": "closed"})
-    return api("POST", "/pulls", {"title": f"Catálogo para las ≤0.2.x (versión {version})", "head": RAMA_CATALOGO,
+    titulo = f"Catálogo para las ≤0.2.x (versión {version})" if version is not None else "Historial global del programa"
+    return api("POST", "/pulls", {"title": titulo, "head": RAMA_CATALOGO,
                                   "base": "main", "body": "Lo regenera el robot (trabajo `publicar`) a partir de "
-                                  "`juegos/` y `canales/<canal>/parches/`. Se fusiona solo."})["number"]
+                                  "`juegos/`, `canales/<canal>/parches/` y los commits de `main` (Historial global, "
+                                  "`historial/central/`). Se fusiona solo."})["number"]
 
 
 def escribir_publicado(remoto: str, entorno, base: str, aviso) -> bool:

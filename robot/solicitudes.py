@@ -76,6 +76,19 @@ CAMPOS_ETIQUETA = ("esquema", "canal", "nombre", "paraQue", "pedidaPor", "fecha"
 TOPE_ARCHIVO = 16 * 1024
 
 
+# Historial global (docs/canales.md §1 y §2.2): al fusionar un juego nuevo, una edición nueva o un cambio en la ficha
+# central que pide un canal, el robot pone esta línea como mensaje del commit de `main`. `publicar.py` la convierte en
+# una fila de `historial/central/<AAAA-MM>.json` (quién, qué juego, qué archivos y campos, qué propuesta).
+MARCA_HISTORIAL = "Historial-central: "
+
+
+def linea_historial(sol, cuenta: str, cuenta_id: int, propuesta: int) -> str:
+    """La línea que el robot deja como mensaje del commit de `main` (una sola línea, ASCII)."""
+    datos = {"v": 1, "canal": sol.canal, "cuenta": cuenta, "cuentaId": int(cuenta_id), "tipo": sol.tipo,
+             "juego": sol.clave, "directa": bool(sol.directa), "propuesta": int(propuesta)}
+    return MARCA_HISTORIAL + json.dumps(datos, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
 @dataclass(frozen=True)
 class Solicitud:
     tipo: str      # «canal», «verificacion», «etiqueta», «juego», «edicion» o «central»

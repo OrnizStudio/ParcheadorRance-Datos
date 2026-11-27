@@ -2388,8 +2388,11 @@ def main() -> int:
         comentar(api, numero, texto)
         resumen(texto)
         return 1
-    resultado = api("PUT", f"/pulls/{numero}/merge",
-                    {"sha": cabeza, "merge_method": "squash"}, tolerar=(405, 409, 422))
+    fusion = {"sha": cabeza, "merge_method": "squash"}
+    if sol is not None and sol.tipo in solicitudes.DE_PROGRAMA:
+        # El mensaje lo pone el robot (nunca el texto de la propuesta): de él sale la fila del Historial global.
+        fusion["commit_message"] = solicitudes.linea_historial(sol, autor, autor_id, numero)
+    resultado = api("PUT", f"/pulls/{numero}/merge", fusion, tolerar=(405, 409, 422))
     if resultado is None:
         texto = (aprobado + "\n\n⚠️ Pero no se ha podido publicar sola: se ha cruzado con otro cambio. "
                  "Actualiza la propuesta con lo último de `main` y el robot lo vuelve a intentar.")
