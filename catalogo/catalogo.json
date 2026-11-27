@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 36,
+  "versionCatalogo": 37,
   "launcher": {
-    "ultimaVersion": "0.4.1",
+    "ultimaVersion": "0.4.2",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Los juegos se ven siempre, sigas o no algún canal: la suscripción solo decide qué parches ves.", "En la página de un juego sin parches de tus canales se indica qué canales tienen parches para él, con un botón para seguirlos.", "Los parches que ya tienes instalados se pueden comprobar, reparar y desinstalar aunque no sigas su canal.", "Varios arreglos de estabilidad."],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.4.1/ParcheadorOrnizen-0.4.1-win-x64.zip",
-    "tamano": 25706118,
-    "hash": "blake3:4bbeaf8c7bdeb77951dbed1c7776d5af4d69e4edd02f265630e2906607dda38d"
+    "novedades": ["Botones de «Elige tus canales» con el estilo del resto de la app.", "Sin suscripciones puedes buscar el juego en tu PC, y la página del juego ya no dice «en preparación» cuando hay parches en otros canales.", "Modo equipo: Historial global del programa para el Dueño.", "Varios arreglos de estabilidad."],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.4.2/ParcheadorOrnizen-0.4.2-win-x64.zip",
+    "tamano": 25821898,
+    "hash": "blake3:7d1b253429962bd70cf18c20fa59799d1968619162c914ac05b59fdfa37405f0"
   },
   "juegos": [
     {
