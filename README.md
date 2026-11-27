@@ -15,7 +15,7 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 | [`juegos/`](juegos/) | **Lo central de cada juego** (desde la fase B de los canales): `juegos/<juego>/juego.json` (títulos, sinopsis, imágenes, detección, quién lo dio de alta) y `juegos/<juego>/ediciones/<edición>.json` (nombre, huella, tiendas, lanzamiento). |
 | `canales/<canal>/` | Cada canal: `canal.json`, `miembros.json`, `lista-negra.json` y **`parches/<juego>.json`**, su parche de ese juego (visible, estado de la traducción, opciones, versiones, huellas parcheadas…). |
 | [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo** que descarga el parcheador al abrirse (esquema 1). Desde la fase B **no se edita a mano**: lo escribe el robot juntando `juegos/` y `canales/ornizen/parches/`, `normas/etiquetas.json` y `programa/parcheador.json`. |
-| Rama [`publicado`](../../tree/publicado) | Lo que genera el robot para el parcheador y el Modo equipo: `indice.json` y el índice por juego de Programa › Juegos originales. No se toca a mano. |
+| Rama [`publicado`](../../tree/publicado) | Lo que genera el robot para el parcheador y el Modo equipo: `indice.json`, el índice por juego de Programa › Juegos originales y, desde la 0.3.0, los juegos, canales, logos y etiquetas en trozos. No se toca a mano. |
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
 | [Releases](../../releases) | Las versiones del propio parcheador y los **paquetes de parche** publicados hasta la fase B (`<juego>-<edición>-<versión>.zip`). Desde la fase B, los paquetes nuevos van a las Releases de [`OrnizStudio/Ornizen-Parches`](https://github.com/OrnizStudio/Ornizen-Parches) (`canal.json` → `paquetes`); los ya publicados se quedan aquí. |
 | [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. Solo lo cambia el Propietario. |
@@ -297,12 +297,30 @@ directa a `main`, a mano y una vez al día. Hace dos cosas:
 - **Regenera el catálogo** si lo que dicen los archivos ha cambiado. Lo deja en la rama `robot/catalogo` y abre su
   propuesta. Como las propuestas que abre GitHub Actions no lanzan el robot, el propio trabajo marca `permisos` en
   verde en ese commit: su contenido sale entero de `main`. Después la fusiona.
-- **Escribe la rama `publicado`**, un único commit sin historia:
-  - `indice.json`, con el hash de cada trozo;
-  - `programa/juegos/<xx>.json`, donde `xx` son los dos primeros caracteres hexadecimales del SHA-256 del id.
+- **Escribe la rama `publicado`**, un único commit sin historia. En los trozos, `xx` son los dos primeros caracteres
+  hexadecimales del SHA-256 del id (del juego o del canal): 256 trozos como mucho.
+  - `indice.json` (esquema 1): `generado`, `main`, `versionCatalogo`, `launcher`, `grupo` (el de
+    `programa/parcheador.json`, o `null`) y `trozos`, con el `sha256:` de cada trozo. Las 0.2.x ignoran los
+    trozos que no conocen.
+  - `programa/juegos/<xx>.json`: el índice por juego de Programa › Juegos originales (Modo equipo).
+  - `juegos/<xx>.json` (para la app 0.3.0): cada juego con al menos un parche de un canal que no está bloqueado,
+    con su `estado` central (también los retirados y bloqueados) y un parche por canal: `canal`, `detalle` (el
+    `sha256:` de su archivo de detalle) y `juego`, el juego de esquema 1 de ese canal sin `huella`,
+    `huellasParcheadas` ni `versiones`.
+  - `detalle/<juego>/<canal>.json`: `{"esquema":1,"canal":…,"juego":…}`, el juego de ese canal entero.
+  - `canales/<xx>.json`: todos los canales (también los retirados y bloqueados) con `id`, `nombre`, `descripcion`,
+    `verificado`, `adultos`, `estado`, `oculto`, `contacto` y `logo` (`{ruta, tamano, hash}` o `null`).
+  - `logos/<canal>.<png|webp|jpg>`: el logo de cada canal, si pesa 512 KB o menos y es PNG, WebP o JPEG de verdad
+    (se mira el contenido); si no, el canal sale con `logo: null`.
+  - `etiquetas.json`: `{"esquema":1,"etiquetas":[…]}`, las de `normas/etiquetas.json`.
 
-Si algo no se puede publicar (archivos que no se juntan, un catálogo que la app no leería, más de 8 MB), para y lo
-dice en el resumen del trabajo. `main` se queda como estaba.
+  Todo sale de `main`, en JSON compacto y con las listas ordenadas: publicar dos veces lo mismo da los mismos bytes.
+  Lo dañado de un juego o de un canal (un archivo que no se lee, un parche que no se junta, un `canal.json` con
+  otro `id` o un estado desconocido) no entra, y no tumba el resto. Los parches de un canal sin `canal.json`
+  válido tampoco entran.
+
+Si algo no se puede publicar (archivos que no se juntan, un catálogo que la app no leería, un archivo de más de
+8 MB), para y lo dice en el resumen del trabajo. `main` se queda como estaba.
 
 ## Contenido de pruebas
 

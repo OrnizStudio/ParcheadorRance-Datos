@@ -8,8 +8,11 @@ Tras cada fusión en `main` (y a mano, o cuando el Dueño sube algo directamente
    que juzgar. Como las propuestas que abre GitHub Actions no lanzan flujos de trabajo, el propio trabajo deja la
    comprobación `permisos` en verde en ese commit antes de fusionarla.
 2. **Escribe la rama `publicado`**: `indice.json` y el índice por juego de Programa › Juegos originales,
-   `programa/juegos/<xx>.json` (256 trozos por el SHA-256 del id). Es un único commit sin padres que sustituye al
-   anterior (la rama no crece). Si nada ha cambiado, no escribe.
+   `programa/juegos/<xx>.json` (256 trozos por el SHA-256 del id). Desde la fase C, también lo que lee la app 0.3.0:
+   `juegos/<xx>.json` (cada juego con un parche ligero por canal), `detalle/<juego>/<canal>.json` (el juego entero,
+   con huellas y versiones), `canales/<xx>.json`, `logos/<canal>.<ext>` y `etiquetas.json`; el índice sigue en
+   esquema 1 (las 0.2.x ignoran los trozos que no conocen) y añade `grupo`. Es un único commit sin padres que
+   sustituye al anterior (la rama no crece). Si nada ha cambiado, no escribe.
 
 Antes de la migración (sin archivos sueltos en `main`) no regenera nada: el índice sale de partir el `catalogo.json`
 de `main` en memoria.
@@ -180,24 +183,144 @@ def indice_por_juego(archivos: dict) -> dict:
     return indice
 
 
-def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ahora: str) -> dict:
-    """{ruta: bytes} de la rama `publicado`: `indice.json` y `programa/juegos/<xx>.json`."""
+def _hash(datos: bytes) -> str:
+    return "sha256:" + hashlib.sha256(datos).hexdigest()
+
+
+# Lo que no va en la lista ni en la ficha (fase C): solo en `detalle/<juego>/<canal>.json`.
+CAMPOS_SOLO_DETALLE = ("huella", "huellasParcheadas", "versiones")
+EXTENSION_LOGO = {"png": "png", "webp": "webp", "jpeg": "jpg"}
+
+
+def canales_publicados(archivos: dict) -> dict:
+    """{id: entrada de `canales/<xx>.json`} de cada canal con un `canal.json` que se puede leer, cuyo `id` es el de su
+    carpeta y con un `estado` conocido; y {ruta: bytes} de los logos que valen. Un canal dañado no entra (ni sus
+    parches): no tumba la publicación."""
+    entradas, logos = {}, {}
+    for ruta, datos in archivos.items():
+        partes = ruta.split("/")
+        if len(partes) != 3 or partes[0] != "canales" or partes[2] != "canal.json":
+            continue
+        cid = partes[1]
+        if not permisos.canales.ID_CANAL.match(cid):
+            continue
+        canal = _objeto(datos)
+        if canal is None or canal.get("id") != cid or canal.get("estado") not in particion.ESTADOS_JUEGO:
+            continue
+        verificacion = canal.get("verificacion") if isinstance(canal.get("verificacion"), dict) else {}
+        logo = None
+        nombre_logo = canal.get("logo")
+        if isinstance(nombre_logo, str) and "/" not in nombre_logo and nombre_logo.endswith(permisos.canales.EXTENSIONES_LOGO):
+            imagen = archivos.get(f"canales/{cid}/{nombre_logo}")
+            tipo = permisos.canales.tipo_de_imagen(imagen) if imagen is not None else None
+            if tipo is not None and len(imagen) <= permisos.canales.TOPE_LOGO:
+                destino = f"logos/{cid}.{EXTENSION_LOGO[tipo]}"
+                logos[destino] = imagen
+                logo = {"ruta": destino, "tamano": len(imagen), "hash": _hash(imagen)}
+        entradas[cid] = {
+            "id": cid,
+            "nombre": canal["nombre"] if isinstance(canal.get("nombre"), str) else cid,
+            "descripcion": canal["descripcion"] if isinstance(canal.get("descripcion"), str) else "",
+            "verificado": verificacion.get("verificado") is True,
+            "adultos": canal.get("adultos") is True,
+            "estado": canal["estado"],
+            "oculto": canal.get("oculto") is True,
+            "contacto": canal["contacto"] if isinstance(canal.get("contacto"), dict) else {},
+            "logo": logo,
+        }
+    return entradas, logos
+
+
+def _ligero(juego: dict) -> dict:
+    """El juego sin huellas ni versiones en ninguna edición (lo de la lista y la ficha)."""
+    ligero = dict(juego)
+    if isinstance(ligero.get("ediciones"), list):
+        ligero["ediciones"] = [{k: v for k, v in e.items() if k not in CAMPOS_SOLO_DETALLE} if isinstance(e, dict) else e
+                               for e in ligero["ediciones"]]
+    return ligero
+
+
+def juegos_publicados(archivos: dict, canales: dict):
+    """({id: entrada de `juegos/<xx>.json`}, {ruta: bytes} de `detalle/<juego>/<canal>.json`).
+
+    Cada parche se junta solo con su juego y sus ediciones (`particion.juntar(…, todos=True)`): uno dañado no entra y
+    no arrastra a los demás. Los parches de un canal `bloqueado` o sin `canal.json` válido no entran."""
+    por_juego, ediciones = {}, {}
+    for ruta in archivos:
+        tipo = sueltos.tipo_de_ruta(ruta)
+        if tipo is None:
+            continue
+        if tipo[0] == "parche":
+            canal = canales.get(tipo[1])
+            if canal is not None and canal["estado"] != "bloqueado":
+                por_juego.setdefault(tipo[2], []).append((tipo[1], ruta))
+        elif tipo[0] == "edicion":
+            ediciones.setdefault(tipo[1], []).append(ruta)
+    entradas, detalles = {}, {}
+    for jid, parches in sorted(por_juego.items()):
+        ruta_juego = f"juegos/{jid}/juego.json"
+        central = _objeto(archivos.get(ruta_juego, b""))
+        if central is None or central.get("id") != jid:
+            continue
+        estado = central.get("estado", "activo")
+        if estado not in particion.ESTADOS_JUEGO:
+            continue
+        base = {ruta_juego: archivos[ruta_juego], **{r: archivos[r] for r in ediciones.get(jid, ())}}
+        lista = []
+        for cid, ruta_parche in sorted(parches):
+            try:
+                juntado = particion.juntar({**base, ruta_parche: archivos[ruta_parche]}, 0, canal=cid, todos=True)
+            except particion.ErrorParticion:
+                continue
+            if len(juntado["juegos"]) != 1:
+                continue
+            juego = juntado["juegos"][0]
+            ruta_detalle = f"detalle/{jid}/{cid}.json"
+            datos = _json({"esquema": 1, "canal": cid, "juego": juego})
+            detalles[ruta_detalle] = datos
+            lista.append({"canal": cid, "detalle": _hash(datos), "juego": _ligero(juego)})
+        if lista:
+            entradas[jid] = {"id": jid, "estado": estado, "parches": lista}
+    return entradas, detalles
+
+
+def _trozos(prefijo: str, clave: str, entradas: dict) -> dict:
     por_trozo = {}
-    for jid, entrada in indice_por_juego(archivos).items():
-        por_trozo.setdefault(trozo(jid), []).append(entrada)
-    resultado = {f"programa/juegos/{t}.json": _json({"esquema": 1, "juegos": entradas})
-                 for t, entradas in sorted(por_trozo.items())}
-    for ruta, datos in resultado.items():
-        if len(datos) > TOPE_ARCHIVO:
-            raise ErrorPublicar(f"`{ruta}` pesa {len(datos) / 1048576:.1f} MB y el máximo son 8 MB.")
+    for ident, entrada in sorted(entradas.items()):
+        por_trozo.setdefault(trozo(ident), []).append(entrada)
+    return {f"{prefijo}{t}.json": _json({"esquema": 1, clave: lista}) for t, lista in sorted(por_trozo.items())}
+
+
+def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ahora: str) -> dict:
+    """{ruta: bytes} de la rama `publicado`: `indice.json`, `programa/juegos/<xx>.json` (fase B) y, para la app 0.3.0,
+    `juegos/<xx>.json`, `detalle/<juego>/<canal>.json`, `canales/<xx>.json`, `logos/<canal>.<ext>` y
+    `etiquetas.json`. ErrorPublicar si algún archivo pasa de 8 MB."""
+    resultado = _trozos("programa/juegos/", "juegos", indice_por_juego(archivos))
+    canales, logos = canales_publicados(archivos)
+    juegos, detalles = juegos_publicados(archivos, canales)
+    resultado.update(_trozos("juegos/", "juegos", juegos))
+    resultado.update(_trozos("canales/", "canales", canales))
+    if particion.RUTA_ETIQUETAS in archivos or isinstance((catalogo or {}).get("etiquetas"), list):
+        # Sin ninguna de las dos fuentes (un `main` vacío) no hay nada que decir: la app sigue con el catálogo.
+        etiquetas = (_objeto(archivos.get(particion.RUTA_ETIQUETAS, b"")) or {}).get("etiquetas")
+        if not isinstance(etiquetas, list):
+            etiquetas = (catalogo or {}).get("etiquetas") if isinstance((catalogo or {}).get("etiquetas"), list) else []
+        resultado["etiquetas.json"] = _json({"esquema": 1, "etiquetas": etiquetas})
+    trozos = {ruta: _hash(datos) for ruta, datos in sorted(resultado.items())}
+    resultado.update(detalles)
+    resultado.update(logos)
     programa = _objeto(archivos.get(particion.RUTA_PARCHEADOR, b"")) or {}
-    launcher = programa.get("launcher", (catalogo or {}).get("launcher"))
     resultado["indice.json"] = _json({
         "esquema": 1, "generado": ahora, "main": main_sha,
         "versionCatalogo": (catalogo or {}).get("versionCatalogo"),
-        "launcher": launcher,
-        "trozos": {ruta: "sha256:" + hashlib.sha256(datos).hexdigest() for ruta, datos in sorted(resultado.items())},
+        "launcher": programa.get("launcher", (catalogo or {}).get("launcher")),
+        "grupo": programa.get("grupo", (catalogo or {}).get("grupo")),
+        "trozos": trozos,
     })
+    for ruta, datos in sorted(resultado.items()):
+        if len(datos) > TOPE_ARCHIVO:
+            raise ErrorPublicar(f"`{ruta}` pesa {len(datos) / 1048576:.1f} MB y el máximo de un archivo publicado son "
+                                "8 MB: no se publica nada hasta que se reduzca.")
     return resultado
 
 
@@ -287,16 +410,51 @@ def _main(remoto: str, entorno) -> str:
     return _git("rev-parse", "refs/remotes/publicar/main").decode().strip()
 
 
+def _archivos_de_canales(revision: str) -> dict:
+    """{ruta: bytes} de los `canal.json` y las imágenes de la raíz de cada `canales/<c>/` (los logos) en `revision`, de
+    una vez con `git cat-file --batch`. Un logo que pasa de su tope no se lee: se cambia por algo que no vale como logo
+    (sale `logo: null`). Un `canal.json` que pasa de su tope no se lee (el canal no se publica)."""
+    salida = _git("ls-tree", "-r", "-z", "-l", "--full-tree", revision, "--",
+                  permisos.canales.CARPETA_CANALES).decode("utf-8", errors="replace")
+    pedir, resultado = [], {}
+    for entrada in (e for e in salida.split("\0") if e):
+        cabecera, ruta = entrada.split("\t", 1)
+        modo, tipo, sha, tamano = cabecera.split()
+        partes = ruta.split("/")
+        if modo != "100644" or tipo != "blob" or len(partes) != 3 or not permisos.canales.ID_CANAL.match(partes[1]):
+            continue
+        if partes[2] == "canal.json":
+            if int(tamano) <= permisos.canales.TOPES["canal.json"]:
+                pedir.append((ruta, sha))
+        elif partes[2].endswith(permisos.canales.EXTENSIONES_LOGO):
+            if int(tamano) > permisos.canales.TOPE_LOGO:
+                resultado[ruta] = b"\0" * (permisos.canales.TOPE_LOGO + 1)
+            else:
+                pedir.append((ruta, sha))
+    if pedir:
+        salida = _git("cat-file", "--batch", entrada="".join(f"{sha}\n" for _, sha in pedir).encode())
+        i = 0
+        for ruta, _sha in pedir:
+            fin = salida.index(b"\n", i)
+            largo = int(salida[i:fin].split(b" ")[2])
+            resultado[ruta] = salida[fin + 1:fin + 1 + largo]
+            i = fin + 1 + largo + 1
+    return resultado
+
+
 def _sueltos_de(revision: str) -> dict:
-    """Los archivos sueltos de `revision`; antes de la migración, los de partir su `catalogo.json` en memoria."""
+    """Los archivos sueltos de `revision` (antes de la migración, los de partir su `catalogo.json` en memoria), más los
+    `canal.json` y los logos de los canales."""
     archivos = permisos.archivos_sueltos(revision)
-    if sueltos.migrado(archivos):
-        return archivos
-    try:
-        catalogo = lector_app.leer(_leer_de_git(revision, permisos.RUTA_CATALOGO) or b"")
-        return particion.partir(catalogo)
-    except (lector_app.JsonIlegible, particion.ErrorParticion) as error:
-        raise ErrorPublicar(f"El `{permisos.RUTA_CATALOGO}` de `main` no se puede partir para el índice: {error}") from None
+    if not sueltos.migrado(archivos):
+        try:
+            catalogo = lector_app.leer(_leer_de_git(revision, permisos.RUTA_CATALOGO) or b"")
+            archivos = particion.partir(catalogo)
+        except (lector_app.JsonIlegible, particion.ErrorParticion) as error:
+            raise ErrorPublicar(f"El `{permisos.RUTA_CATALOGO}` de `main` no se puede partir para el índice: {error}") from None
+    for ruta, datos in _archivos_de_canales(revision).items():
+        archivos.setdefault(ruta, datos)
+    return archivos
 
 
 def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
