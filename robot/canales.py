@@ -681,6 +681,33 @@ _HOST_URL = re.compile(r"^(?=.{4,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\
 _RESTO_URL = re.compile(r"^[A-Za-z0-9\-._~%!$&'()*+,;=:@/?#]*\Z")
 
 
+def error_de_etiqueta_idn(etiqueta: str):
+    """Por qué una parte `xn--…` de un nombre de sitio engaña, o None. Se descodifica (punycode) y se rechaza si no
+    es punycode de verdad, si sale todo ASCII (`xn--` sin acentos), si mezcla alfabetos, si tiene invisibles, o si
+    está entera en otro alfabeto y cada letra se confunde con una latina (`xn--80ak6aa92e` = «аррӏе» en cirílico, que
+    se lee «apple»). Un dominio con acentos de verdad (`xn--espaol-zwa` = «español») vale."""
+    if not etiqueta.startswith("xn--"):
+        return None
+    codigo = etiqueta[4:]
+    try:
+        unicode_ = codigo.encode("ascii").decode("punycode")
+        canonico = unicode_.encode("punycode").decode("ascii")
+    except (UnicodeError, ValueError):
+        return "no es punycode válido"
+    if not unicode_ or canonico != codigo:
+        return "no es punycode válido"
+    if unicode_.isascii():
+        return "es punycode de algo sin acentos (escríbelo tal cual)"
+    if unicodedata.normalize("NFC", unicode_.lower()) != unicode_:
+        return "no está en minúsculas ni en forma NFC"
+    if (problema := error_de_texto(unicode_, 63)):
+        return problema
+    letras = [c for c in unicode_ if c not in "-0123456789"]
+    if letras and not any(_alfabeto(c) == "LATIN" for c in letras) and all(esqueleto(c) for c in letras):
+        return f"se lee como «{esqueleto(unicode_)}» con letras de otro alfabeto"
+    return None
+
+
 def error_de_url_ficha(url):
     """Por qué una dirección de la ficha no vale, o None. Solo `https://`, en ASCII imprimible, de hasta 300, sin
     usuario ni contraseña, sin puerto (salvo 443) y con un nombre de máquina de verdad (ni una IP ni `localhost`)."""
@@ -700,6 +727,9 @@ def error_de_url_ficha(url):
         return "no puede llevar un puerto"
     if not _HOST_URL.match(host):
         return "no tiene un nombre de sitio válido (en minúsculas y sin acentos; con acentos, en `xn--…`)"
+    for etiqueta in host.split("."):
+        if (problema := error_de_etiqueta_idn(etiqueta)):
+            return f"no tiene un nombre de sitio válido: `{etiqueta}` {problema}"
     if not _RESTO_URL.match(camino) or "\\" in url:
         return "tiene espacios, acentos u otros caracteres que no van en una dirección (escríbelos con `%`)"
     return None

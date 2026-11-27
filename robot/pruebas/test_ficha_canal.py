@@ -131,6 +131,26 @@ class Enlaces(unittest.TestCase):
                 motivos = errores(ficha(enlaces=[enlace(url)]))
                 self.assertTrue(any("`url`" in e and que in e for e in motivos), motivos)
 
+    # La misma tabla está en la app (FichaPublicaCanalTests, Idn_*): si cambia una, cambia la otra.
+    IDN_QUE_VALEN = ("xn--espaol-zwa.org", "xn--mnchen-3ya.de", "xn--e1afmkfd.xn--p1ai", "xn--fiqs8s.cn",
+                     "xn--wgv71a.jp", "xn--hxajbheg2az3al.gr")
+    IDN_QUE_NO = ("xn--pple-43d.com", "xn--80ak6aa92e.com", "xn--mxail5aa.gr", "xn--zz.org", "xn--a.org",
+                  "e.xn--pple-43d.com", "xn--abc-.org")
+
+    def test_idn_que_valen(self):
+        for host in self.IDN_QUE_VALEN:
+            with self.subTest(host):
+                self.assertEqual([], errores(ficha(enlaces=[enlace(f"https://{host}/")])))
+
+    def test_idn_enganosos_no(self):
+        for host in self.IDN_QUE_NO:
+            with self.subTest(host):
+                motivos = errores(ficha(enlaces=[enlace(f"https://{host}/")]))
+                self.assertTrue(any("`url`" in e and "sitio" in e for e in motivos), motivos)
+        self.assertIn("apple", canales.error_de_etiqueta_idn("xn--80ak6aa92e"))
+        self.assertIn("mezcla", canales.error_de_etiqueta_idn("xn--pple-43d"))
+        self.assertIsNone(canales.error_de_etiqueta_idn("rance"))
+
     def test_texto_tipo_y_repetidos(self):
         self.assertEqual([], errores(ficha(enlaces=[enlace(texto="x" * 40)])))
         for malo, que in ((enlace(texto="x" * 41), "41"), (enlace(texto=""), "vacío"), (enlace(texto="a\nb"), "saltos"),
