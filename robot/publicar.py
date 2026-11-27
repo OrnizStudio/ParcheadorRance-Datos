@@ -6,7 +6,8 @@ Tras cada fusión en `main` (y a mano, o cuando el Dueño sube algo directamente
    (`particion.juntar`), con `versionCatalogo` + 1, si lo que dice ha cambiado. Lo hace con una propuesta propia
    (rama `robot/catalogo`) que se aprueba y se fusiona sola: su contenido sale entero de `main`, así que no hay nada
    que juzgar. Desde la fase D, en la misma propuesta y con la misma `versionCatalogo`, **`catalogo/canales.json`**:
-   de cada canal, lo que la app necesita para fiarse de él (`estado`, `verificado`, `paquetes`, `adultos`). Está en
+   de cada canal, lo que la app necesita para fiarse de él (`estado`, `verificado`, `paquetes`, `adultos`) y, si
+   los tiene, sus `idAnteriores` (solo los @, para avisar al pedir un canal nuevo de uno que ya existió). Está en
    `main`, que está protegida, así que de él sale la lista blanca de descargas de cada canal; `publicado` no. Como las propuestas que abre GitHub Actions no lanzan flujos de trabajo, el propio trabajo deja la
    comprobación `permisos` en verde en ese commit antes de fusionarla.
 2. **Escribe la rama `publicado`**: `indice.json` y el índice por juego de Programa › Juegos originales,
@@ -59,11 +60,34 @@ RUTA_CANALES_MAIN = permisos.RUTA_CANALES_MAIN
 TOPE_CANALES_MAIN = 4 * 1024 * 1024
 
 
-def canales_para_main(archivos: dict) -> list:
-    """Las entradas de `catalogo/canales.json`: cada canal con un `canal.json` válido en `main`, ordenados por id."""
+def canales_para_main(archivos: dict, con_anteriores: bool = True) -> list:
+    """Las entradas de `catalogo/canales.json`: cada canal con un `canal.json` válido en `main`, ordenados por id.
+
+    Con `con_anteriores`, la de un canal que ha cambiado de @ lleva además `idAnteriores`: la lista de sus @ de antes
+    (solo los que valen como @, sin repetir y sin el actual, en el orden de su `canal.json`). Un canal sin @ anteriores
+    no lleva el campo, así que su entrada queda igual que antes."""
     entradas, _ = canales_publicados(archivos)
-    return [{"id": cid, "estado": c["estado"], "verificado": c["verificado"], "paquetes": c["paquetes"],
-             "adultos": c["adultos"]} for cid, c in sorted(entradas.items())]
+    resultado = []
+    for cid, c in sorted(entradas.items()):
+        entrada = {"id": cid, "estado": c["estado"], "verificado": c["verificado"], "paquetes": c["paquetes"],
+                   "adultos": c["adultos"]}
+        if con_anteriores and (anteriores := _ids_anteriores(archivos, cid)):
+            entrada["idAnteriores"] = anteriores
+        resultado.append(entrada)
+    return resultado
+
+
+def _ids_anteriores(archivos: dict, cid: str) -> list:
+    """Los @ de `idAnteriores` del `canal.json` de ese canal en `main` (lo que no vale, fuera)."""
+    datos = archivos.get(f"canales/{cid}/canal.json")
+    canal = _objeto(datos) if datos is not None else None
+    filas = canal.get("idAnteriores") if canal is not None else None
+    vistos = []
+    for fila in filas if isinstance(filas, list) else []:
+        anterior = fila.get("id") if isinstance(fila, dict) else None
+        if isinstance(anterior, str) and permisos.canales.ID_CANAL.match(anterior) and anterior != cid and anterior not in vistos:
+            vistos.append(anterior)
+    return vistos
 
 
 def _canales_de_main(datos):
@@ -81,12 +105,24 @@ def regenerados(archivos: dict, catalogo_main: bytes | None, canales_main: bytes
 
     Si `canales.json` pasara de `TOPE_CANALES_MAIN`, no se escribe y no frena el catálogo: sale solo `catalogo.json`
     (si cambia) y el motivo va a `avisos`. La app, con un `canales.json` de otra versión, se queda con el oficial y lo
-    instalado. Por los canales solos no se sube la versión (si no, subiría en cada publicación)."""
+    instalado. Por los canales solos no se sube la versión (si no, subiría en cada publicación).
+
+    Los `idAnteriores` son solo una ayuda para la app: si con ellos no cabe, se escribe sin ellos (y se avisa), que
+    la lista blanca importa más."""
     canales = canales_para_main(archivos)
     version_canales, canales_antes = _canales_de_main(canales_main)
     catalogo = catalogo_regenerado(archivos, catalogo_main)
-    # El tamaño casi no depende de la versión: se mide con la mayor posible para no quedarse corto.
-    if len(_json({"esquema": 1, "versionCatalogo": lector_app.VERSION_MAXIMA, "canales": canales})) > TOPE_CANALES_MAIN:
+
+    def cabe(lista):
+        # El tamaño casi no depende de la versión: se mide con la mayor posible para no quedarse corto.
+        return len(_json({"esquema": 1, "versionCatalogo": lector_app.VERSION_MAXIMA, "canales": lista})) <= TOPE_CANALES_MAIN
+
+    if not cabe(canales) and any("idAnteriores" in c for c in canales):
+        canales = canales_para_main(archivos, con_anteriores=False)
+        if cabe(canales) and avisos is not None:
+            avisos.append(f"`{RUTA_CANALES_MAIN}` pasaría de {TOPE_CANALES_MAIN // 1048576} MB con los `idAnteriores`: "
+                          "se escribe sin ellos (el parcheador no avisará al pedir un @ que ya fue de otro canal).")
+    if not cabe(canales):
         if avisos is not None:
             avisos.append(f"`{RUTA_CANALES_MAIN}` pasaría de {TOPE_CANALES_MAIN // 1048576} MB ({len(canales)} canales): "
                           "no se actualiza, y el parcheador solo ofrece el canal oficial hasta que se arregle.")
