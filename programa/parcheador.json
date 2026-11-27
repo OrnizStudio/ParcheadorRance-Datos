@@ -1,19 +1,20 @@
 {
   "esquema": 1,
   "launcher": {
-    "ultimaVersion": "0.3.0",
+    "ultimaVersion": "0.4.0",
     "versionMinima": "",
     "motivoUrgente": "",
     "novedades": [
-      "Varios parches por juego: cada parche muestra el canal que lo hace, con su @ y su logo",
-      "Puedes elegir de qué canal usar el parche de cada juego",
-      "Avisos claros si un canal está retirado o bloqueado",
-      "Más seguridad: los parches solo se descargan de direcciones permitidas",
-      "Modo equipo: «Actualizar» en el historial siempre trae lo último"
+      "Canales: además del canal oficial de Ornizen, ahora puedes descubrir y seguir otros canales de traducción desde el directorio de canales.",
+      "Primera vez: eliges a qué canales te suscribes; con un botón te suscribes al oficial.",
+      "Cada juego muestra los parches de los canales que sigues y puedes elegir cuál instalar.",
+      "Modo equipo: CMS por canal con selector de canal, cola de subidas por canal y solicitudes al Dueño del programa.",
+      "Crear mi canal: pide tu propio canal desde la app (se activará cuando el directorio de canales esté abierto).",
+      "Textos en inglés revisados y muchos arreglos de estabilidad."
     ],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.3.0/ParcheadorOrnizen-0.3.0-win-x64.zip",
-    "tamano": 24487753,
-    "hash": "blake3:3c1eb9c1a8e6a5ec2a645d4a83d201b7efd9177b877b02fe037cc7a6d6cbce66"
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.4.0/ParcheadorOrnizen-0.4.0-win-x64.zip",
+    "tamano": 25684081,
+    "hash": "blake3:33fe127c3a7312a1c84547b8384530d6e659771b9daa8d32317c0cd1f52aad44"
   },
   "grupo": {
     "nombre": "canal1"
