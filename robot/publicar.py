@@ -658,6 +658,62 @@ def miembros_publicados(archivos: dict, canales: dict, hoy: datetime.date) -> di
     return cuentas
 
 
+# Personas del equipo que lleva cada canal en `canales/<xx>.json` (la ficha enseña 8 y «Y N más»; `miembrosActivos`
+# dice cuántas son en total). 100 cuentas de 39 caracteres son unos 6 KB por canal.
+MAX_EQUIPO_PUBLICADO = 100
+
+
+def ficha_publicada(archivos: dict, cid: str, juegos: dict, hoy: datetime.date):
+    """La ficha pública de un canal tal como la lee la app, o None si no tiene `ficha.json` o no vale entera (el robot
+    ya no la acepta así; podría venir de un arreglo a mano). Un `destacado` que no es un juego con parche publicado de
+    este canal sale null: la ficha no recomienda lo que no se puede instalar."""
+    ruta = f"canales/{cid}/ficha.json"
+    datos = archivos.get(ruta)
+    if datos is None:
+        return None
+    try:
+        ficha = permisos.canales.leer_json_estricto(datos, ruta, permisos.canales.TOPES["ficha.json"])
+    except permisos.canales.JsonMalo:
+        return None
+    if permisos.canales.validar_ficha(ficha, ruta, hoy):
+        return None
+    destacado = ficha.get("destacado")
+    if destacado is not None and not any(p["canal"] == cid for p in juegos.get(destacado, {}).get("parches", [])):
+        destacado = None
+    return {"descripcion": ficha.get("descripcion", ""), "idiomas": ficha.get("idiomas", []),
+            "tipos": ficha.get("tipos", []), "enlaces": ficha.get("enlaces", []), "enCurso": ficha.get("enCurso", []),
+            "destacado": destacado}
+
+
+def equipos_publicados(cuentas: dict) -> dict:
+    """{canal: (equipo, total)}: los miembros activos de cada canal (nunca los invitados, ni las cuentas vetadas, que
+    ya no están en `cuentas`), del rol más alto al más bajo y luego por cuenta; como mucho `MAX_EQUIPO_PUBLICADO`."""
+    por_canal = {}
+    for entrada in cuentas.values():
+        for fila in entrada["canales"]:
+            if fila["estado"] == "activo":
+                por_canal.setdefault(fila["canal"], []).append({"cuenta": entrada["cuenta"], "rol": fila["rol"]})
+    orden = {rol: i for i, rol in enumerate(reversed(permisos.canales.TEXTO_ROL))}
+    return {cid: (sorted(lista, key=lambda m: (orden[m["rol"]], m["cuenta"].casefold(), m["cuenta"]))[:MAX_EQUIPO_PUBLICADO],
+                  len(lista)) for cid, lista in por_canal.items()}
+
+
+def _completar_fichas(archivos: dict, canales: dict, juegos: dict, cuentas: dict, hoy: datetime.date) -> dict:
+    """Las entradas de `canales/<xx>.json` con lo que solo enseña la ficha del canal (desde la 0.4.3): `creado`,
+    `ficha`, `equipo` y `miembrosActivos`. Va aparte de `canales_publicados` para que nada de esto llegue a
+    `catalogo/canales.json` de `main`."""
+    equipos = equipos_publicados(cuentas)
+    completas = {}
+    for cid, entrada in canales.items():
+        canal = _objeto(archivos.get(f"canales/{cid}/canal.json", b"")) or {}
+        equipo, total = equipos.get(cid, ([], 0))
+        completas[cid] = {**entrada,
+                          "creado": canal["creado"] if permisos.canales._es_fecha(canal.get("creado")) else None,
+                          "ficha": ficha_publicada(archivos, cid, juegos, hoy),
+                          "equipo": equipo, "miembrosActivos": total}
+    return completas
+
+
 def buscar_canales(canales: dict, juegos: dict) -> bytes:
     """`buscar-canales.json`: el directorio de canales, todos menos los ocultos, con cuántos juegos tienen parche
     publicado de cada uno."""
@@ -710,9 +766,10 @@ def archivos_publicados(archivos: dict, catalogo: dict | None, main_sha: str, ah
     canales, logos = canales_publicados(archivos)
     juegos, detalles = juegos_publicados(archivos, canales)
     resultado.update(_trozos("juegos/", "juegos", juegos))
-    resultado.update(_trozos("canales/", "canales", canales))
     hoy = datetime.date.fromisoformat(ahora[:10]) if len(ahora) >= 10 else datetime.datetime.now(datetime.timezone.utc).date()
-    resultado.update(_trozos_de_miembros(miembros_publicados(archivos, canales, hoy)))
+    cuentas = miembros_publicados(archivos, canales, hoy)
+    resultado.update(_trozos("canales/", "canales", _completar_fichas(archivos, canales, juegos, cuentas, hoy)))
+    resultado.update(_trozos_de_miembros(cuentas))
     if canales:
         resultado["buscar-canales.json"] = buscar_canales(canales, juegos)
         resultado["retirados.json"] = retirados(archivos, canales)
@@ -850,7 +907,7 @@ def _archivos_de_canales(revision: str) -> dict:
         partes = ruta.split("/")
         if modo != "100644" or tipo != "blob" or len(partes) != 3 or not permisos.canales.ID_CANAL.match(partes[1]):
             continue
-        if partes[2] in ("canal.json", "miembros.json", "lista-negra.json"):
+        if partes[2] in ("canal.json", "miembros.json", "lista-negra.json", "ficha.json"):
             if int(tamano) <= permisos.canales.TOPES[partes[2]]:
                 pedir.append((ruta, sha))
         elif partes[2].endswith(permisos.canales.EXTENSIONES_LOGO):

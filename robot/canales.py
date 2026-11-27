@@ -34,6 +34,8 @@ RUTA_SEGURA = re.compile(r"^[a-z0-9._/-]+\Z")
 # Los repositorios de esta organización son del programa: solo los declara el canal oficial (sin distinguir mayúsculas).
 ORGANIZACION_OFICIAL = "ornizstudio"
 EXTENSIONES_LOGO = (".png", ".webp", ".jpg", ".jpeg")
+# El id de un juego (el de `particion.ID_VALIDO`, que no se importa aquí para no traer el catálogo).
+ID_JUEGO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\Z")
 
 
 def tipo_de_imagen(datos: bytes):
@@ -50,7 +52,7 @@ def tipo_de_imagen(datos: bytes):
 TIPO_POR_EXTENSION = {".png": "png", ".webp": "webp", ".jpg": "jpeg", ".jpeg": "jpeg"}
 
 # Topes (docs/canales.md §7.7). Se miran con el tamaño de git, antes de leer nada.
-TOPES = {"canal.json": 16 * 1024, "miembros.json": 128 * 1024, "lista-negra.json": 256 * 1024}
+TOPES = {"canal.json": 16 * 1024, "miembros.json": 128 * 1024, "lista-negra.json": 256 * 1024, "ficha.json": 16 * 1024}
 TOPE_LOGO = 512 * 1024
 # Consultas a GitHub (el nombre de una cuenta por su id, su rol en el canal oficial) que una propuesta puede provocar.
 # Cada una gasta cuota del token del robot: sin tope, una propuesta con cientos de filas lo dejaría sin cuota y sin
@@ -652,6 +654,162 @@ def validar_canal(objeto, carpeta: str, ruta: str) -> list:
     return errores
 
 
+# ───────────────────────────────────────── ficha.json ─────────────────────────────────────────
+# La ficha pública del canal (docs/canales.md §1.4): lo que el canal cuenta de sí mismo en su ficha del parcheador. Va
+# aparte de `canal.json` porque la cambian el Propietario y los Administradores (el Editor no) y para que un error en
+# ella no deje al canal sin publicarse. Lo que se calcula (desde cuándo existe, sus cifras y su equipo) no se guarda.
+
+CAMPOS_FICHA = ("esquema", "descripcion", "idiomas", "tipos", "enlaces", "enCurso", "destacado")
+CAMPOS_ENLACE_FICHA = ("tipo", "texto", "url")
+CAMPOS_EN_CURSO = ("nombre", "tipo", "progreso", "actualizado")
+LARGO_DESCRIPCION_FICHA = 500
+SALTOS_DESCRIPCION_FICHA = 3
+MAX_IDIOMAS_FICHA = 8
+# Lista cerrada (ISO 639-1): la app sabe nombrarlos todos en español y en inglés.
+IDIOMAS_FICHA = ("es", "en", "ca", "gl", "eu", "pt", "fr", "it", "de", "nl", "pl", "ru", "uk", "ja", "zh", "ko")
+TIPOS_FICHA = ("completa", "parcial", "mod")
+TIPOS_ENLACE_FICHA = ("discord", "web", "apoyo", "github", "otro")
+MAX_ENLACES_FICHA = 4
+LARGO_TEXTO_ENLACE_FICHA = 40
+LARGO_URL_FICHA = 300
+MAX_EN_CURSO = 5
+LARGO_NOMBRE_EN_CURSO = 60
+ROL_FICHA = 3  # Administrador (y el Propietario del canal, y el Dueño)
+# Un nombre de máquina con al menos un punto, en ASCII (un dominio con acentos va en punycode, `xn--…`: así no se
+# escribe una dirección que se ve igual que otra con letras de otro alfabeto).
+_HOST_URL = re.compile(r"^(?=.{4,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_RESTO_URL = re.compile(r"^[A-Za-z0-9\-._~%!$&'()*+,;=:@/?#]*\Z")
+
+
+def error_de_etiqueta_idn(etiqueta: str):
+    """Por qué una parte `xn--…` de un nombre de sitio engaña, o None. Se descodifica (punycode) y se rechaza si no
+    es punycode de verdad, si sale todo ASCII (`xn--` sin acentos), si mezcla alfabetos, si tiene invisibles, o si
+    está entera en otro alfabeto y cada letra se confunde con una latina (`xn--80ak6aa92e` = «аррӏе» en cirílico, que
+    se lee «apple»). Un dominio con acentos de verdad (`xn--espaol-zwa` = «español») vale."""
+    if not etiqueta.startswith("xn--"):
+        return None
+    codigo = etiqueta[4:]
+    try:
+        unicode_ = codigo.encode("ascii").decode("punycode")
+        canonico = unicode_.encode("punycode").decode("ascii")
+    except (UnicodeError, ValueError):
+        return "no es punycode válido"
+    if not unicode_ or canonico != codigo:
+        return "no es punycode válido"
+    if unicode_.isascii():
+        return "es punycode de algo sin acentos (escríbelo tal cual)"
+    if unicodedata.normalize("NFC", unicode_.lower()) != unicode_:
+        return "no está en minúsculas ni en forma NFC"
+    if (problema := error_de_texto(unicode_, 63)):
+        return problema
+    letras = [c for c in unicode_ if c not in "-0123456789"]
+    if letras and not any(_alfabeto(c) == "LATIN" for c in letras) and all(esqueleto(c) for c in letras):
+        return f"se lee como «{esqueleto(unicode_)}» con letras de otro alfabeto"
+    return None
+
+
+def error_de_url_ficha(url):
+    """Por qué una dirección de la ficha no vale, o None. Solo `https://`, en ASCII imprimible, de hasta 300, sin
+    usuario ni contraseña, sin puerto (salvo 443) y con un nombre de máquina de verdad (ni una IP ni `localhost`)."""
+    if not isinstance(url, str):
+        return "tiene que ser un texto"
+    if len(url) > LARGO_URL_FICHA:
+        return f"tiene {len(url)} caracteres y el máximo es {LARGO_URL_FICHA}"
+    if not url.startswith("https://"):
+        return "tiene que empezar por `https://`"
+    resto = url[len("https://"):]
+    corte = min((resto.find(c) for c in "/?#" if c in resto), default=len(resto))
+    autoridad, camino = resto[:corte], resto[corte:]
+    if "@" in autoridad:
+        return "no puede llevar usuario ni contraseña (`usuario:clave@`)"
+    host, dos_puntos, puerto = autoridad.partition(":")
+    if dos_puntos and puerto != "443":
+        return "no puede llevar un puerto"
+    if not _HOST_URL.match(host):
+        return "no tiene un nombre de sitio válido (en minúsculas y sin acentos; con acentos, en `xn--…`)"
+    for etiqueta in host.split("."):
+        if (problema := error_de_etiqueta_idn(etiqueta)):
+            return f"no tiene un nombre de sitio válido: `{etiqueta}` {problema}"
+    if not _RESTO_URL.match(camino) or "\\" in url:
+        return "tiene espacios, acentos u otros caracteres que no van en una dirección (escríbelos con `%`)"
+    return None
+
+
+def validar_ficha(objeto, ruta: str, hoy: datetime.date | None = None) -> list:
+    """Motivos por los que `ficha.json` no vale (lista vacía = vale). `hoy` (para que `enCurso.actualizado` no sea
+    futuro) se puede fijar en las pruebas; se deja un día de margen por los husos horarios."""
+    hoy = hoy or datetime.date.today()
+    if not isinstance(objeto, dict):
+        return [f"`{ruta}` tiene que ser un objeto `{{ … }}`."]
+    errores = _campos_desconocidos(f"`{ruta}`", objeto, CAMPOS_FICHA)
+    if objeto.get("esquema") != 1:
+        errores.append(f"`{ruta}`: falta `\"esquema\": 1`.")
+    if "descripcion" in objeto and (problema := error_de_texto(objeto["descripcion"], LARGO_DESCRIPCION_FICHA, 0,
+                                                                 SALTOS_DESCRIPCION_FICHA)):
+        errores.append(f"`{ruta}`: `descripcion` {problema}.")
+
+    for campo, validos, maximo in (("idiomas", IDIOMAS_FICHA, MAX_IDIOMAS_FICHA), ("tipos", TIPOS_FICHA, len(TIPOS_FICHA))):
+        lista = objeto.get(campo, [])
+        if not isinstance(lista, list) or len(lista) > maximo \
+                or not all(isinstance(x, str) and x in validos for x in lista) or len(set(lista)) != len(lista):
+            errores.append(f"`{ruta}`: `{campo}` tiene que ser una lista sin repetir de como mucho {maximo} de estos: "
+                           + ", ".join(f"`{v}`" for v in validos) + ".")
+
+    enlaces = objeto.get("enlaces", [])
+    if not isinstance(enlaces, list) or len(enlaces) > MAX_ENLACES_FICHA:
+        errores.append(f"`{ruta}`: `enlaces` tiene que ser una lista de como mucho {MAX_ENLACES_FICHA}.")
+    else:
+        vistas = set()
+        for i, e in enumerate(enlaces, 1):
+            donde = f"`{ruta}` › `enlaces` {i}"
+            if not isinstance(e, dict):
+                errores.append(f"{donde} tiene que ser `{{ \"tipo\": …, \"texto\": …, \"url\": \"https://…\" }}`.")
+                continue
+            errores += _campos_desconocidos(donde, e, CAMPOS_ENLACE_FICHA)
+            if e.get("tipo") not in TIPOS_ENLACE_FICHA:
+                errores.append(f"{donde}: `tipo` tiene que ser " + ", ".join(f"`{v}`" for v in TIPOS_ENLACE_FICHA) + ".")
+            if (problema := error_de_texto(e.get("texto"), LARGO_TEXTO_ENLACE_FICHA, 1)):
+                errores.append(f"{donde}: `texto` {problema}.")
+            if (problema := error_de_url_ficha(e.get("url"))):
+                errores.append(f"{donde}: `url` {problema}.")
+            elif e["url"] in vistas:
+                errores.append(f"{donde}: `url` está repetida.")
+            else:
+                vistas.add(e["url"])
+
+    en_curso = objeto.get("enCurso", [])
+    if not isinstance(en_curso, list) or len(en_curso) > MAX_EN_CURSO:
+        errores.append(f"`{ruta}`: `enCurso` tiene que ser una lista de como mucho {MAX_EN_CURSO} proyectos.")
+    else:
+        nombres = set()
+        for i, p in enumerate(en_curso, 1):
+            donde = f"`{ruta}` › `enCurso` {i}"
+            if not isinstance(p, dict):
+                errores.append(f"{donde} tiene que ser `{{ \"nombre\": …, \"tipo\": …, \"progreso\": …, "
+                               "\"actualizado\": aaaa-mm-dd }}`.")
+                continue
+            errores += _campos_desconocidos(donde, p, CAMPOS_EN_CURSO)
+            if (problema := error_de_texto(p.get("nombre"), LARGO_NOMBRE_EN_CURSO, 1)):
+                errores.append(f"{donde}: `nombre` {problema}.")
+            elif unicodedata.normalize("NFKC", p["nombre"]).casefold() in nombres:
+                errores.append(f"{donde}: `nombre` ya está en otro proyecto de la lista.")
+            else:
+                nombres.add(unicodedata.normalize("NFKC", p["nombre"]).casefold())
+            if p.get("tipo") not in TIPOS_FICHA:
+                errores.append(f"{donde}: `tipo` tiene que ser " + ", ".join(f"`{v}`" for v in TIPOS_FICHA) + ".")
+            if not _es_entero(p.get("progreso")) or not 0 <= p["progreso"] <= 100:
+                errores.append(f"{donde}: `progreso` tiene que ser un número entero de 0 a 100.")
+            if not _es_fecha(p.get("actualizado")):
+                errores.append(f"{donde}: `actualizado` tiene que ser una fecha aaaa-mm-dd.")
+            elif datetime.date.fromisoformat(p["actualizado"]) > hoy + datetime.timedelta(days=1):
+                errores.append(f"{donde}: `actualizado` ({p['actualizado']}) es una fecha futura.")
+
+    destacado = objeto.get("destacado")
+    if destacado is not None and not (isinstance(destacado, str) and ID_JUEGO.match(destacado)):
+        errores.append(f"`{ruta}`: `destacado` tiene que ser el id de un juego con parche de este canal, o null.")
+    return errores
+
+
 # ───────────────────────────────────────── Lo que ve el robot de un canal ─────────────────────────────────────────
 
 @dataclass
@@ -944,6 +1102,9 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
     for resto, c in archivos:
         if resto.startswith("parches/"):
             continue  # los parches del canal (fase B) los juzga sueltos.py, con el rol en el canal
+        if resto == "ficha.json":
+            motivos += _comprobar_ficha(canal, c, rol, leer)
+            continue
         if resto in ("canal.json", "miembros.json", "lista-negra.json"):
             try:
                 antes = _leer(c, "antes", resto)
@@ -1010,7 +1171,36 @@ def _comprobar_un_canal(canal: str, archivos, rol: int, autor_id: int, leer, ids
 
         if rol < 5:
             motivos.append(f"`{c.ruta}`: en la carpeta de un canal solo van `canal.json`, `miembros.json`, "
-                           "`lista-negra.json` y su logo.")
+                           "`lista-negra.json`, `ficha.json` y su logo.")
+    return motivos
+
+
+def _comprobar_ficha(canal: str, c: CambioCanal, rol: int, leer) -> list:
+    """`ficha.json`: la cambia (y la crea o la borra) un Administrador del canal; tiene que valer entera, decir algo
+    distinto de lo que había y, si lleva `destacado`, ese juego tiene que tener parche de este canal tras la propuesta."""
+    if rol < ROL_FICHA:
+        return [f"`{c.ruta}`: la ficha pública la cambia un Administrador de @{canal} (tu rol: {NOMBRE_ROL[rol]})."]
+    if c.despues is None:
+        return []  # borrarla deja la ficha vacía: se puede
+    if c.tamano > TOPES["ficha.json"]:
+        return [f"`{c.ruta}` pesa más de {TOPES['ficha.json'] // 1024} KB."]
+    try:
+        despues = _leer(c, "despues", "ficha.json")
+    except JsonMalo as e:
+        return [str(e)]
+    motivos = validar_ficha(despues, c.ruta)
+    if motivos:
+        return motivos
+    destacado = despues.get("destacado")
+    if destacado is not None and leer(f"{CARPETA_CANALES}{canal}/parches/{destacado}.json", "despues") is None:
+        motivos.append(f"`{c.ruta}` › `destacado`: `{destacado}` no es un juego con parche de @{canal}.")
+    try:
+        antes = _leer(c, "antes", "ficha.json")
+    except JsonMalo:
+        antes = None  # la de `main` está rota: la nueva la arregla
+    if not motivos and rol < 5 and antes is not None and antes == despues:
+        motivos.append(f"`{c.ruta}`: no cambia nada de lo que dice (solo el formato o el orden). Cada publicación "
+                       "mueve `main` y obliga a rehacer las que están en curso: deja el archivo como estaba.")
     return motivos
 
 
