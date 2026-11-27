@@ -184,8 +184,8 @@ class Editor(unittest.TestCase):
 
     def test_solo_imagenes_y_no_enormes(self):
         exe = revisar(EDITOR, archivos=[Cambio("catalogo/juegos/juego1/a.exe", "A", tamano=1)], subir_version=False)
-        self.assertIn("solo van imágenes", exe[0])
-        grande = revisar(EDITOR, archivos=[Cambio("catalogo/juegos/juego1/a.png", "A", tamano=9_000_000)], subir_version=False)
+        self.assertIn("las imágenes de un juego van en", exe[0])
+        grande = revisar(EDITOR, archivos=[Cambio("catalogo/juegos/juego1/portada.png", "A", tamano=9_000_000)], subir_version=False)
         self.assertIn("máximo", grande[0])
 
 

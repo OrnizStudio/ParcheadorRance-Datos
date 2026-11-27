@@ -31,6 +31,7 @@ Solo usa la biblioteca estándar de Python. Nunca ejecuta nada de la propuesta: 
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime
 import enum
 import fnmatch
@@ -146,7 +147,7 @@ class Cambio:
 
 def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None,
               ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, leer_sueltos=None, hoy=None,
-              cuentas=(), creada_el=None, solicitudes_abiertas=None) -> list:
+              cuentas=(), creada_el=None, solicitudes_abiertas=None, cuerpo=None, listar_main=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
@@ -160,6 +161,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     `cuentas` son los ids de todas las cuentas que han tocado la propuesta: si una está en la lista negra general, no
     se acepta (fase D). Para las solicitudes (fase D, `solicitudes.py`): `creada_el(id)` da la fecha en que se creó una
     cuenta y `solicitudes_abiertas(etiqueta)` cuántas propuestas abiertas tiene el autor con esa etiqueta (sin esta).
+    `cuerpo` es el texto de la propuesta (la marca `<!-- canal: <c> -->` de un cambio en la ficha central) y
+    `listar_main(carpeta)` da {ruta: bytes} de los archivos de esa carpeta en `main` (`solicitudes/etiquetas/`).
     """
     motivos = []
     if not cambios:
@@ -193,7 +196,9 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     # Solicitudes (fase D): una propuesta que pide algo que el autor no puede hacer directamente. Se juzga entera aquí.
     if not permisos.es_dueno:
         try:
-            sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios], lambda r: leer(r, "antes") is not None)
+            sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios], *_lectores(leer, leer_sueltos), cuerpo,
+                                         leer_sueltos is not None and sueltos.migrado(leer_sueltos("antes")),
+                                         leer_antes=_lector_antes(leer, leer_sueltos))
         except ValueError as error:
             return [str(error)]
         if sol is not None:
@@ -201,8 +206,12 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             if raros:
                 return [f"`{raros[0]}`: una solicitud solo lleva archivos normales (sin enlaces simbólicos, submódulos "
                         "ni permisos de ejecución)."]
+            if sol.tipo in solicitudes.DE_PROGRAMA:
+                return _sin_repetidos(_comprobar_programa(sol, cambios, leer, permisos, leer_sueltos, hoy, bloqueados,
+                                                          consultas, solicitudes_abiertas))
             return _sin_repetidos(_comprobar_solicitud(sol, leer, leer_main, permisos, cuenta_de, creada_el,
-                                                       solicitudes_abiertas, leer_sueltos, hoy, bloqueados))
+                                                       solicitudes_abiertas, leer_sueltos, hoy, bloqueados,
+                                                       listar_main))
     if not permisos.es_dueno:
         for c in de_canales:
             arroba = canales.canal_de_la_ruta(c.ruta)[0]
@@ -406,12 +415,197 @@ def _comprobar_tamanos(cambios, permisos: Permisos) -> list:
     return motivos
 
 
+def _rol_en(permisos: Permisos, canal: str) -> int:
+    """El rol del autor en el canal (en el oficial cuenta también el de la fase A, `rol_global`)."""
+    rol = permisos.por_canal.get(canal, Rol.NINGUNO)
+    if canal == canales.CANAL_OFICIAL and permisos.rol_global < Rol.DUENO:
+        rol = max(rol, permisos.rol_global)
+    return int(rol)
+
+
+def _lectores(leer, leer_sueltos):
+    """(existe_en_main(ruta), leer_despues(ruta)) para `solicitudes.clasificar`: lo de `juegos/` sale de los archivos
+    sueltos (ya leídos de una vez); lo demás, de `leer`."""
+    def lado(ruta, cual):
+        if sueltos.de_los_sueltos(ruta) and leer_sueltos is not None:
+            return leer_sueltos(cual).get(ruta)
+        return leer(ruta, cual) if leer is not None else None
+    return (lambda ruta: lado(ruta, "antes") is not None), (lambda ruta: lado(ruta, "despues"))
+
+
+def _lector_antes(leer, leer_sueltos):
+    """`leer_antes(ruta)` de `main` para `solicitudes.clasificar` (lo de `juegos/`, de los archivos sueltos)."""
+    def antes(ruta):
+        if sueltos.de_los_sueltos(ruta) and leer_sueltos is not None:
+            return leer_sueltos("antes").get(ruta)
+        return leer(ruta, "antes") if leer is not None else None
+    return antes
+
+
+def solicitud_de(cambios, leer_archivo, leer_sueltos, cuerpo=None):
+    """La solicitud que es la propuesta (con `directa` si es de un canal verificado en `main`), o None."""
+    try:
+        sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios], *_lectores(leer_archivo, leer_sueltos),
+                                     cuerpo, leer_sueltos is not None and sueltos.migrado(leer_sueltos("antes")),
+                                     leer_antes=_lector_antes(leer_archivo, leer_sueltos))
+    except ValueError:
+        return None
+    if sol is not None and sol.tipo in solicitudes.DE_PROGRAMA:
+        info = _canales_de(leer_sueltos("antes") if leer_sueltos is not None else {})
+        sol = dataclasses.replace(sol, directa=sol.canal in info and info[sol.canal][1])
+    return sol
+
+
+def _ids_de_tienda(juego) -> set:
+    """{("steamAppId", "n"), ("gogId", "n")} de la `deteccion` de un juego (lo que se pueda leer). Un número escrito de
+    otra forma es el mismo id: `123`, `"0123"`, `"+123"`, `" 123 "` y `123.0` dan `"123"`."""
+    deteccion = juego.get("deteccion") if isinstance(juego, dict) else None
+    ids = set()
+    for clave in ("steamAppId", "gogId"):
+        valor = deteccion.get(clave) if isinstance(deteccion, dict) else None
+        if isinstance(valor, bool) or valor is None:
+            continue
+        if isinstance(valor, float):
+            if not valor.is_integer():
+                continue
+            valor = int(valor)
+        if isinstance(valor, str):
+            texto = valor.strip()
+            try:
+                valor = int(texto, 10)
+            except ValueError:
+                if texto:
+                    ids.add((clave, texto.casefold()))
+                continue
+        if isinstance(valor, int) and valor != 0:
+            ids.add((clave, str(valor)))
+    return ids
+
+
+def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, hoy, bloqueados, consultas,
+                        solicitudes_abiertas) -> list:
+    """Juego nuevo, edición nueva o cambio en la ficha central desde un canal (fase D3b, `solicitudes.py`)."""
+    hoy = hoy or datetime.datetime.now(datetime.timezone.utc).date()
+    c, jid = sol.canal, sol.clave
+    if not c:
+        return [f"`juegos/{jid}/juego.json`: un juego nuevo lleva `alta` con el canal que lo da de alta. Hazlo desde "
+                "el parcheador."]
+    if c in bloqueados:
+        return [f"@{c} está bloqueado por el Dueño del programa ({bloqueados[c]})."]
+    if permisos.cuenta_id is None:
+        return ["Una solicitud la abre y la sube una sola cuenta: abre una propuesta nueva desde la tuya."]
+    main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
+    prop_sueltos = leer_sueltos("despues") if leer_sueltos is not None else {}
+    if not sueltos.migrado(main_sueltos):
+        return [f"`juegos/{jid}/`: el catálogo aún está en `{RUTA_CATALOGO}`; los archivos sueltos los crea la "
+                "migración, que hace el Dueño del programa."]
+    info = _canales_de(main_sueltos)
+    if c not in info:
+        return [f"@{c} no existe en `main`."]
+    if sueltos._estado_canal(main_sueltos, c) != "activo":
+        return [f"@{c} no está activo: no da de alta juegos ni cambia fichas."]
+    rol = _rol_en(permisos, c)
+    que = {"juego": "Dar de alta un juego", "edicion": "Dar de alta una edición",
+           "central": "Cambiar la ficha central de un juego"}[sol.tipo]
+    if rol < Rol.ADMINISTRADOR:
+        return [f"{que} lo pide un Administrador o un Propietario del canal, y en @{c} no lo eres."]
+    if sol.tipo == "central" and f"canales/{c}/parches/{jid}.json" not in main_sueltos:
+        return [f"@{c} no tiene parche de «{jid}»: la ficha central de un juego la cambia un canal que lo publica "
+                "(añade antes su parche)."]
+    motivos = []
+    if not info[c][1]:  # verificado en `main`: directo, sin tope
+        abiertas = sum((solicitudes_abiertas or (lambda etiqueta: 0))(solicitudes.PREFIJO_ETIQUETA + t)
+                       for t in solicitudes.DE_PROGRAMA)
+        if abiertas >= solicitudes.TOPE_ABIERTAS:
+            motivos.append(f"Ya tienes {solicitudes.TOPE_ABIERTAS} solicitudes de juegos, ediciones o fichas abiertas: "
+                           "espera a que el Dueño del programa las resuelva o retira alguna.")
+    for cambio in cambios:
+        if cambio.ruta.startswith(solicitudes.CARPETA_IMAGENES):
+            if (problema := solicitudes.error_de_ruta_de_imagen(cambio.ruta)):
+                motivos.append(problema)
+            elif cambio.tamano > TAMANO_MAXIMO_IMAGEN:
+                motivos.append(f"`{cambio.ruta}`: la imagen pesa {cambio.tamano / 1048576:.1f} MB y el máximo son 5 MB.")
+    de_sueltos = [(cambio.ruta, cambio.estado) for cambio in cambios if sueltos.de_los_sueltos(cambio.ruta)]
+    motivos += sueltos.comprobar(de_sueltos, main_sueltos, prop_sueltos, {c: rol}, permisos.cuenta_id, False, hoy)
+    huellas_canal = _huellas_del_canal(leer, c)
+
+    def vetada(_canal, huella):
+        if huella in huellas_canal:
+            return f"de @{c}: {huellas_canal[huella]}"
+        try:
+            general = consultas.huella(huella)
+        except listas.ListaIlegible as error:
+            return f"no se ha podido comprobar en la lista negra: {error}"
+        return f"del programa: {general}" if general else None
+    motivos += sueltos.comprobar_huellas(de_sueltos, main_sueltos, prop_sueltos, vetada, False)
+    if motivos:
+        return motivos
+    # Un juego que ya está con otro id: con el mismo id de Steam o de GOG, no (docs/canales.md §7.3). También si una
+    # ficha central o una edición nueva cambian la `deteccion` del juego (solo cuentan los ids que añaden).
+    ruta_juego = f"juegos/{jid}/juego.json"
+
+    def leido(archivos):
+        try:
+            return lector_app.leer(archivos[ruta_juego])
+        except (lector_app.JsonIlegible, KeyError):
+            return None
+    mios = _ids_de_tienda(leido(prop_sueltos))
+    if sol.tipo != "juego":
+        mios -= _ids_de_tienda(leido(main_sueltos))
+    if mios:
+        for ruta, datos in sorted(main_sueltos.items()):
+            tipo = sueltos.tipo_de_ruta(ruta)
+            if not tipo or tipo[0] != "juego" or tipo[1] == jid:
+                continue
+            try:
+                otro = lector_app.leer(datos)
+            except lector_app.JsonIlegible:
+                continue
+            if mios & _ids_de_tienda(otro):
+                titulo = otro.get("titulo") if isinstance(otro.get("titulo"), str) else tipo[1]
+                motivos.append(f"`juegos/{jid}/juego.json`: «{titulo}» (`{tipo[1]}`) ya está con el mismo id de "
+                               "Steam o de GOG. Usa ese juego: añade tu parche o pide su edición.")
+                break
+    # Lo que la app tiene que poder leer: los errores nuevos del catálogo con todos los juegos (los que ya tenía
+    # `main` no son de esta propuesta).
+    try:
+        particion.juntar(main_sueltos, 1)
+    except particion.ErrorParticion as error:
+        return motivos + [f"Los archivos del catálogo que hay en `main` no se pueden juntar ({error}). Hasta que lo "
+                          f"arregle {lector_app.QUIEN_RESCATA}, solo él puede cambiar el catálogo."]
+    try:
+        cat_antes, cat_despues = sueltos.catalogos_para_reglas(main_sueltos, prop_sueltos, c)
+    except particion.ErrorParticion as error:
+        return motivos + [f"Con esta propuesta el catálogo no se puede juntar: {error}"]
+    _, de_antes = validar_catalogo(particion.texto_json(cat_antes), None)
+    leido, de_despues = validar_catalogo(particion.texto_json(cat_despues), cat_antes)
+    motivos += [e for e in de_despues if e not in set(de_antes)]
+    if leido is not None:
+        motivos += comprobar_largos(cat_antes, leido)
+    return motivos
+
+
 def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, creada_el, solicitudes_abiertas,
-                         leer_sueltos, hoy, bloqueados) -> list:
+                         leer_sueltos, hoy, bloqueados, listar_main=None) -> list:
     hoy = hoy or datetime.datetime.now(datetime.timezone.utc).date()
     main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
     if sol.canal in bloqueados:
         return [f"@{sol.canal} está bloqueado por el Dueño del programa ({bloqueados[sol.canal]})."]
+    if sol.tipo == "etiqueta":
+        try:
+            reservados = listas.reservados(leer_main)
+        except listas.ListaIlegible as error:
+            return [str(error)]
+
+        def parecido_reservado(nombre):
+            # Como en los canales, pero solo frente a los reservados (las etiquetas no se comparan con los canales). Un
+            # nombre que no se puede comparar (todo en otro alfabeto: «百合») no se parece a ninguno latino.
+            problema = listas.parecido(nombre, reservados, {}, set())
+            return None if problema == canales.NO_COMPARABLE else problema
+        return solicitudes.comprobar_etiqueta(
+            sol, leer, permisos.cuenta_id, _rol_en(permisos, sol.canal), hoy,
+            (listar_main or (lambda carpeta: {}))(solicitudes.CARPETA_ETIQUETAS), leer_main(particion.RUTA_ETIQUETAS),
+            parecido_reservado)
     if sol.tipo == "verificacion":
         consultas = listas.Consultas(leer_main, hoy)  # un canal con muchos paquetes: cada trozo, una vez
 
@@ -1188,9 +1382,8 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
             motivos.append(f"`{c.ruta}`: las imágenes de un juego las cambian los Editores y los "
                            f"Administradores (tu rol en `{juego}`: {rol.nombre}).")
         elif c.estado != "D":
-            if not c.ruta.lower().endswith(EXTENSIONES_IMAGEN):
-                motivos.append(f"`{c.ruta}`: en la carpeta de un juego solo van imágenes "
-                               f"({', '.join(EXTENSIONES_IMAGEN)}).")
+            if (problema := solicitudes.error_de_ruta_de_imagen(c.ruta)):
+                motivos.append(problema)
             elif c.tamano > TAMANO_MAXIMO_IMAGEN:
                 motivos.append(f"`{c.ruta}`: la imagen pesa {c.tamano / 1048576:.1f} MB y el máximo son 5 MB.")
     return _sin_repetidos(motivos)
@@ -1605,6 +1798,37 @@ def archivos_sueltos(revision: str) -> dict:
                                 capture_output=True, check=True).stdout
         i = 0
         for ruta, sha in pedir:
+            fin = salida.index(b"\n", i)
+            _, _, tamano = salida[i:fin].split(b" ")
+            inicio = fin + 1
+            resultado[ruta] = salida[inicio:inicio + int(tamano)]
+            i = inicio + int(tamano) + 1
+    return resultado
+
+
+def archivos_de_carpeta(revision: str, carpeta: str, tope_cada: int, tope_cuantos: int) -> dict:
+    """{ruta: bytes} de los `.json` normales que están justo en `carpeta` en `revision` (las solicitudes de etiqueta).
+    Uno que pasa de `tope_cada` cuenta, vacío; pasado `tope_cuantos` no se lee más (quien llama lo rechaza por eso)."""
+    salida = git("ls-tree", "-z", "-l", "--full-tree", revision, "--", carpeta,
+                 comprobar_salida=False).stdout.decode("utf-8", errors="replace")
+    pedir, resultado = [], {}
+    for entrada in (e for e in salida.split("\0") if e):
+        cabecera, ruta = entrada.split("\t", 1)
+        modo, tipo, sha, tamano = cabecera.split()
+        if modo != "100644" or tipo != "blob" or not ruta.endswith(".json"):
+            continue
+        if len(resultado) + len(pedir) >= tope_cuantos:
+            resultado[ruta] = b""
+            break
+        if tamano.isdigit() and int(tamano) <= tope_cada:
+            pedir.append((ruta, sha))
+        else:
+            resultado[ruta] = b""
+    if pedir:
+        salida = subprocess.run(["git", "cat-file", "--batch"], input="".join(f"{sha}\n" for _, sha in pedir).encode(),
+                                capture_output=True, check=True).stdout
+        i = 0
+        for ruta, _ in pedir:
             fin = salida.index(b"\n", i)
             _, _, tamano = salida[i:fin].split(b" ")
             inicio = fin + 1
@@ -2111,13 +2335,11 @@ def main() -> int:
                             leer_archivo=leer_archivo, ids_duenos=frozenset(ids_duenos), cuenta_de=cuenta_de,
                             rol_externo=rol_externo, leer_sueltos=leer_sueltos,
                             cuentas=[i for _, i in cuentas if i is not None], creada_el=creada_el,
-                            solicitudes_abiertas=lambda etiqueta: abiertas_con(etiqueta, autor))
+                            solicitudes_abiertas=lambda etiqueta: abiertas_con(etiqueta, autor),
+                            cuerpo=propuesta.get("body") or "", listar_main=lambda carpeta: archivos_de_carpeta(
+                                base, carpeta, solicitudes.TOPE_ARCHIVO, solicitudes.TOPE_ARCHIVOS_ETIQUETA))
         if not permisos.es_dueno:
-            try:
-                sol = solicitudes.clasificar([(c.ruta, c.estado) for c in cambios],
-                                             lambda r: leer_archivo(r, "antes") is not None)
-            except ValueError:
-                sol = None
+            sol = solicitud_de(cambios, leer_archivo, leer_sueltos, propuesta.get("body") or "")
 
     # La etiqueta `aprobada` solo la pone el Dueño: si la pone otra cuenta, el robot la quita.
     if solicitudes.aprobacion(os.environ, ids_duenos) == "ajena":

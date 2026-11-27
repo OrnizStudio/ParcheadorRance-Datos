@@ -10,10 +10,20 @@ la envía no puede hacer ese cambio directamente, no la fusiona: le pone la etiq
   ponerla.
 - **Verificación** (archivo de solicitud): `solicitudes/verificacion/<c>.json`, que pone el Propietario del canal y
   se fusiona directamente si cumple los requisitos. El Dueño la resuelve después con su propia propuesta (pone
-  `verificacion` en `canal.json` y `estado`, `motivo` y `fecha` en la solicitud).
+  `verificacion` en `canal.json` y `estado`, `respuesta` y `resuelta` en la solicitud).
+- **Juego nuevo, edición nueva y cambio en la ficha central** (`solicitud:juego`, `solicitud:edicion`,
+  `solicitud:central`; fase D3b): una propuesta que solo toca `juegos/<j>/` (y sus imágenes, en
+  `catalogo/juegos/<j>/`). La envía un Administrador o un Propietario del canal; el canal es el `alta.canal` de los
+  archivos nuevos o, en un cambio de la ficha central, la marca `<!-- canal: <c> -->` del cuerpo de la propuesta (si
+  vienen las dos, tienen que coincidir). En la ficha central, el canal tiene que tener parche de ese juego en `main`.
+  Si el canal está verificado en `main`, se fusiona directamente; si no, espera `aprobada` como el canal nuevo. Lo del
+  canal oficial que no es un juego nuevo (ediciones y ficha central) sigue con las reglas por campo de siempre.
+- **Etiqueta global** (archivo de solicitud): `solicitudes/etiquetas/<n>.json`, con `<n>` = `nombre_de_archivo(nombre)`.
+  La pone un Administrador o un Propietario del canal y se fusiona directamente; el Dueño la resuelve después con su
+  propia propuesta (crea la etiqueta en `normas/etiquetas.json` y pone `estado`, `respuesta` y `resuelta`).
 
-Una solicitud va sola: si la propuesta toca algo más, no es una solicitud y se juzga (y se rechaza) como siempre. Los juegos, ediciones, la ficha central y las
-etiquetas globales por solicitud llegan en la entrega siguiente.
+Una solicitud va sola: si la propuesta toca algo más, se rechaza («Una solicitud va sola»). El rechazo de una
+solicitud que espera lo hace la app (comentario con `<!-- rechazo -->` y cerrar): el robot no lo lee.
 
 Solo usa la biblioteca estándar.
 """
@@ -21,7 +31,9 @@ Solo usa la biblioteca estándar.
 from __future__ import annotations
 
 import datetime
+import json
 import re
+import unicodedata
 from dataclasses import dataclass
 
 import canales
@@ -30,19 +42,46 @@ APROBADA = "aprobada"
 PREFIJO_ETIQUETA = "solicitud:"
 CARPETA = "solicitudes/"
 RUTA_VERIFICACION = re.compile(r"solicitudes/verificacion/([a-z0-9_]{3,20})\.json")
+CARPETA_ETIQUETAS = "solicitudes/etiquetas/"
+RUTA_ETIQUETA = re.compile(r"solicitudes/etiquetas/([a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?)\.json")
 RUTA_NORMAS = "normas/normas.json"
+CARPETA_IMAGENES = "catalogo/juegos/"
+# Las únicas rutas de imagen de un juego (como las escribe el parcheador): `catalogo/juegos/<j>/<tipo>[-<fecha>].<ext>`,
+# en minúsculas y sin subcarpetas.
+TIPOS_IMAGEN = ("icono", "banner", "fondo", "logo", "portada")
+RUTA_IMAGEN = re.compile(r"catalogo/juegos/([A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?)/"
+                         r"(?:" + "|".join(TIPOS_IMAGEN) + r")(?:-\d{8}-\d{6})?\.(?:png|jpg|jpeg|webp)")
+
+
+def error_de_ruta_de_imagen(ruta: str):
+    """Por qué `ruta` no es la de una imagen de juego, o None."""
+    if RUTA_IMAGEN.fullmatch(ruta):
+        return None
+    return (f"`{ruta}`: las imágenes de un juego van en `{CARPETA_IMAGENES}<juego>/<tipo>.<ext>` (o "
+            f"`<tipo>-<aaaammdd>-<hhmmss>.<ext>`), con `<tipo>` uno de {', '.join(TIPOS_IMAGEN)} y `.png`, `.jpg`, "
+            "`.jpeg` o `.webp`, en minúsculas y sin subcarpetas.")
+# La marca con la que la app dice de qué canal es un cambio en la ficha central (en el cuerpo de la propuesta).
+MARCA_CANAL = re.compile(r"<!--[ \t]*canal:[ \t]*([^\s>]*)[ \t]*-->")
+DE_PROGRAMA = ("juego", "edicion", "central")
 
 DIAS_CUENTA = 30
 TOPE_CANALES_POR_CUENTA = 3
+TOPE_ABIERTAS = 10  # solicitudes de juego, edición o ficha central abiertas por cuenta; de etiqueta, por canal
+TOPE_ARCHIVOS_ETIQUETA = 2000  # archivos de `solicitudes/etiquetas/` en `main` (pendientes y resueltos)
 LARGO_MOTIVO = 300
+LARGO_NOMBRE_ETIQUETA = 24
 DIAS_SIN_MALWARE = 90
 CAMPOS_VERIFICACION = ("esquema", "canal", "motivo", "pedidaPor", "fecha", "estado", "respuesta", "resuelta")
+CAMPOS_ETIQUETA = ("esquema", "canal", "nombre", "paraQue", "pedidaPor", "fecha", "estado", "respuesta", "resuelta")
+TOPE_ARCHIVO = 16 * 1024
 
 
 @dataclass(frozen=True)
 class Solicitud:
-    tipo: str      # «canal» o «verificacion»
+    tipo: str      # «canal», «verificacion», «etiqueta», «juego», «edicion» o «central»
     canal: str
+    clave: str = ""        # el juego (juego, edición, ficha central) o el nombre del archivo (etiqueta)
+    directa: bool = False  # de juego, edición o ficha central de un canal verificado: se fusiona sin aprobación
 
     @property
     def etiqueta(self) -> str:
@@ -50,21 +89,83 @@ class Solicitud:
 
     @property
     def necesita_aprobacion(self) -> bool:
-        """Las de propuesta esperan la etiqueta `aprobada`; las de archivo se fusionan y las resuelve el Dueño luego."""
-        return self.tipo == "canal"
+        """Las de propuesta esperan la etiqueta `aprobada` (salvo las de un canal verificado); las de archivo se
+        fusionan y las resuelve el Dueño luego."""
+        return self.tipo == "canal" or (self.tipo in DE_PROGRAMA and not self.directa)
 
 
-def clasificar(cambios, existe_en_main):
-    """La solicitud que es la propuesta, o None si no es una. `cambios` son (ruta, estado) y `existe_en_main(ruta)`
-    dice si ese archivo está en `main`. ValueError con el motivo si mezcla una solicitud con otros cambios."""
+def nombre_de_archivo(nombre) -> str:
+    """El `<n>` de `solicitudes/etiquetas/<n>.json`: el nombre en minúsculas, sin acentos, con lo que no es una letra
+    a-z o un número cambiado por `-` (sin repetir ni en los extremos), como mucho 24. Vacío si no queda nada."""
+    if not isinstance(nombre, str):
+        return ""
+    texto = "".join(c for c in unicodedata.normalize("NFKD", nombre.casefold()) if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "-", texto).strip("-")[:LARGO_NOMBRE_ETIQUETA].strip("-")
+
+
+def _leer_suelto(leer_despues, ruta):
+    try:
+        datos = leer_despues(ruta) if leer_despues is not None else None
+        return json.loads(datos) if datos is not None and len(datos) <= 4 * 1024 * 1024 else None
+    except (ValueError, RecursionError, TypeError):
+        return None
+
+
+def _canal_de_alta(leer_despues, ruta):
+    objeto = _leer_suelto(leer_despues, ruta)
+    alta = objeto.get("alta") if isinstance(objeto, dict) else None
+    canal = alta.get("canal") if isinstance(alta, dict) else None
+    return canal if isinstance(canal, str) else None
+
+
+def _juego_central(ruta: str):
+    """El juego de una ruta de `juegos/<j>/…` o `catalogo/juegos/<j>/…`, o None."""
+    partes = ruta.split("/")
+    if partes[0] == "juegos" and len(partes) >= 3:
+        return partes[1]
+    if ruta.startswith(CARPETA_IMAGENES) and len(partes) >= 4:
+        return partes[2]
+    return None
+
+
+def marca_de_canal(cuerpo):
+    """El @ de la marca `<!-- canal: <c> -->` del cuerpo de la propuesta, o None. ValueError si hay varias distintas
+    o el @ no vale."""
+    marcas = set(MARCA_CANAL.findall(cuerpo[:65536] if isinstance(cuerpo, str) else ""))
+    if len(marcas) > 1:
+        raise ValueError("El cuerpo de la propuesta lleva varias marcas `<!-- canal: … -->` distintas: tiene que "
+                         "llevar una sola, la del canal que pide el cambio.")
+    marca = next(iter(marcas), None)
+    if marca is not None and not canales.ID_CANAL.match(marca):
+        raise ValueError("La marca `<!-- canal: … -->` del cuerpo de la propuesta no lleva un @ de canal válido.")
+    return marca
+
+
+def clasificar(cambios, existe_en_main, leer_despues=None, cuerpo=None, migrado=True, leer_antes=None):
+    """La solicitud que es la propuesta, o None si no es una. `cambios` son (ruta, estado), `existe_en_main(ruta)`
+    dice si ese archivo está en `main`, `leer_despues(ruta)` da sus bytes tras la propuesta (o None) y `cuerpo` es el
+    texto de la propuesta (por la marca del canal). Sin `migrado` (`main` aún sin archivos sueltos) no hay solicitudes
+    de juegos. `leer_antes(ruta)` da los bytes de `main` (sin él, una edición nueva que cambie `juego.json` se juzga
+    como ficha central). ValueError con el motivo si mezcla una solicitud con otros cambios."""
     rutas = [r for r, _ in cambios]
-    verificaciones = [m for r in rutas if (m := RUTA_VERIFICACION.fullmatch(r))]
-    if verificaciones or any(r.startswith(CARPETA) for r in rutas):
-        if len(rutas) != 1 or len(verificaciones) != 1 or cambios[0][1] == "D":
-            raise ValueError("Una solicitud va sola: la propuesta solo puede añadir o cambiar "
-                             "`solicitudes/verificacion/<canal>.json` (lo demás, en propuestas aparte).")
-        return Solicitud("verificacion", verificaciones[0][1])
-    nuevos = {canales.canal_de_la_ruta(r)[0] for r, e in cambios
+    if any(r.startswith(CARPETA) for r in rutas):
+        if len(rutas) == 1 and cambios[0][1] != "D":
+            if m := RUTA_VERIFICACION.fullmatch(rutas[0]):
+                return Solicitud("verificacion", m[1])
+            if m := RUTA_ETIQUETA.fullmatch(rutas[0]):
+                objeto = _leer_suelto(leer_despues, rutas[0])
+                canal = objeto.get("canal") if isinstance(objeto, dict) else None
+                return Solicitud("etiqueta", canal if isinstance(canal, str) else "", m[1])
+            if rutas[0].startswith(CARPETA_ETIQUETAS):
+                raise ValueError(f"`{rutas[0]}`: el archivo se llama como la etiqueta, en minúsculas, sin acentos y "
+                                 "con `-` en lugar de espacios (como mucho 24), y termina en `.json`. Hazlo desde el "
+                                 "parcheador.")
+        raise ValueError("Una solicitud va sola: la propuesta solo puede añadir o cambiar "
+                         "`solicitudes/verificacion/<canal>.json` o añadir `solicitudes/etiquetas/<nombre>.json` (lo "
+                         "demás, en propuestas aparte).")
+    if migrado and (programa := _de_programa(cambios, existe_en_main, leer_despues, cuerpo, leer_antes)) is not None:
+        return programa
+    nuevos ={canales.canal_de_la_ruta(r)[0] for r, e in cambios
               if r.startswith(canales.CARPETA_CANALES) and r.endswith("/canal.json") and e == "A"
               and r.count("/") == 2}
     nuevos = {c for c in nuevos if not existe_en_main(f"{canales.CARPETA_CANALES}{c}/canal.json")
@@ -78,6 +179,67 @@ def clasificar(cambios, existe_en_main):
     if set(rutas) != esperadas or any(e != "A" for _, e in cambios) or not canales.ID_CANAL.match(canal):
         return None
     return Solicitud("canal", canal)
+
+
+def _solo_anade_ediciones(cambios, nuevos, leer_antes, leer_despues) -> bool:
+    """¿La propuesta solo añade ediciones? Sus archivos nuevos y, en `juego.json`, solo los ids de esas ediciones
+    añadidos al final de `ediciones` (nada más cambia). Una edición que ya existe, una imagen o cualquier otro cambio de
+    la ficha: no (se juzga como ficha central, que pide tener parche del juego)."""
+    ids_nuevos = [r.rsplit("/", 1)[1][:-len(".json")] for r in nuevos if "/ediciones/" in r and r.endswith(".json")]
+    for ruta, estado in cambios:
+        if ruta in nuevos:
+            continue
+        if estado != "M" or not (ruta.endswith("/juego.json") and ruta.count("/") == 2) or leer_antes is None:
+            return False
+        antes, despues = _leer_suelto(leer_antes, ruta), _leer_suelto(leer_despues, ruta)
+        if not isinstance(antes, dict) or not isinstance(despues, dict):
+            return False
+        if {k: v for k, v in antes.items() if k != "ediciones"} != {k: v for k, v in despues.items() if k != "ediciones"}:
+            return False
+        lista_antes, lista_despues = antes.get("ediciones"), despues.get("ediciones")
+        if not isinstance(lista_antes, list) or not isinstance(lista_despues, list):
+            return False
+        anadidas = lista_despues[len(lista_antes):]
+        if lista_despues[:len(lista_antes)] != lista_antes or not all(isinstance(e, str) for e in anadidas) \
+                or sorted(anadidas) != sorted(ids_nuevos):
+            return False
+    return True
+
+
+def _de_programa(cambios, existe_en_main, leer_despues, cuerpo, leer_antes=None):
+    """Juego nuevo, edición nueva o cambio en la ficha central de un canal (ver arriba), o None."""
+    por_juego = {}
+    for ruta, estado in cambios:
+        if (j := _juego_central(ruta)) is not None:
+            por_juego.setdefault(j, []).append((ruta, estado))
+    if not por_juego:
+        return None
+    marca = marca_de_canal(cuerpo)
+    nuevos = [r for r, e in cambios if e != "D" and r.startswith("juegos/") and not existe_en_main(r)
+              and (r.endswith("/juego.json") and r.count("/") == 2
+                   or "/ediciones/" in r and r.count("/") == 3)]
+    tipo = "juego" if any(r.endswith("/juego.json") for r in nuevos) else "edicion" if nuevos else "central"
+    altas = {c for r in nuevos if (c := _canal_de_alta(leer_despues, r)) is not None}
+    if len(altas) > 1:
+        raise ValueError("Los archivos nuevos de `juegos/` tienen `alta.canal` distintos: un juego o una edición se da "
+                         "de alta desde un solo canal.")
+    alta = next(iter(altas), None)
+    if alta is not None and marca is not None and alta != marca:
+        raise ValueError(f"La marca `<!-- canal: {marca} -->` del cuerpo no coincide con `alta.canal` (@{alta}).")
+    canal = alta or marca
+    # Lo del canal oficial (y lo que no dice de qué canal es) sigue con las reglas de siempre, salvo un juego nuevo.
+    if tipo != "juego" and (canal is None or canal == canales.CANAL_OFICIAL):
+        return None
+    juego = next(iter(por_juego))
+    if len(por_juego) != 1 or len(por_juego[juego]) != len(cambios) or any(e == "D" for _, e in cambios):
+        raise ValueError(f"Una solicitud va sola: un juego nuevo, una edición nueva o un cambio en la ficha central "
+                         f"solo toca `juegos/{juego}/` (y sus imágenes en `{CARPETA_IMAGENES}{juego}/`), sin borrar "
+                         "nada. El parche del canal va en una propuesta aparte, cuando el juego esté publicado.")
+    # Una «edición nueva» solo añade la edición: si de paso cambia la ficha (o una edición que ya está), es un cambio en
+    # la ficha central y se juzga como tal (hace falta tener parche del juego).
+    if tipo == "edicion" and not _solo_anade_ediciones(cambios, nuevos, leer_antes, leer_despues):
+        tipo = "central"
+    return Solicitud(tipo, canal or "", juego)
 
 
 def _hoy_vale(fecha, hoy: datetime.date) -> bool:
@@ -219,6 +381,99 @@ def comprobar_verificacion(sol: Solicitud, leer, autor_id, rol_en_canal: int, ho
         motivos.append(f"Para pedir la verificación, @{c} necesita al menos una versión pública.")
     if malware:
         motivos.append(f"@{c} tiene una versión retirada por malware en los últimos {DIAS_SIN_MALWARE} días.")
+    return motivos
+
+
+def _compacta(clave) -> str:
+    """La clave de una etiqueta sin guiones: «hen-tai», «hentai» y «hen tai» son la misma."""
+    return (clave or "").replace("-", "")
+
+
+def comprobar_etiqueta(sol: Solicitud, leer, autor_id, rol_en_canal: int, hoy: datetime.date, archivos_main: dict,
+                       etiquetas_main, parecido_reservado=None) -> list:
+    """Motivos de rechazo de una solicitud de etiqueta global (`solicitudes/etiquetas/<n>.json`) que envía un
+    Administrador o un Propietario del canal. `archivos_main` son {ruta: bytes} de `solicitudes/etiquetas/` en `main`
+    (para el tope de 10 pendientes por canal) y `etiquetas_main` los bytes de `normas/etiquetas.json` de `main` (o
+    None). `parecido_reservado(nombre)` da por qué el nombre se confunde con un nombre reservado (como en los canales:
+    «Orniz…» solo es del Dueño), o None. Dos nombres que solo se distinguen por espacios o guiones son el mismo."""
+    ruta = f"{CARPETA_ETIQUETAS}{sol.clave}.json"
+    if autor_id is None:
+        return ["La solicitud la abre y la sube una sola cuenta: abre una propuesta nueva desde la tuya."]
+    if leer(ruta, "antes") is not None:
+        return [f"`{ruta}` ya existe: ya se pidió una etiqueta con ese nombre (si está resuelta, mira la respuesta)."]
+    try:
+        objeto = canales.leer_json_estricto(leer(ruta, "despues"), ruta, TOPE_ARCHIVO)
+    except canales.JsonMalo as error:
+        return [str(error)]
+    if not isinstance(objeto, dict) or set(objeto) - set(CAMPOS_ETIQUETA):
+        return [f"`{ruta}`: solo valen {', '.join(f'`{k}`' for k in CAMPOS_ETIQUETA)}."]
+    c = sol.canal
+    if not canales.ID_CANAL.match(c):
+        return [f"`{ruta}` › `canal`: tiene que ser el @ de tu canal."]
+    try:
+        canal = canales.leer_json_estricto(leer(f"canales/{c}/canal.json", "antes"), f"canales/{c}/canal.json",
+                                           canales.TOPES["canal.json"])
+    except canales.JsonMalo as error:
+        return [str(error)]
+    except TypeError:
+        return [f"@{c} no existe en `main`."]
+    if rol_en_canal < 3:
+        return [f"Una etiqueta global para @{c} la pide un Administrador o un Propietario del canal."]
+    motivos = []
+    if not isinstance(canal, dict) or canal.get("estado") != "activo":
+        motivos.append(f"@{c} no está activo.")
+    if objeto.get("esquema") != 1:
+        motivos.append(f"`{ruta}`: tiene que llevar `\"esquema\": 1`.")
+    nombre = objeto.get("nombre")
+    if (problema := canales.error_de_texto(nombre, LARGO_NOMBRE_ETIQUETA, 1, 0)):
+        motivos.append(f"`{ruta}` › `nombre`: {problema}.")
+    elif not nombre_de_archivo(nombre):
+        motivos.append(f"`{ruta}` › `nombre`: necesita al menos una letra (a-z) o un número.")
+    elif nombre_de_archivo(nombre) != sol.clave:
+        motivos.append(f"`{ruta}`: el archivo tiene que llamarse `{nombre_de_archivo(nombre)}.json`, como el nombre.")
+    elif parecido_reservado is not None and (problema := parecido_reservado(nombre)):
+        motivos.append(f"`{ruta}` › `nombre`: «{nombre}» {problema}.")
+    if (problema := canales.error_de_texto(objeto.get("paraQue"), LARGO_MOTIVO, 1, 3)):
+        motivos.append(f"`{ruta}` › `paraQue`: {problema}.")
+    if objeto.get("pedidaPor") != autor_id:
+        motivos.append(f"`{ruta}` › `pedidaPor`: tiene que ser el id de tu cuenta ({autor_id}).")
+    if not _hoy_vale(objeto.get("fecha"), hoy):
+        motivos.append(f"`{ruta}` › `fecha`: tiene que ser la fecha de hoy ({hoy.isoformat()}, UTC).")
+    if any(k in objeto for k in ("estado", "respuesta", "resuelta")):
+        motivos.append(f"`{ruta}`: `estado`, `respuesta` y `resuelta` los pone el Dueño al resolverla.")
+    # Una que ya existe (por su id o su nombre) no se pide: se usa.
+    try:
+        globales = json.loads(etiquetas_main) if etiquetas_main is not None else {}
+    except (ValueError, RecursionError):
+        globales = {}
+    lista = globales.get("etiquetas") if isinstance(globales, dict) else None
+    for e in lista if isinstance(lista, list) else []:
+        if not isinstance(e, dict):
+            continue
+        claves = {_compacta(nombre_de_archivo(e.get("id"))), _compacta(nombre_de_archivo(e.get("nombre")))}
+        if _compacta(sol.clave) in claves - {""}:
+            visible = e.get("nombre") if isinstance(e.get("nombre"), str) else e.get("id")
+            motivos.append(f"Ya existe la etiqueta «{visible}»: ponla en tus parches, no hace falta pedirla.")
+            break
+    if len(archivos_main) >= TOPE_ARCHIVOS_ETIQUETA:
+        motivos.append("Hay demasiadas solicitudes de etiqueta sin limpiar: espera a que el Dueño del programa las "
+                       "resuelva.")
+    else:
+        pendientes = 0
+        # Una pedida con el mismo nombre salvo espacios o guiones («hentai.json» frente a «hen-tai.json»): ya está.
+        for otra_ruta in archivos_main:
+            otra_clave = m[1] if (m := RUTA_ETIQUETA.fullmatch(otra_ruta)) else None
+            if otra_clave is not None and otra_clave != sol.clave and _compacta(otra_clave) == _compacta(sol.clave):
+                motivos.append(f"Ya se pidió una etiqueta con ese nombre (`{otra_ruta}`): si está resuelta, mira la "
+                               "respuesta.")
+                break
+        for datos in archivos_main.values():
+            otra = _leer_suelto(lambda _r: datos, "")
+            if isinstance(otra, dict) and otra.get("canal") == c and "estado" not in otra:
+                pendientes += 1
+        if pendientes >= TOPE_ABIERTAS:
+            motivos.append(f"@{c} ya tiene {TOPE_ABIERTAS} solicitudes de etiqueta pendientes: espera a que se "
+                           "resuelvan.")
     return motivos
 
 
