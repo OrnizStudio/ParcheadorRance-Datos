@@ -50,6 +50,7 @@ import zipfile
 from dataclasses import dataclass, field
 
 import canales
+import version_equipo
 import listas
 import solicitudes
 import lector_app  # el catálogo tal como lo lee el parcheador
@@ -193,6 +194,13 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         if not permisos.es_dueno:
             return [str(error)]
         bloqueados = {}
+    # Versión mínima del Modo equipo (docs/canales.md §8.1): nadie más que el Dueño edita con un parcheador viejo.
+    if not permisos.es_dueno:
+        programa = leer(particion.RUTA_PARCHEADOR, "antes")
+        if isinstance(programa, bytes):
+            programa = programa.decode("utf-8", "replace")
+        if viejo := version_equipo.motivo(programa, antes, cuerpo):
+            return [viejo]
     # Solicitudes (fase D): una propuesta que pide algo que el autor no puede hacer directamente. Se juzga entera aquí.
     if not permisos.es_dueno:
         try:
