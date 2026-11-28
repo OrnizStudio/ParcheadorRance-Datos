@@ -311,6 +311,38 @@ class Coherencia(unittest.TestCase):
     def test_borrar_el_juego_y_dejar_el_parche(self):
         self.assertTrue(Propuesta().quitar(JUEGO).juzgar(Rol.ADMINISTRADOR))
 
+    def test_el_dueno_tampoco_deja_un_parche_colgando(self):
+        # «Deshacer» del Historial global: entre el plan y la fusión, un canal publica su parche. `despues` es el
+        # main de ahora más la propuesta, así que el parche está y la coherencia también se mira al Dueño.
+        def hay(motivos, texto):
+            return any(texto in m for m in motivos)
+
+        quita_juego = Propuesta().quitar(JUEGO).quitar(EDICION)
+        self.assertTrue(hay(quita_juego.juzgar(Rol.DUENO), "el juego «rance» no existe"))
+        quita_edicion = Propuesta().quitar(EDICION).cambiar(JUEGO, lambda j: j.update(ediciones=[]))
+        for rol in (Rol.DUENO, Rol.ADMINISTRADOR):
+            with self.subTest(rol=rol):
+                self.assertTrue(hay(quita_edicion.juzgar(rol), "usa `steam`, que esta propuesta quita de «rance»"))
+        # Solo quitarla de la lista (el archivo se queda) también la quita.
+        solo_lista = Propuesta().cambiar(JUEGO, lambda j: j.update(ediciones=[]))
+        self.assertTrue(hay(solo_lista.juzgar(Rol.DUENO), "no están en la lista"))
+
+        # Sin parche que la use, o quitándolo en la misma propuesta: nada que objetar.
+        self.assertEqual([], Propuesta().quitar(JUEGO).quitar(EDICION).quitar(PARCHE).juzgar(Rol.DUENO))
+        sin_uso = Propuesta().quitar(EDICION).cambiar(JUEGO, lambda j: j.update(ediciones=[])).cambiar(
+            PARCHE, lambda p: (p.update(ediciones=[]), p.pop("parche", None)))
+        self.assertFalse(hay(sin_uso.juzgar(Rol.DUENO), "que esta propuesta quita"))
+
+        # Un parche raro (id que no es texto, ediciones que no son lista) no rompe la comprobación.
+        for raro in ([{"id": ["steam"]}], [{"id": 3}], "steam", None):
+            with self.subTest(raro=raro):
+                p = Propuesta().quitar(EDICION).cambiar(JUEGO, lambda j: j.update(ediciones=[])).cambiar(
+                    PARCHE, lambda o, r=raro: o.update(ediciones=r))
+                self.assertIsInstance(p.juzgar(Rol.DUENO), list)
+
+        # Lo demás que no quita nada sigue sin mirarse al Dueño (lo arregla él).
+        self.assertEqual([], Propuesta().cambiar(JUEGO, lambda j: j.update(sinopsis="Otra")).juzgar(Rol.DUENO))
+
     def test_nombres_que_no_cuadran(self):
         for ruta, cambio, texto in ((JUEGO, {"id": "otro"}, "nombre de la carpeta"), (EDICION, {"id": "gog"}, "nombre del archivo"),
                                     (PARCHE, {"juego": "otro"}, "nombre del archivo")):
