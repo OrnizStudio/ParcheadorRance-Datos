@@ -31,9 +31,11 @@ class EdicionQueTocaLaFicha(unittest.TestCase):
         return main
 
     def test_solo_la_edicion_sigue_siendo_edicion(self):
+        # Sigue siendo una edición (no una ficha central), y como tal también la pide un canal que publica el juego.
         p = con_edicion_nueva(self.sin_parche())
         self.assertEqual("edicion", sol(p).tipo)
-        self.assertEqual([], juzgar(p))
+        self.assertTrue(hay(juzgar(p), "una edición nueva la pide un canal que publica el juego"))
+        self.assertEqual([], juzgar(con_edicion_nueva(main_es(verificado=True))))
 
     def test_con_la_ficha_cambiada_es_ficha_central_y_pide_parche(self):
         for cambio in (lambda j: j.update(titulo="TITULO CAMBIADO"),

@@ -74,6 +74,47 @@ DIAS_SIN_MALWARE = 90
 CAMPOS_VERIFICACION = ("esquema", "canal", "motivo", "pedidaPor", "fecha", "estado", "respuesta", "resuelta")
 CAMPOS_ETIQUETA = ("esquema", "canal", "nombre", "paraQue", "pedidaPor", "fecha", "estado", "respuesta", "resuelta")
 TOPE_ARCHIVO = 16 * 1024
+# Juego nuevo, edición nueva o ficha central (D3b): los textos centrales que escribe la solicitud, como los limita la
+# app (`DialogoSolicitarJuegoViewModel.MaxNombre`), y cuántas ediciones nuevas lleva una sola (la app manda una).
+LARGO_TITULO = 120
+TOPE_EDICIONES_NUEVAS = 10
+TEXTOS_JUEGO = (("titulo", 1), ("tituloCorto", 1), ("tituloOriginal", 0))
+
+
+def errores_de_textos(cambios, leer_antes, leer_despues) -> list:
+    """Lo que una solicitud de juego, edición o ficha central escribe en `juegos/` y no vale: un título o un nombre
+    vacío, enorme o con invisibles, una edición nueva sin huella o demasiadas ediciones nuevas de golpe. Solo cuenta lo
+    que la propuesta cambia: un texto raro que ya estaba en `main` no bloquea."""
+    motivos, nuevas = [], 0
+    for ruta, estado in cambios:
+        if estado == "D" or not ruta.startswith("juegos/"):
+            continue
+        despues = _leer_suelto(leer_despues, ruta)
+        if not isinstance(despues, dict):
+            continue
+        antes = _leer_suelto(leer_antes, ruta) if leer_antes is not None else None
+        antes = antes if isinstance(antes, dict) else {}
+        if ruta.endswith("/juego.json") and ruta.count("/") == 2:
+            campos = TEXTOS_JUEGO
+        elif "/ediciones/" in ruta and ruta.count("/") == 3:
+            campos = (("nombre", 1),)
+            if not antes:
+                nuevas += 1
+                huella = despues.get("huella")
+                if not isinstance(huella, list) or not huella:
+                    motivos.append(f"`{ruta}` › `huella`: una edición nueva lleva su huella (regístrala desde el "
+                                   "parcheador).")
+        else:
+            continue
+        for campo, minimo in campos:
+            if campo not in despues or (campo in antes and antes[campo] == despues[campo]):
+                continue
+            if (problema := canales.error_de_texto(despues[campo], LARGO_TITULO, minimo)) is not None:
+                motivos.append(f"`{ruta}` › `{campo}` {problema}.")
+    if nuevas > TOPE_EDICIONES_NUEVAS:
+        motivos.append(f"La solicitud da de alta {nuevas} ediciones y el tope son {TOPE_EDICIONES_NUEVAS}: "
+                       "pídelas en varias.")
+    return motivos
 
 
 # Historial global (docs/canales.md §1 y §2.2): al fusionar un juego nuevo, una edición nueva o un cambio en la ficha

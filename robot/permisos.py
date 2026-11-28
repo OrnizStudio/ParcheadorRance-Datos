@@ -512,6 +512,9 @@ def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, ho
     if sol.tipo == "central" and f"canales/{c}/parches/{jid}.json" not in main_sueltos:
         return [f"@{c} no tiene parche de «{jid}»: la ficha central de un juego la cambia un canal que lo publica "
                 "(añade antes su parche)."]
+    if sol.tipo == "edicion" and f"canales/{c}/parches/{jid}.json" not in main_sueltos:
+        return [f"@{c} no tiene parche de «{jid}»: una edición nueva la pide un canal que publica el juego "
+                "(añade antes su parche)."]
     motivos = []
     if not info[c][1]:  # verificado en `main`: directo, sin tope
         abiertas = sum((solicitudes_abiertas or (lambda etiqueta: 0))(solicitudes.PREFIJO_ETIQUETA + t)
@@ -519,6 +522,8 @@ def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, ho
         if abiertas >= solicitudes.TOPE_ABIERTAS:
             motivos.append(f"Ya tienes {solicitudes.TOPE_ABIERTAS} solicitudes de juegos, ediciones o fichas abiertas: "
                            "espera a que el Dueño del programa las resuelva o retira alguna.")
+    motivos += solicitudes.errores_de_textos([(cambio.ruta, cambio.estado) for cambio in cambios],
+                                             main_sueltos.get, prop_sueltos.get)
     for cambio in cambios:
         if cambio.ruta.startswith(solicitudes.CARPETA_IMAGENES):
             if (problema := solicitudes.error_de_ruta_de_imagen(cambio.ruta)):

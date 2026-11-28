@@ -71,7 +71,7 @@ def juzgar(p, permisos=None, cuerpo="", abiertas=0, extra=(), etiquetas_main=Non
         r: d for r, d in p.antes.items() if r.startswith(solicitudes.CARPETA_ETIQUETAS)}
     return comprobar(p.cambios(extra), texto, texto.encode(), permisos or admin(),
                      leer_archivo=lambda ruta, lado: lados[lado].get(ruta), leer_sueltos=lambda lado: lados[lado],
-                     hoy=HOY, ids_duenos=frozenset({1}), solicitudes_abiertas=lambda etiqueta: abiertas,
+                     hoy=HOY, ids_duenos=frozenset({1}), solicitudes_abiertas=abiertas if callable(abiertas) else lambda etiqueta: abiertas,
                      cuerpo=cuerpo, listar_main=lambda carpeta: pendientes)
 
 
@@ -218,6 +218,19 @@ class EdicionNueva(unittest.TestCase):
             "esquema": 1, "id": "gog", "nombre": "GOG", "huella": HUELLA, "alta": alta()})
         self.assertTrue(juzgar(p))
 
+    def test_de_un_juego_que_el_canal_no_publica(self):
+        # Como la ficha central: la pide un canal con parche del juego (docs/canales.md). Sin él, ni su Propietario,
+        # ni con el canal verificado; con el parche, sí.
+        main = main_es()
+        del main[PARCHE_ES]
+        for permisos in (admin(), admin(Rol.PROPIETARIO)):
+            with self.subTest(rol=permisos.por_canal[OTRO]):
+                self.assertTrue(hay(juzgar(con_edicion_nueva(main), permisos), "no tiene parche de «rance»"))
+        verificado = main_es(verificado=True)
+        del verificado[PARCHE_ES]
+        self.assertTrue(hay(juzgar(con_edicion_nueva(verificado)), "no tiene parche"))
+        self.assertEqual([], juzgar(con_edicion_nueva()))
+
     def test_la_del_oficial_sigue_como_siempre(self):
         # Una edición del oficial no es una solicitud: la registra un Editor del oficial, como en la fase B.
         p = con_edicion_nueva(canal="ornizen")
@@ -276,7 +289,80 @@ class FichaCentral(unittest.TestCase):
                             "Administrador o un Propietario"))
 
 
-ETIQUETA = "solicitudes/etiquetas/nandu-epico.json"
+def cambio_central(main=None):
+    return Propuesta(main if main is not None else main_es()).cambiar(JUEGO, lambda j: j.update(titulo="Rance: Hikari"))
+
+
+class CasosExtremos(unittest.TestCase):
+    """Lo que puede mandar alguien que no usa la app: vacío, enorme, repetido, en masa o de un juego que no existe."""
+
+    def test_edicion_de_un_juego_que_no_existe(self):
+        p = Propuesta(main_es()).poner("juegos/fantasma/ediciones/dl.json", {
+            "esquema": 1, "id": "dl", "nombre": "DL", "huella": HUELLA, "alta": alta()})
+        self.assertTrue(juzgar(p))
+        self.assertTrue(juzgar(p, admin(Rol.PROPIETARIO)))
+
+    def test_ficha_central_de_un_juego_que_no_existe(self):
+        # Sin `juego.json` en main, «cambiarlo» es crearlo: un juego nuevo, con sus reglas (sin `alta`, no entra).
+        p = Propuesta(main_es()).poner("juegos/fantasma/juego.json", {
+            "esquema": 1, "id": "fantasma", "titulo": "F", "estado": "activo", "ediciones": []})
+        self.assertTrue(juzgar(p, cuerpo=MARCA))
+
+    def test_edicion_que_ya_existe(self):
+        # Volver a «dar de alta» una edición que ya está no es una edición nueva: cambia su huella, y eso no.
+        p = Propuesta(main_es()).cambiar(EDICION, lambda e: e.update(huella=[dict(HUELLA[0], tamano=11)], alta=alta()))
+        self.assertTrue(juzgar(p, cuerpo=MARCA))
+        self.assertNotEqual("edicion", getattr(sol(p, MARCA), "tipo", None))
+        # La misma id dos veces en la lista del juego tampoco.
+        p = con_edicion_nueva().cambiar(JUEGO, lambda j: j["ediciones"].append("gog"))
+        self.assertTrue(juzgar(p))
+
+    def test_vacios(self):
+        for campo, valor in (("nombre", ""), ("nombre", "   "), ("huella", []), ("id", "")):
+            with self.subTest(campo=campo, valor=valor):
+                p = con_edicion_nueva().cambiar("juegos/rance/ediciones/gog.json", lambda e: e.update({campo: valor}))
+                self.assertTrue(juzgar(p))
+        p = Propuesta(main_es()).cambiar(JUEGO, lambda j: j.update(titulo=""))
+        self.assertTrue(juzgar(p, cuerpo=MARCA))
+
+    def test_textos_enormes_o_raros(self):
+        for valor in ("G" * 10_000, "GOG‮", "G​OG", "GOG\nsegunda línea"):
+            with self.subTest(valor=valor[:20]):
+                p = con_edicion_nueva().cambiar("juegos/rance/ediciones/gog.json", lambda e: e.update(nombre=valor))
+                self.assertTrue(juzgar(p))
+                p = Propuesta(main_es()).cambiar(JUEGO, lambda j: j.update(tituloOriginal=valor))
+                self.assertTrue(juzgar(p, cuerpo=MARCA))
+        # Un id de edición enorme no llega ni a ser una edición del juego.
+        largo = "g" * 300
+        p = Propuesta(main_es()).cambiar(JUEGO, lambda j: j["ediciones"].append(largo))
+        p.poner(f"juegos/rance/ediciones/{largo}.json", {"esquema": 1, "id": largo, "nombre": "G", "huella": HUELLA,
+                                                         "alta": alta()})
+        self.assertTrue(juzgar(p))
+
+    def test_tope_repartido_entre_los_tres_tipos(self):
+        def abiertas(cuantas):
+            return lambda etiqueta: cuantas.get(etiqueta.removeprefix(solicitudes.PREFIJO_ETIQUETA), 0)
+        self.assertEqual([], juzgar(con_edicion_nueva(), abiertas=abiertas({"juego": 9})))
+        for cuantas in ({"juego": 10}, {"edicion": 10}, {"central": 10}, {"juego": 4, "edicion": 3, "central": 3}):
+            with self.subTest(cuantas=cuantas):
+                tope = f"{solicitudes.TOPE_ABIERTAS} solicitudes"
+                self.assertTrue(hay(juzgar(con_edicion_nueva(), abiertas=abiertas(cuantas)), tope))
+                self.assertTrue(hay(juzgar(cambio_central(), cuerpo=MARCA, abiertas=abiertas(cuantas)), tope))
+        # Las de etiqueta no cuentan (tienen su propio tope, por canal); un canal verificado no tiene tope.
+        self.assertEqual([], juzgar(con_edicion_nueva(), abiertas=abiertas({"etiqueta": 50})))
+        self.assertEqual([], juzgar(con_edicion_nueva(main_es(verificado=True)), abiertas=lambda etiqueta: 99))
+
+    def test_muchas_ediciones_de_golpe(self):
+        p = Propuesta(main_es())
+        ids = [f"e{n}" for n in range(60)]
+        p.cambiar(JUEGO, lambda j: j["ediciones"].extend(ids))
+        for e in ids:
+            p.poner(f"juegos/rance/ediciones/{e}.json", {"esquema": 1, "id": e, "nombre": e, "huella": HUELLA,
+                                                         "alta": alta()})
+        self.assertTrue(juzgar(p))
+
+
+ETIQUETA ="solicitudes/etiquetas/nandu-epico.json"
 
 
 def etiqueta(**cambios):
