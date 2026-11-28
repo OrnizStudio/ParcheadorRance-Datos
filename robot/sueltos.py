@@ -257,7 +257,7 @@ def comprobar(cambios, antes: dict, despues: dict, rol_por_canal: dict, autor_id
         if ruta in antes:
             previo = _leer(antes[ruta], ruta, [])
         motivos += _reglas(ruta, tipo, previo, objeto, rol_por_canal, autor_id, hoy)
-    motivos += _coherencia(cambios, despues, es_dueno)
+    motivos += _coherencia(cambios, despues, es_dueno, antes)
     return list(dict.fromkeys(motivos))
 
 
@@ -391,12 +391,53 @@ def _versiones_solo_crecen(ruta, previo, objeto) -> list:
     return motivos
 
 
-def _coherencia(cambios, despues, es_dueno) -> list:
-    """Lo que tiene que cuadrar entre archivos tras la propuesta, mirado solo donde la propuesta toca."""
-    if es_dueno:
-        return []
+def _ids_ediciones(archivos, jid) -> set:
+    """Las ediciones de un juego en esos archivos: las de la lista de su `juego.json` (lo que cuenta en el catálogo);
+    sin una lista que se pueda leer, las que tienen archivo."""
+    ruta = f"juegos/{jid}/juego.json"
+    if ruta in archivos:
+        try:
+            central = lector_app.leer(archivos[ruta])
+        except lector_app.JsonIlegible:
+            central = None
+        lista = central.get("ediciones") if isinstance(central, dict) else None
+        if isinstance(lista, list):
+            return {e for e in lista if isinstance(e, str)}
+    return {t[2] for r in archivos if (t := tipo_de_ruta(r)) and t[0] == "edicion" and t[1] == jid}
+
+
+def _quitadas(jid, antes, despues) -> set | None:
+    """Lo que la propuesta quita de un juego: None si no quita nada; si no, las ediciones que dejan de existir (todas
+    las que tenía, si quita el juego)."""
+    ruta = f"juegos/{jid}/juego.json"
+    if ruta in antes and ruta not in despues:
+        return _ids_ediciones(antes, jid)
+    quitadas = _ids_ediciones(antes, jid) - _ids_ediciones(despues, jid)
+    return quitadas or None
+
+
+def _coherencia(cambios, despues, es_dueno, antes=None) -> list:
+    """Lo que tiene que cuadrar entre archivos tras la propuesta, mirado solo donde la propuesta toca.
+
+    Al Dueño no se le mira lo demás (lo arregla él), pero sí cuando quita un juego o ediciones: un parche que un canal
+    publicó mientras tanto no puede quedar apuntando a lo que ya no existe (`despues` es `main` de ahora + la
+    propuesta)."""
+    antes = antes or {}
     juegos_tocados = {t[1] if t[0] != "parche" else t[2] for r, _ in cambios if (t := tipo_de_ruta(r))}
+    quitadas = {jid: q for jid in juegos_tocados if (q := _quitadas(jid, antes, despues)) is not None}
+    if es_dueno:
+        juegos_tocados = set(quitadas)
     motivos = []
+    for jid in sorted(quitadas):
+        if f"juegos/{jid}/juego.json" not in despues:
+            continue  # lo dice abajo («el juego no existe»)
+        for ruta in sorted(r for r in despues if (t := tipo_de_ruta(r)) and t[0] == "parche" and t[2] == jid):
+            parche = _leer(despues[ruta], ruta, [])
+            usadas = sorted({e.get("id") for e in (parche.get("ediciones") if isinstance(parche, dict) else None) or []
+                             if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"] in quitadas[jid]})
+            if usadas:
+                motivos.append(f"`{ruta}` usa {', '.join(f'`{e}`' for e in usadas[:10])}, que esta propuesta quita de "
+                               f"«{jid}»: retira antes esa edición del parche.")
     for jid in sorted(juegos_tocados):
         ruta_juego = f"juegos/{jid}/juego.json"
         archivos_ed = {t[2] for r in despues if (t := tipo_de_ruta(r)) and t[0] == "edicion" and t[1] == jid}
