@@ -49,7 +49,7 @@ MODELO = {
     "InfoLauncher": {
         "ultimaVersion": ("texto", False), "url": ("texto", False), "tamano": ("long?", False),
         "hash": ("texto", False), "versionMinima": ("texto", False), "motivoUrgente": ("texto", False),
-        "novedades": (["texto"], False),
+        "novedades": (["texto"], False), "versionMinimaEquipo": ("texto", False),
     },
     "Grupo": {"nombre": ("texto", False), "logo": ("texto", False), "enlaces": (["Enlace"], False)},
     "Enlace": {"tipo": ("texto", False), "url": ("texto", False), "nombre": ("texto", False)},
