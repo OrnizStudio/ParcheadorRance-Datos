@@ -63,19 +63,28 @@ RUTA_CANALES_MAIN = permisos.RUTA_CANALES_MAIN
 TOPE_CANALES_MAIN = 4 * 1024 * 1024
 
 
-def canales_para_main(archivos: dict, con_anteriores: bool = True) -> list:
+def canales_para_main(archivos: dict, con_anteriores: bool = True, ahora=None, previas=None) -> list:
     """Las entradas de `catalogo/canales.json`: cada canal con un `canal.json` válido en `main`, ordenados por id.
 
     Con `con_anteriores`, la de un canal que ha cambiado de @ lleva además `idAnteriores`: la lista de sus @ de antes
-    (solo los que valen como @, sin repetir y sin el actual, en el orden de su `canal.json`). Un canal sin @ anteriores
-    no lleva el campo, así que su entrada queda igual que antes."""
+    (solo los que valen como @, sin repetir y sin el actual, en el orden de su `canal.json`), y `redirige`: los últimos
+    (como mucho `MAX_REDIRIGE`) con el día en que se dejaron (`hasta`), para que la app lleve el @ viejo al nuevo los
+    90 días siguientes (docs/canales.md §7.1). Cada fila lleva `cambio`, el instante (UTC) en que el robot vio el
+    cambio por primera vez: el de `previas` ({(canal, @, hasta): instante}, lo del `canales.json` anterior) si ya lo
+    tenía, o `ahora` si es nuevo (sin `ahora`, sin `cambio`). Con él cuentan las 24 h de bloqueo (`cambio_arroba`).
+    Un @ que ya es de otro canal no redirige: gana el canal. Un canal sin @ anteriores no lleva ninguno de los dos,
+    así que su entrada queda igual que antes; una app anterior no conoce `redirige` y lo ignora."""
     entradas, _ = canales_publicados(archivos)
+    vivos = {ruta.split("/")[1] for ruta in archivos
+             if ruta.startswith("canales/") and ruta.count("/") == 2 and ruta.endswith("/canal.json")}
     resultado = []
     for cid, c in sorted(entradas.items()):
         entrada = {"id": cid, "estado": c["estado"], "verificado": c["verificado"], "paquetes": c["paquetes"],
                    "adultos": c["adultos"]}
         if con_anteriores and (anteriores := _ids_anteriores(archivos, cid)):
             entrada["idAnteriores"] = anteriores
+            if (recientes := _redirige(archivos, cid, vivos, ahora, previas or {})):
+                entrada["redirige"] = recientes
         resultado.append(entrada)
     return resultado
 
@@ -93,6 +102,37 @@ def _ids_anteriores(archivos: dict, cid: str) -> list:
     return vistos
 
 
+# A un cambio cada 30 días, en 90 días caben como mucho 4 @ que aún redirigen.
+MAX_REDIRIGE = 4
+
+
+def _redirige(archivos: dict, cid: str, vivos=frozenset(), ahora=None, previas=None) -> list:
+    """Los últimos @ de `idAnteriores` con su `hasta` (una fecha válida) y su `cambio`, del más reciente al más
+    antiguo; sin los que ya son de un canal."""
+    datos = archivos.get(f"canales/{cid}/canal.json")
+    canal = _objeto(datos) if datos is not None else None
+    filas = canal.get("idAnteriores") if canal is not None else None
+    vistos, resultado = set(), []
+    for fila in reversed(filas if isinstance(filas, list) else []):
+        anterior = fila.get("id") if isinstance(fila, dict) else None
+        hasta = fila.get("hasta") if isinstance(fila, dict) else None
+        if (isinstance(anterior, str) and permisos.canales.ID_CANAL.match(anterior) and anterior != cid
+                and anterior not in vistos and permisos.canales._es_fecha(hasta)):
+            vistos.add(anterior)
+            if anterior in vivos:
+                continue
+            fila_nueva = {"id": anterior, "hasta": hasta}
+            cambio = (previas or {}).get((cid, anterior, hasta))
+            if cambio is None and ahora is not None:
+                cambio = ahora
+            if cambio is not None:
+                fila_nueva["cambio"] = permisos.cambio_arroba.texto_hora(cambio)
+            resultado.append(fila_nueva)
+            if len(resultado) == MAX_REDIRIGE:
+                break
+    return resultado
+
+
 def _canales_de_main(datos):
     """(versionCatalogo, canales) del `catalogo/canales.json` de `main`, o (None, None) si no hay o no se lee."""
     objeto = _objeto(datos) if datos is not None else None
@@ -101,7 +141,8 @@ def _canales_de_main(datos):
     return objeto.get("versionCatalogo"), objeto.get("canales")
 
 
-def regenerados(archivos: dict, catalogo_main: bytes | None, canales_main: bytes | None, avisos: list | None = None):
+def regenerados(archivos: dict, catalogo_main: bytes | None, canales_main: bytes | None, avisos: list | None = None,
+                ahora=None):
     """{ruta: bytes} de lo que hay que dejar en `main` (`catalogo.json` y `catalogo/canales.json`, siempre los dos y
     con la misma versión), o None si ya dicen lo mismo. Si solo cambian los canales, el catálogo sube de versión igual:
     la app usa `canales.json` solo si su versión es la del catálogo que tiene.
@@ -112,8 +153,9 @@ def regenerados(archivos: dict, catalogo_main: bytes | None, canales_main: bytes
 
     Los `idAnteriores` son solo una ayuda para la app: si con ellos no cabe, se escribe sin ellos (y se avisa), que
     la lista blanca importa más."""
-    canales = canales_para_main(archivos)
     version_canales, canales_antes = _canales_de_main(canales_main)
+    previas = permisos.cambio_arroba.horas_de_cambio(canales_antes)
+    canales = canales_para_main(archivos, ahora=ahora, previas=previas)
     catalogo = catalogo_regenerado(archivos, catalogo_main)
 
     def cabe(lista):
@@ -121,7 +163,7 @@ def regenerados(archivos: dict, catalogo_main: bytes | None, canales_main: bytes
         return len(_json({"esquema": 1, "versionCatalogo": lector_app.VERSION_MAXIMA, "canales": lista})) <= TOPE_CANALES_MAIN
 
     if not cabe(canales) and any("idAnteriores" in c for c in canales):
-        canales = canales_para_main(archivos, con_anteriores=False)
+        canales = canales_para_main(archivos, con_anteriores=False, ahora=ahora, previas=previas)
         if cabe(canales) and avisos is not None:
             avisos.append(f"`{RUTA_CANALES_MAIN}` pasaría de {TOPE_CANALES_MAIN // 1048576} MB con los `idAnteriores`: "
                           "se escribe sin ellos (el parcheador no avisará al pedir un @ que ya fue de otro canal).")
@@ -953,7 +995,8 @@ def regenerar_catalogo(api, remoto: str, entorno, aviso) -> str:
             archivos[listas.RUTA_CANALES] = vetados
         avisos = []
         cambios = regenerados(archivos, _leer_de_git(base, permisos.RUTA_CATALOGO),
-                              _leer_de_git(base, RUTA_CANALES_MAIN), avisos)
+                              _leer_de_git(base, RUTA_CANALES_MAIN), avisos,
+                              ahora=datetime.datetime.now(datetime.timezone.utc))
         historial = historial_central(base, api, avisos)
         for texto in avisos:
             aviso(texto)

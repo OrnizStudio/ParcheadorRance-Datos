@@ -121,12 +121,18 @@ class CanalNuevo(unittest.TestCase):
     def test_programa_esta_reservado(self):
         self.assertTrue(hay(juzgar(nuevo_canal(canal="programa", nombre="Programa")), "reservado por el programa"))
 
-    def test_un_arroba_que_ya_existio(self):
-        main = main_con_dos_canales()
-        canal = canal_json()
-        canal["idAnteriores"] = [{"id": NUEVO, "hasta": "2026-11-01"}]
-        main[f"canales/{OTRO}/canal.json"] = particion.texto_json(canal)
-        self.assertTrue(juzgar(nuevo_canal(main)))
+    def test_un_arroba_que_acaba_de_dejar_otro_canal(self):
+        # Bloqueado 24 h desde el cambio (sin la hora apuntada, hasta el final del día siguiente); después, libre.
+        def con_anterior(hasta):
+            main = main_con_dos_canales()
+            canal = canal_json()
+            canal["idAnteriores"] = [{"id": NUEVO, "hasta": hasta}]
+            main[f"canales/{OTRO}/canal.json"] = particion.texto_json(canal)
+            return main
+        self.assertTrue(hay(juzgar(nuevo_canal(con_anterior(HOY.isoformat()))), "bloqueado 24 horas"))
+        self.assertTrue(hay(juzgar(nuevo_canal(con_anterior((HOY - datetime.timedelta(days=1)).isoformat()))),
+                            "bloqueado"))
+        self.assertEqual([], juzgar(nuevo_canal(con_anterior("2026-11-01"))))
 
     def test_un_canal_bloqueado_no_se_vuelve_a_pedir(self):
         main = main_con_dos_canales()

@@ -50,6 +50,7 @@ import zipfile
 from dataclasses import dataclass, field
 
 import canales
+import cambio_arroba
 import version_equipo
 import listas
 import solicitudes
@@ -148,7 +149,8 @@ class Cambio:
 
 def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None,
               ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, leer_sueltos=None, hoy=None,
-              cuentas=(), creada_el=None, solicitudes_abiertas=None, cuerpo=None, listar_main=None) -> list:
+              cuentas=(), creada_el=None, solicitudes_abiertas=None, cuerpo=None, listar_main=None,
+              ahora=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
@@ -164,7 +166,12 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     cuenta y `solicitudes_abiertas(etiqueta)` cuántas propuestas abiertas tiene el autor con esa etiqueta (sin esta).
     `cuerpo` es el texto de la propuesta (la marca `<!-- canal: <c> -->` de un cambio en la ficha central) y
     `listar_main(carpeta)` da {ruta: bytes} de los archivos de esa carpeta en `main` (`solicitudes/etiquetas/`).
+    `ahora` es el instante en UTC (por defecto, el de ahora; con `hoy` y sin `ahora`, el principio de ese día): con él
+    se mira si un @ que ha dejado un canal sigue bloqueado (24 h, `cambio_arroba`).
     """
+    if ahora is None:
+        ahora = (datetime.datetime.combine(hoy, datetime.time(), datetime.timezone.utc) if hoy is not None
+                 else datetime.datetime.now(datetime.timezone.utc))
     motivos = []
     if not cambios:
         return ["La propuesta no cambia ningún archivo."]
@@ -201,6 +208,10 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             programa = programa.decode("utf-8", "replace")
         if viejo := version_equipo.motivo(programa, antes, cuerpo):
             return [viejo]
+    # Cambio de @ (docs/canales.md §7.1): mueve la carpeta entera de un canal a otro @. Se juzga entero aquí.
+    if (movida := cambio_arroba.detectar(cambios)) is not None:
+        return _sin_repetidos(_comprobar_cambio_arroba(*movida, cambios, leer, leer_main, permisos, leer_sueltos, hoy,
+                                                       bloqueados, listar_main, ahora))
     # Solicitudes (fase D): una propuesta que pide algo que el autor no puede hacer directamente. Se juzga entera aquí.
     if not permisos.es_dueno:
         try:
@@ -219,7 +230,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
                                                           consultas, solicitudes_abiertas))
             return _sin_repetidos(_comprobar_solicitud(sol, leer, leer_main, permisos, cuenta_de, creada_el,
                                                        solicitudes_abiertas, leer_sueltos, hoy, bloqueados,
-                                                       listar_main))
+                                                       listar_main, ahora))
     if not permisos.es_dueno:
         for c in de_canales:
             arroba = canales.canal_de_la_ruta(c.ruta)[0]
@@ -256,7 +267,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     motivos += _comprobar_tamanos(cambios, permisos)
 
     main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
-    info = _canales_de(main_sueltos)
+    info = _canales_de(main_sueltos, cambio_arroba.bloqueados_por_cambio(main_sueltos, leer_main(RUTA_CANALES_MAIN),
+                                                                          ahora))
     try:
         reservados = listas.reservados(leer_main)
     except listas.ListaIlegible as error:
@@ -598,9 +610,85 @@ def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, ho
     return motivos
 
 
+def _comprobar_cambio_arroba(viejo, nuevo, cambios, leer, leer_main, permisos: Permisos, leer_sueltos, hoy,
+                             bloqueados, listar_main=None, ahora=None) -> list:
+    ahora = ahora or datetime.datetime.now(datetime.timezone.utc)
+    hoy = hoy or ahora.date()
+    raros = [c.ruta for c in cambios if c.estado != "D" and c.modo != "100644"]
+    if raros:
+        return [f"`{raros[0]}`: en `canales/` solo valen archivos normales (sin enlaces simbólicos, submódulos ni "
+                "permisos de ejecución)."]
+    main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
+    despues_sueltos = leer_sueltos("despues") if leer_sueltos is not None else {}
+    dejados = cambio_arroba.bloqueados_por_cambio(main_sueltos, leer_main(RUTA_CANALES_MAIN), ahora)
+    info = _canales_de(main_sueltos, dejados)
+    try:
+        reservados = listas.reservados(leer_main)
+    except listas.ListaIlegible as error:
+        if not permisos.es_dueno:
+            return [str(error)]
+        reservados = list(canales.RESERVADOS)
+    existentes, verificados = {}, set()
+    for otro, (nombre, verificado, anteriores) in info.items():
+        # Su propio @ y su nombre no cuentan (el nombre no cambia); sus @ de antes, como los de los demás, solo
+        # mientras siguen bloqueados (24 h).
+        for texto in (anteriores if otro == viejo else (otro, nombre, *anteriores)):
+            if (e := canales.esqueleto(texto)):
+                existentes.setdefault(e, f"@{otro} ({nombre})")
+                if verificado:
+                    verificados.add(e)
+    for bloqueado in bloqueados:
+        if (e := canales.esqueleto(bloqueado)):
+            existentes.setdefault(e, f"@{bloqueado}")
+
+    def existe(arroba):
+        return _ocupado(arroba, info, dejados)
+
+    def solicitud_abierta(arroba):
+        datos = leer_main(f"solicitudes/verificacion/{arroba}.json")
+        if datos is not None and not _resuelta(datos):
+            return "la verificación"
+        for ruta, datos in (listar_main or (lambda carpeta: {}))(solicitudes.CARPETA_ETIQUETAS).items():
+            objeto = _objeto_json(datos)
+            if isinstance(objeto, dict) and objeto.get("canal") == arroba and not _resuelta(datos):
+                return f"la etiqueta de `{ruta}`"
+        return None
+
+    return cambio_arroba.comprobar(
+        viejo, nuevo, cambios, leer, despues_sueltos, autor_id=permisos.cuenta_id,
+        rol=int(permisos.por_canal.get(viejo, Rol.NINGUNO)), es_dueno=permisos.es_dueno, hoy=hoy, existe=existe,
+        parecido=lambda texto: listas.parecido(texto, reservados, existentes, verificados), bloqueados=bloqueados,
+        solicitud_abierta=solicitud_abierta)
+
+
+def _ocupado(arroba, info, dejados):
+    """None si el @ está libre; si no, por qué (para «@x …»)."""
+    if arroba in info:
+        return "ya es el @ de un canal"
+    if arroba in dejados:
+        return (f"lo acaba de dejar otro canal: queda bloqueado {cambio_arroba.HORAS_BLOQUEO} horas, hasta el "
+                f"{cambio_arroba.texto_hora(dejados[arroba]).replace('T', ' a las ').replace('Z', ' (UTC)')}")
+    return None
+
+
+def _objeto_json(datos):
+    try:
+        return json.loads(datos)
+    except (ValueError, RecursionError, TypeError):
+        return None
+
+
+def _resuelta(datos) -> bool:
+    """Una solicitud de `solicitudes/` ya resuelta por el Dueño (lleva `estado`, `respuesta` o `resuelta`). Una que no
+    se puede leer cuenta como sin resolver."""
+    objeto = _objeto_json(datos)
+    return isinstance(objeto, dict) and any(k in objeto for k in ("estado", "respuesta", "resuelta"))
+
+
 def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, creada_el, solicitudes_abiertas,
-                         leer_sueltos, hoy, bloqueados, listar_main=None) -> list:
-    hoy = hoy or datetime.datetime.now(datetime.timezone.utc).date()
+                         leer_sueltos, hoy, bloqueados, listar_main=None, ahora=None) -> list:
+    ahora = ahora or datetime.datetime.now(datetime.timezone.utc)
+    hoy = hoy or ahora.date()
     main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
     if sol.canal in bloqueados:
         return [f"@{sol.canal} está bloqueado por el Dueño del programa ({bloqueados[sol.canal]})."]
@@ -630,7 +718,8 @@ def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, cr
         return solicitudes.comprobar_verificacion(sol, leer, permisos.cuenta_id,
                                                   int(permisos.por_canal.get(sol.canal, Rol.NINGUNO)), hoy,
                                                   main_sueltos, vetada)
-    info = _canales_de(main_sueltos)
+    dejados = cambio_arroba.bloqueados_por_cambio(main_sueltos, leer_main(RUTA_CANALES_MAIN), ahora)
+    info = _canales_de(main_sueltos, dejados)
     try:
         reservados = listas.reservados(leer_main)
     except listas.ListaIlegible as error:
@@ -645,8 +734,8 @@ def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, cr
     for bloqueado in bloqueados:
         if (e := canales.esqueleto(bloqueado)):
             existentes.setdefault(e, f"@{bloqueado}")
-    if sol.canal in info or any(sol.canal in anteriores for _, _, anteriores in info.values()):
-        return [f"@{sol.canal} ya existe o ya existió."]
+    if (ocupado := _ocupado(sol.canal, info, dejados)):
+        return [f"@{sol.canal} {ocupado}."]
     return solicitudes.comprobar_canal_nuevo(
         sol, leer, permisos.cuenta_id, cuenta_de or (lambda cuenta_id: None), creada_el or (lambda cuenta_id: None),
         hoy, solicitudes.version_de_normas(leer_main(solicitudes.RUTA_NORMAS)),
@@ -654,8 +743,10 @@ def _comprobar_solicitud(sol, leer, leer_main, permisos: Permisos, cuenta_de, cr
         lambda: (solicitudes_abiertas or (lambda etiqueta: 0))(sol.etiqueta), _paquetes_de(main_sueltos))
 
 
-def _canales_de(archivos_main: dict) -> dict:
-    """{@: (nombre, verificado, [@ anteriores])} de los `canal.json` de `main` (los ilegibles, con lo que se pueda)."""
+def _canales_de(archivos_main: dict, dejados=None) -> dict:
+    """{@: (nombre, verificado, [@ anteriores])} de los `canal.json` de `main` (los ilegibles, con lo que se pueda).
+    Con `dejados` ({@: hasta cuándo}, `cambio_arroba.bloqueados_por_cambio`), los @ anteriores son solo los que siguen
+    bloqueados: pasadas las 24 h, un @ dejado ya no se compara con nada (está libre)."""
     resultado = {}
     for ruta, datos in archivos_main.items():
         partes = ruta.split("/")
@@ -668,7 +759,7 @@ def _canales_de(archivos_main: dict) -> dict:
         canal = canal if isinstance(canal, dict) else {}
         verificacion = canal.get("verificacion")
         anteriores = [a.get("id") for a in canal.get("idAnteriores") or [] if isinstance(a, dict)
-                      and isinstance(a.get("id"), str)]
+                      and isinstance(a.get("id"), str) and (dejados is None or a.get("id") in dejados)]
         resultado[partes[1]] = (canal.get("nombre") if isinstance(canal.get("nombre"), str) else partes[1],
                                 isinstance(verificacion, dict) and verificacion.get("verificado") is True, anteriores)
     return resultado
