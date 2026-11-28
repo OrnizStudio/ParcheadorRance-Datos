@@ -107,5 +107,41 @@ class Propuestas(unittest.TestCase):
         self.assertIsNone(ve.minima('{"launcher": {"versionMinimaEquipo": 4}}', None))
 
 
+class SolicitudDeCanal(unittest.TestCase):
+    """«Crear mi canal» (una solicitud de quien aún no es de ningún canal) también lleva la marca, como en la app."""
+
+    def juzgar(self, cuerpo, minima="0.4.4"):
+        import datetime
+        import particion
+        from permisos import Permisos, Rol
+        from test_fase_d_listas import DUENO
+        from test_fase_d_solicitudes import YO, nuevo_canal
+        from test_sueltos import CATALOGO, HOY
+        p = nuevo_canal()
+        if minima is not None:
+            p.antes[ve.RUTA_PARCHEADOR] = p.despues[ve.RUTA_PARCHEADOR] = json.dumps(
+                {"esquema": 1, "launcher": {"ultimaVersion": "0.5.0", "versionMinimaEquipo": minima}}).encode()
+        texto = particion.texto_json(CATALOGO).decode("utf-8")
+        lados = {"antes": p.antes, "despues": p.despues}
+        return comprobar(p.cambios(), texto, texto.encode(), Permisos(Rol.NINGUNO, cuenta_id=YO),
+                         leer_archivo=lambda ruta, lado: lados[lado].get(ruta), leer_sueltos=lambda lado: lados[lado],
+                         hoy=HOY, ids_duenos=frozenset({DUENO}), cuenta_de=lambda i: "yo" if i == YO else f"c{i}",
+                         creada_el=lambda i: datetime.date(2025, 1, 1), solicitudes_abiertas=lambda etiqueta: 0,
+                         cuerpo=cuerpo)
+
+    def test_con_un_parcheador_viejo_o_sin_marca_no_se_pide(self):
+        for cuerpo in ("Quiero un canal.", "x" + MARCA.format("0.4.3"), MARCA.format("0.4.4") + MARCA.format("0.1")):
+            with self.subTest(cuerpo=cuerpo[-30:]):
+                motivos = self.juzgar(cuerpo)
+                self.assertEqual(1, len(motivos), motivos)
+                self.assertIn("hace falta la v0.4.4 o posterior", motivos[0])
+
+    def test_con_la_version_justa_o_sin_minima_queda_para_el_dueno(self):
+        self.assertEqual([], self.juzgar("Quiero un canal." + MARCA.format("0.4.4")))
+        self.assertEqual([], self.juzgar("Quiero un canal." + MARCA.format("1.0.0")))
+        self.assertEqual([], self.juzgar("Sin marca, sin mínima.", minima=None))
+        self.assertEqual([], self.juzgar("Mínima vacía.", minima=""))
+
+
 if __name__ == "__main__":
     unittest.main()
