@@ -512,6 +512,9 @@ def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, ho
     if sol.tipo == "central" and f"canales/{c}/parches/{jid}.json" not in main_sueltos:
         return [f"@{c} no tiene parche de «{jid}»: la ficha central de un juego la cambia un canal que lo publica "
                 "(añade antes su parche)."]
+    if sol.tipo == "edicion" and f"canales/{c}/parches/{jid}.json" not in main_sueltos:
+        return [f"@{c} no tiene parche de «{jid}»: una edición nueva la pide un canal que publica el juego "
+                "(añade antes su parche)."]
     motivos = []
     if not info[c][1]:  # verificado en `main`: directo, sin tope
         abiertas = sum((solicitudes_abiertas or (lambda etiqueta: 0))(solicitudes.PREFIJO_ETIQUETA + t)

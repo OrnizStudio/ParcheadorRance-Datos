@@ -218,6 +218,19 @@ class EdicionNueva(unittest.TestCase):
             "esquema": 1, "id": "gog", "nombre": "GOG", "huella": HUELLA, "alta": alta()})
         self.assertTrue(juzgar(p))
 
+    def test_de_un_juego_que_el_canal_no_publica(self):
+        # Como la ficha central: la pide un canal con parche del juego (docs/canales.md). Sin él, ni su Propietario,
+        # ni con el canal verificado; con el parche, sí.
+        main = main_es()
+        del main[PARCHE_ES]
+        for permisos in (admin(), admin(Rol.PROPIETARIO)):
+            with self.subTest(rol=permisos.por_canal[OTRO]):
+                self.assertTrue(hay(juzgar(con_edicion_nueva(main), permisos), "no tiene parche de «rance»"))
+        verificado = main_es(verificado=True)
+        del verificado[PARCHE_ES]
+        self.assertTrue(hay(juzgar(con_edicion_nueva(verificado)), "no tiene parche"))
+        self.assertEqual([], juzgar(con_edicion_nueva()))
+
     def test_la_del_oficial_sigue_como_siempre(self):
         # Una edición del oficial no es una solicitud: la registra un Editor del oficial, como en la fase B.
         p = con_edicion_nueva(canal="ornizen")
