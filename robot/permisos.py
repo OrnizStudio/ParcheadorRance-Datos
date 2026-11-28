@@ -519,6 +519,8 @@ def _comprobar_programa(sol, cambios, leer, permisos: Permisos, leer_sueltos, ho
         if abiertas >= solicitudes.TOPE_ABIERTAS:
             motivos.append(f"Ya tienes {solicitudes.TOPE_ABIERTAS} solicitudes de juegos, ediciones o fichas abiertas: "
                            "espera a que el Dueño del programa las resuelva o retira alguna.")
+    motivos += solicitudes.errores_de_textos([(cambio.ruta, cambio.estado) for cambio in cambios],
+                                             main_sueltos.get, prop_sueltos.get)
     for cambio in cambios:
         if cambio.ruta.startswith(solicitudes.CARPETA_IMAGENES):
             if (problema := solicitudes.error_de_ruta_de_imagen(cambio.ruta)):
