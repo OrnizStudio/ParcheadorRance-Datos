@@ -1,0 +1,22 @@
+{
+  "esquema": 1,
+  "id": "prueba",
+  "titulo": "Juego de prueba2",
+  "tituloCorto": "Prueba",
+  "tituloOriginal": "TestGameTwo",
+  "sinopsis": "Un juego inventado para probar el parcheador de principio a fin: instalar, verificar y quitar un parche de verdad. No es un juego real y solo lo ve el equipo.",
+  "deteccion": {
+    "ejecutables": [
+      "JuegoDePrueba.exe"
+    ]
+  },
+  "estado": "activo",
+  "alta": {
+    "canal": "ornizen",
+    "cuenta": null,
+    "fecha": null
+  },
+  "ediciones": [
+    "unica"
+  ]
+}

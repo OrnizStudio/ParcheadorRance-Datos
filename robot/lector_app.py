@@ -188,14 +188,36 @@ def leer(datos):
     if _profundidad(datos) > PROFUNDIDAD_MAXIMA:
         raise JsonIlegible(f"tiene más de {PROFUNDIDAD_MAXIMA} niveles de `[` y `{{` uno dentro de otro")
     try:
-        return json.loads(datos, object_pairs_hook=_sin_repetidas, parse_int=_entero, parse_constant=_constante,
-                          parse_float=_decimal)
+        objeto = json.loads(datos, object_pairs_hook=_sin_repetidas, parse_int=_entero, parse_constant=_constante,
+                            parse_float=_decimal)
     except json.JSONDecodeError as e:
         raise JsonIlegible(f"no es un JSON válido (línea {e.lineno}, columna {e.colno}): {e.msg}", True) from None
     except (RecursionError, ValueError) as e:
         if isinstance(e, JsonIlegible):
             raise
         raise JsonIlegible("no es un JSON que se pueda leer") from None
+    if _sustituto_dentro(objeto):
+        raise JsonIlegible("tiene un carácter partido (`\uD800`–`\uDFFF` suelto), que no es texto válido")
+    return objeto
+
+
+def _sustituto_dentro(valor) -> bool:
+    """Si hay un sustituto UTF-16 suelto (`"\\ud800"`) en algún texto o clave: JSON lo admite escapado, pero no es
+    texto, la app lo cambia por otra cosa y al escribirlo en UTF-8 revienta."""
+    pendientes = [valor]
+    while pendientes:
+        actual = pendientes.pop()
+        if isinstance(actual, str):
+            if _tiene_sustituto(actual):
+                return True
+        elif isinstance(actual, dict):
+            for clave, dentro in actual.items():
+                if _tiene_sustituto(clave):
+                    return True
+                pendientes.append(dentro)
+        elif isinstance(actual, list):
+            pendientes.extend(actual)
+    return False
 
 
 def _tiene_sustituto(texto: str) -> bool:

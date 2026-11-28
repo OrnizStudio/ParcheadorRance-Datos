@@ -12,9 +12,12 @@ huella dactilar de cada archivo, con la que no se puede reconstruir el juego).
 
 | Sitio | Qué es |
 |---|---|
-| [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo**: la lista de juegos, ediciones, versiones de parche, textos y etiquetas. Es lo que el parcheador descarga al abrirse. |
+| [`juegos/`](juegos/) | **Lo central de cada juego** (desde la fase B de los canales): `juegos/<juego>/juego.json` (títulos, sinopsis, imágenes, detección, quién lo dio de alta) y `juegos/<juego>/ediciones/<edición>.json` (nombre, huella, tiendas, lanzamiento). |
+| `canales/<canal>/` | Cada canal: `canal.json`, `miembros.json`, `lista-negra.json` y **`parches/<juego>.json`**, su parche de ese juego (visible, estado de la traducción, opciones, versiones, huellas parcheadas…). |
+| [`catalogo/catalogo.json`](catalogo/catalogo.json) | **El catálogo** que descarga el parcheador al abrirse (esquema 1). Desde la fase B **no se edita a mano**: lo escribe el robot juntando `juegos/` y `canales/ornizen/parches/`, `normas/etiquetas.json` y `programa/parcheador.json`. |
+| Rama [`publicado`](../../tree/publicado) | Lo que genera el robot para el parcheador y el Modo equipo: `indice.json` y el índice por juego de Programa › Juegos originales. No se toca a mano. |
 | `catalogo/juegos/<juego>/` | Las imágenes de cada juego (icono, banner, fondo, logo, portada). El catálogo las nombra con rutas relativas a `catalogo/`. |
-| [Releases](../../releases) | Los **paquetes de parche** (`<juego>-<edición>-<versión>.zip`) y, más adelante, las versiones del propio parcheador. |
+| [Releases](../../releases) | Las versiones del propio parcheador y los **paquetes de parche** publicados hasta la fase B (`<juego>-<edición>-<versión>.zip`). Desde la fase B, los paquetes nuevos van a las Releases de [`OrnizStudio/Ornizen-Parches`](https://github.com/OrnizStudio/Ornizen-Parches) (`canal.json` → `paquetes`); los ya publicados se quedan aquí. |
 | [`robot/`](robot/) y [`.github/workflows/`](.github/workflows/) | El **robot de permisos**: revisa cada cambio propuesto y lo publica solo si quien lo hace tiene permiso. Solo lo cambia el Propietario. |
 | [`normas/`](normas/) | Las normas generales, que solo cambia el Propietario: los archivos que **ningún parche puede tocar** (protección anticopia y cracks) y la cuenta del Propietario. |
 | [`pruebas/`](pruebas/) | El «Juego de prueba»: un juego inventado para probar el parcheador de principio a fin. |
@@ -39,11 +42,17 @@ rama `main`, la carpeta `catalogo/` ni el archivo sin sacar antes una versión n
 
 ## Cómo se publica un cambio
 
-1. Se cambia `catalogo/catalogo.json` (y las imágenes, si toca).
-2. **Se sube `versionCatalogo` en 1.** El parcheador solo usa un catálogo si su número es mayor que el que
-   ya tiene; si no sube, nadie se entera del cambio.
-3. Los Administradores pueden subirlo directamente a `main`. Los Editores y Colaboradores lo mandan como
-   propuesta (pull request) y el robot la revisa y la publica sola.
+Desde la fase B de los canales, el catálogo está en **archivos sueltos** y los cambios los hace el Modo equipo:
+
+1. Se cambian los archivos de `juegos/<juego>/` y `canales/ornizen/parches/<juego>.json` (y las imágenes de
+   `catalogo/juegos/<juego>/`, si toca), siempre con una propuesta (pull request) desde la copia de cada cuenta.
+2. El robot de permisos junta los archivos de `main` y los de la propuesta en dos catálogos y los juzga con las
+   reglas de siempre, más las de los archivos sueltos (ver «Archivos sueltos» abajo). Si pasa, la publica sola.
+3. Tras publicarla, el trabajo `publicar` regenera `catalogo/catalogo.json` con `versionCatalogo` + 1 (con una
+   propuesta propia que se fusiona sola) y escribe la rama `publicado`. Nadie sube `versionCatalogo` a mano.
+
+Una propuesta que cambie `catalogo/catalogo.json` a mano se rechaza («Actualiza el parcheador»), salvo si la hace el
+Dueño del programa (para arreglar un catálogo roto o una versión absurda).
 
 Para publicar un parche nuevo:
 
@@ -245,6 +254,55 @@ robot los vuelve a comprobar para cualquier rol, también Administradores y Prop
 
 Lo que el robot no puede comprobar y sí hace el parcheador, con la carpeta delante: que un patrón solo no pase
 del 10 % del tamaño ni del 20 % de los archivos, y que no se ignoren los 10 archivos más grandes.
+
+## Archivos sueltos (fase B de los canales)
+
+Cada campo del catálogo de antes va a un solo archivo (`robot/particion.py`; partir y volver a juntar da el mismo
+catálogo):
+
+| Archivo | Qué lleva |
+|---|---|
+| `juegos/<j>/juego.json` | `id`, `titulo`, `tituloCorto`, `tituloOriginal`, `relacionado`, `sinopsis`, `imagenes`, `deteccion`; además `estado` central (`activo`, `retirado`, `bloqueado`), `alta` y `ediciones` (los ids, en orden). |
+| `juegos/<j>/ediciones/<e>.json` | `id`, `nombre`, `grupo`, `huella`, `ignorar`, `ignorados`, `lanzar`, `tiendas`, `restricciones`, `avisoRestricciones`, `imagenes`; además `alta`. |
+| `canales/<c>/parches/<j>.json` | `juego`, `habilitado`, `disponibilidad`, `pruebas`, `orden`, `etiquetas`, `estado`, `progreso`, `creditos`, `opciones`, `parche` y, por edición (`ediciones: [{id, …}]`), `notaEdicion`, `disponibilidad`, `pruebas`, `huellasParcheadas`, `estado`, `progreso`, `parche`, `versiones`, `etiquetas`, `contenido`. Puede llevar `titulo` y `sinopsis` propios, que van por encima de los del juego. |
+| `normas/etiquetas.json` | Las etiquetas globales (solo el Dueño). |
+| `programa/parcheador.json` | El bloque `launcher` y el `grupo` del catálogo de antes. Solo el Dueño, salvo el `grupo`, que hasta la fase D sigue cambiándolo un Administrador del canal. |
+
+Lo que comprueba el robot además de las reglas de siempre (`robot/sueltos.py`):
+
+- **Forma.** Solo esas rutas, con ids de letras, números, `.`, `_` y `-`. Solo claves conocidas, `esquema: 1` y JSON
+  estricto. Un juego hasta 256 KB, una edición o un parche hasta 4 MB.
+- **`alta`.** La pone quien propone: `{"canal", "cuenta", "fecha"}`, con su id, la fecha de hoy (UTC, con un día de
+  margen) y un canal donde es Editor o más. En la fase B, un juego nuevo solo lo da de alta el Dueño del programa
+  (PROGRAMA › Juegos); los canales verificados se suman con la fase D. Después no cambia, salvo el Dueño. La migración se reconoce por `programa/parcheador.json` en `main`. Los juegos migrados llevan
+  `{"canal": "ornizen", "cuenta": null, "fecha": null}`.
+- **El `estado` central de un juego** y **la `huella` de una edición publicada** solo los cambia el Dueño. Un juego
+  actualizado es otra edición.
+- **`versiones` solo crece.** Una versión no se borra ni se le cambia la versión, la fecha, el autor o el paquete.
+  Retirarla (`estado`, `motivo`, `motivoPublico`, `fechaRetirada`) y editar sus `notas` sí se puede. Por lo
+  mismo, un parche con versiones publicadas no se borra (salvo el Dueño).
+- **Juegos fuera del catálogo.** Los juegos sin parche del canal y los retirados o bloqueados no entran en el
+  `catalogo.json` de las ≤0.2.x, pero el robot juzga los roles con un catálogo que los lleva todos. Los archivos de
+  un juego retirado o bloqueado solo los cambia el Dueño. Quitar un juego de `juegos/` es del Dueño; añadir o quitar
+  el parche de un juego en el canal, de un Administrador o más.
+- **Coherencia.**
+  - Cada edición de la lista de un juego tiene su archivo, y al revés.
+  - Cada parche apunta a un juego que existe.
+  - Los paquetes nuevos están en las Releases de los repositorios del canal (`canal.json` → `paquetes`).
+  - Por ahora solo publica parches el canal oficial.
+
+El trabajo `publicar` (`robot/publicar.py`) corre tras cada fusión del robot y en `publicar.yml`: en cada subida
+directa a `main`, a mano y una vez al día. Hace dos cosas:
+
+- **Regenera el catálogo** si lo que dicen los archivos ha cambiado. Lo deja en la rama `robot/catalogo` y abre su
+  propuesta. Como las propuestas que abre GitHub Actions no lanzan el robot, el propio trabajo marca `permisos` en
+  verde en ese commit: su contenido sale entero de `main`. Después la fusiona.
+- **Escribe la rama `publicado`**, un único commit sin historia:
+  - `indice.json`, con el hash de cada trozo;
+  - `programa/juegos/<xx>.json`, donde `xx` son los dos primeros caracteres hexadecimales del SHA-256 del id.
+
+Si algo no se puede publicar (archivos que no se juntan, un catálogo que la app no leería, más de 8 MB), para y lo
+dice en el resumen del trabajo. `main` se queda como estaba.
 
 ## Contenido de pruebas
 

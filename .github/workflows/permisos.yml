@@ -134,3 +134,32 @@ jobs:
           # synchronize: el commit sobre el que se ha subido la cabeza (el robot tiene que haberlo visto subir).
           PR_ANTES: ${{ github.event.before }}
         run: '"$RUNNER_TEMP/robot/bin/python" robot/permisos.py --fusionar'
+
+  # Fase B: tras publicar una propuesta, regenera `catalogo/catalogo.json` (para las ≤0.2.x) y escribe la rama
+  # `publicado` (robot/publicar.py). Lo que el robot fusiona con el token de Actions no lanza otros flujos, así que va
+  # aquí detrás. Solo lee `main`; no ejecuta nada de la propuesta.
+  publicar:
+    needs: fusionar
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publicar-datos
+      cancel-in-progress: false
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      # La comprobación `permisos` en verde de la propuesta del catálogo regenerado (sale entera de `main`).
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Regenerar el catálogo y escribir la rama publicado
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python robot/publicar.py

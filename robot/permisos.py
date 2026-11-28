@@ -50,8 +50,16 @@ from dataclasses import dataclass, field
 
 import canales
 import lector_app  # el catálogo tal como lo lee el parcheador
+import particion
+import sueltos
 
 RUTA_CATALOGO = "catalogo/catalogo.json"
+# Lo más que puede ocupar el `grupo` de `programa/parcheador.json` que cambia un Administrador (JSON compacto).
+TOPE_GRUPO = 4096
+# Fase B: desde la migración, `catalogo.json` lo escribe el robot (trabajo `publicar`) a partir de los archivos sueltos.
+ACTUALIZA_EL_PARCHEADOR = (f"Actualiza el parcheador: el catálogo ya no se edita así. `{RUTA_CATALOGO}` lo escribe el "
+                           "robot a partir de `juegos/` y `canales/<canal>/parches/`, que es lo que cambia el Modo "
+                           "equipo de las versiones nuevas.")
 CARPETA_JUEGOS = "catalogo/juegos/"
 TAMANO_MAXIMO_CATALOGO = 8 * 1024 * 1024  # el mismo tope que aplica el parcheador al descargarlo
 TAMANO_MAXIMO_IMAGEN = 5 * 1024 * 1024
@@ -128,7 +136,7 @@ class Cambio:
 
 
 def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_paquete=None, leer_archivo=None,
-              ids_duenos=frozenset(), cuenta_de=None, rol_externo=None) -> list:
+              ids_duenos=frozenset(), cuenta_de=None, rol_externo=None, leer_sueltos=None, hoy=None) -> list:
     """Devuelve los motivos por los que la propuesta no se acepta (lista vacía = se acepta).
 
     `antes` y `despues` son el texto de `catalogo/catalogo.json` en `main` y tras aplicar la propuesta
@@ -137,7 +145,8 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
     sin él no se abren los paquetes (solo en las pruebas: `main` siempre lo pasa). `leer_archivo(ruta, lado)` da los
     bytes de un archivo en `main` (`"antes"`) o tras la propuesta (`"despues"`), o None si no existe: hace falta para
     lo que cambia en `canales/`. `ids_duenos` son los ids del Dueño (nadie los veta) y `cuenta_de(id)` el nombre actual
-    de una cuenta en GitHub (para que nadie ponga el nombre de otra persona junto a un id).
+    de una cuenta en GitHub (para que nadie ponga el nombre de otra persona junto a un id). `leer_sueltos(lado)` da
+    {ruta: bytes} con los archivos sueltos del catálogo (y los `canal.json`) en `main` o tras la propuesta (fase B).
     """
     motivos = []
     if not cambios:
@@ -150,6 +159,7 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
         return [f"`{ruta}`: es Python compilado (o está en `__pycache__/`). No se suben al repositorio: bórralo de la "
                 "propuesta (ya están en `.gitignore`)." for ruta in compilados]
     de_canales = [c for c in cambios if c.ruta.startswith(canales.CARPETA_CANALES)]
+    de_sueltos = [c for c in cambios if sueltos.de_los_sueltos(c.ruta)]
     # El catálogo y todo lo que no es `canales/` se juzga con el rol del canal oficial (`rol_global`): un rol en otro
     # canal no cuenta. En `canales/` hace falta saber el id de la cuenta (aceptar la invitación propia, salir…).
     sin_rol_oficial = permisos.rol_global == Rol.NINGUNO and not permisos.por_juego
@@ -178,10 +188,59 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             {k: int(v) for k, v in permisos.por_canal.items()}, permisos.cuenta_id, permisos.es_dueno, leer,
             ids_duenos, cuenta_de, rol_externo)
 
-    cat_antes = _leer_json(antes)
-    cat_despues = None
     toca_catalogo = any(c.ruta == RUTA_CATALOGO for c in cambios)
     manda = _manda_en_todo(permisos)
+
+    # ── Fase B: la fuente del catálogo son los archivos sueltos y `catalogo.json` lo regenera el robot.
+    main_sueltos = leer_sueltos("antes") if leer_sueltos is not None else {}
+    migrado = sueltos.migrado(main_sueltos)
+    if migrado and toca_catalogo and not permisos.es_dueno:
+        return [ACTUALIZA_EL_PARCHEADOR]
+    # El `grupo` del catálogo vive en `programa/parcheador.json` desde la migración, pero hasta la fase D (que lo pasa a
+    # `canal.json`) lo sigue cambiando un Administrador desde Ajustes del canal, como antes. Solo `grupo`: el resto de
+    # `programa/` es del Dueño.
+    solo_grupo = None
+    para_reglas = None
+    if migrado and not permisos.es_dueno:
+        cambio_programa = next((c for c in cambios if c.ruta == particion.RUTA_PARCHEADOR and c.estado == "M"), None)
+        if cambio_programa is not None and particion.RUTA_PARCHEADOR in main_sueltos:
+            nuevo = leer_sueltos("despues").get(particion.RUTA_PARCHEADOR)
+            try:
+                a, d = lector_app.leer(main_sueltos[particion.RUTA_PARCHEADOR]), lector_app.leer(nuevo)
+            except (lector_app.JsonIlegible, TypeError):
+                a = d = None
+            if (isinstance(a, dict) and isinstance(d, dict) and _canonico(a, sin="grupo") == _canonico(d, sin="grupo")
+                    and len(_canonico({"grupo": d.get("grupo")}, sin="")) <= TOPE_GRUPO):
+                solo_grupo = cambio_programa
+    if de_sueltos and not migrado and not permisos.es_dueno:
+        return [f"`{de_sueltos[0].ruta}`: el catálogo aún está en `{RUTA_CATALOGO}`; los archivos sueltos (`juegos/`, "
+                "`canales/<canal>/parches/`) los crea la migración, que hace el Dueño del programa."]
+    if de_sueltos or solo_grupo is not None:
+        prop_sueltos = leer_sueltos("despues")
+        rol_por_canal = {k: int(v) for k, v in permisos.por_canal.items()}
+        motivos += sueltos.comprobar([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
+                                     rol_por_canal, permisos.cuenta_id, permisos.es_dueno, hoy)
+        motivos += sueltos.comprobar_paquetes([(c.ruta, c.estado) for c in de_sueltos], main_sueltos, prop_sueltos,
+                                              sueltos.paquetes_de_los_canales(main_sueltos), permisos.es_dueno)
+        try:
+            particion.juntar(main_sueltos, 1)
+        except particion.ErrorParticion as error:
+            if not permisos.es_dueno:
+                return motivos + [f"Los archivos del catálogo que hay en `main` no se pueden juntar ({error}). Hasta "
+                                  f"que lo arregle {lector_app.QUIEN_RESCATA}, solo él puede cambiar el catálogo."]
+        cat_main = _leer_json(antes)
+        version_main = cat_main.get("versionCatalogo") if isinstance(cat_main, dict) else None
+        try:
+            antes, despues = sueltos.catalogos_para_comparar(main_sueltos, prop_sueltos, version_main)
+            # Los roles se juzgan con todos los juegos: los que no tienen parche y los retirados o bloqueados no
+            # entran en el catálogo de las ≤0.2.x, pero sus cambios también pasan por las reglas por campo.
+            para_reglas = sueltos.catalogos_para_reglas(main_sueltos, prop_sueltos)
+            toca_catalogo = True
+        except particion.ErrorParticion as error:
+            return motivos + [f"Con esta propuesta el catálogo no se puede juntar: {error}"]
+
+    cat_antes = _leer_json(antes)
+    cat_despues = None
     if toca_catalogo and not isinstance(cat_antes, dict) and not manda:
         # Sin el catálogo de `main` no se puede comparar campo a campo qué cambia: hasta que lo arregle quien manda en
         # todo, nadie más lo toca (cuarta revisión, 2.5).
@@ -198,10 +257,20 @@ def comprobar(cambios, antes, despues, permisos: Permisos, prohibidos=(), leer_p
             motivos += comprobar_largos(cat_antes, cat_despues)
 
     juegos_antes = _juegos_por_id(cat_antes)
-    motivos += _comprobar_archivos(cambios, juegos_antes, permisos)
+    motivos += _comprobar_archivos([c for c in cambios if c is not solo_grupo], juegos_antes, permisos)
     if toca_catalogo and cat_despues is not None and isinstance(cat_antes, dict):
-        motivos += _comprobar_campos(cat_antes, cat_despues, permisos)
-    return motivos
+        if para_reglas is not None:
+            motivos += _comprobar_campos(para_reglas[0], para_reglas[1], permisos)
+        else:
+            motivos += _comprobar_campos(cat_antes, cat_despues, permisos)
+    return _sin_repetidos(motivos)
+
+
+def _canonico(objeto: dict, sin: str) -> str:
+    """El JSON de `objeto` sin la clave `sin`, de una sola forma (claves ordenadas, sin espacios): `1`, `1.0` y `true`
+    salen distintos, aunque en Python sean iguales."""
+    return json.dumps({k: v for k, v in objeto.items() if k != sin}, sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":"))
 
 
 def _comprobar_tamanos(cambios, permisos: Permisos) -> list:
@@ -836,8 +905,8 @@ def _comprobar_archivos(cambios, juegos_antes, permisos: Permisos) -> list:
         if c.modo in ("120000", "160000"):
             motivos.append(f"`{c.ruta}`: no se admiten enlaces simbólicos ni submódulos.")
             continue
-        if c.ruta == RUTA_CATALOGO or c.ruta.startswith(canales.CARPETA_CANALES):
-            continue  # lo decide _comprobar_campos (catálogo) o canales.py (`canales/`)
+        if c.ruta == RUTA_CATALOGO or c.ruta.startswith(canales.CARPETA_CANALES) or sueltos.de_los_sueltos(c.ruta):
+            continue  # lo decide _comprobar_campos (catálogo), canales.py (`canales/`) o sueltos.py (fase B)
         if c.ruta.lower().startswith(canales.CARPETA_CANALES) and not permisos.es_dueno:
             motivos.append(f"`{c.ruta}`: la carpeta de los canales se escribe `canales/`, en minúsculas.")
             continue
@@ -1238,10 +1307,55 @@ def leer_propuesta(base: str, cabeza: str):
             return b" " * (canales.TOPES.get(nombre, canales.TOPE_LOGO) + 1)  # basta para que se rechace por tamaño
         return git("cat-file", "blob", f"{revision}:{ruta}").stdout  # también los logos: se mira qué son de verdad
 
+    guardados = {}
+
+    def leer_sueltos(lado):
+        revision = base if lado == "antes" else arbol
+        if revision not in guardados:
+            guardados[revision] = archivos_sueltos(revision)
+        return guardados[revision]
+
     # `main` se lee con tolerancia (solo sirve para comparar); la propuesta, en bytes: `validar_catalogo` exige
     # UTF-8 estricto, como el parcheador.
     antes = leer(base)
-    return cambios, (antes.decode("utf-8", errors="replace") if antes is not None else None), leer(arbol), leer_archivo
+    return (cambios, (antes.decode("utf-8", errors="replace") if antes is not None else None), leer(arbol), leer_archivo,
+            leer_sueltos)
+
+
+def archivos_sueltos(revision: str) -> dict:
+    """{ruta: bytes} de los archivos sueltos del catálogo (y de los `canal.json`) en `revision`, de una vez con
+    `git cat-file --batch`. Lo que no es un archivo normal no se lee; lo que pasa de su tope se cambia por algo que
+    se rechaza por tamaño, y si en total pasa de `sueltos.TOPE_TOTAL`, el robot para (mejor no publicar que juzgar a
+    medias)."""
+    salida = git("ls-tree", "-r", "-z", "-l", "--full-tree", revision, "--", sueltos.CARPETA_JUEGOS,
+                 canales.CARPETA_CANALES, *sueltos.OTROS_SUELTOS).stdout.decode("utf-8", errors="replace")
+    pedir, resultado, total = [], {}, 0
+    for entrada in (e for e in salida.split("\0") if e):
+        cabecera, ruta = entrada.split("\t", 1)
+        modo, tipo, sha, tamano = cabecera.split()
+        es_canal = ruta.startswith(canales.CARPETA_CANALES) and ruta.count("/") == 2 and ruta.endswith("/canal.json")
+        if modo != "100644" or tipo != "blob" or not (sueltos.es_suelto(ruta) or es_canal):
+            continue
+        tipo_ruta = sueltos.tipo_de_ruta(ruta)
+        tope = sueltos.TOPES[tipo_ruta[0]] if tipo_ruta else sueltos.TOPES["parche"]
+        if int(tamano) > tope:
+            resultado[ruta] = b" " * (tope + 1)
+            continue
+        total += int(tamano)
+        if total > sueltos.TOPE_TOTAL:
+            raise RuntimeError(f"Los archivos del catálogo pesan más de {sueltos.TOPE_TOTAL // 1048576} MB en `{revision}`.")
+        pedir.append((ruta, sha))
+    if pedir:
+        salida = subprocess.run(["git", "cat-file", "--batch"], input="".join(f"{sha}\n" for _, sha in pedir).encode(),
+                                capture_output=True, check=True).stdout
+        i = 0
+        for ruta, sha in pedir:
+            fin = salida.index(b"\n", i)
+            _, _, tamano = salida[i:fin].split(b" ")
+            inicio = fin + 1
+            resultado[ruta] = salida[inicio:inicio + int(tamano)]
+            i = inicio + int(tamano) + 1
+    return resultado
 
 
 TOPE_MOTIVOS = 40
@@ -1722,10 +1836,10 @@ def main() -> int:
         motivos = ["La propuesta choca con cambios que ya están publicados en `main`. Actualízala con lo "
                    "último de `main` y vuelve a subirla."]
     else:
-        cambios, antes, despues, leer_archivo = leido
+        cambios, antes, despues, leer_archivo, leer_sueltos = leido
         motivos = comprobar(cambios, antes, despues, permisos, prohibidos=prohibidos, leer_paquete=rutas_del_paquete,
                             leer_archivo=leer_archivo, ids_duenos=frozenset(ids_duenos), cuenta_de=cuenta_de,
-                            rol_externo=rol_externo)
+                            rol_externo=rol_externo, leer_sueltos=leer_sueltos)
 
     if motivos:
         lista = "\n".join(f"- {linea_segura(m)}" for m in motivos[:TOPE_MOTIVOS])
