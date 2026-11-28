@@ -1,14 +1,14 @@
 {
   "esquema": 1,
-  "versionCatalogo": 37,
+  "versionCatalogo": 38,
   "launcher": {
-    "ultimaVersion": "0.4.2",
+    "ultimaVersion": "0.4.3",
     "versionMinima": "",
     "motivoUrgente": "",
-    "novedades": ["Botones de «Elige tus canales» con el estilo del resto de la app.", "Sin suscripciones puedes buscar el juego en tu PC, y la página del juego ya no dice «en preparación» cuando hay parches en otros canales.", "Modo equipo: Historial global del programa para el Dueño.", "Varios arreglos de estabilidad."],
-    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.4.2/ParcheadorOrnizen-0.4.2-win-x64.zip",
-    "tamano": 25821898,
-    "hash": "blake3:7d1b253429962bd70cf18c20fa59799d1968619162c914ac05b59fdfa37405f0"
+    "novedades": ["Ficha completa de cada canal: descripción, enlaces, proyectos y cifras", "Vista previa de la ficha tal como la ve la gente, y reordenar enlaces y proyectos", "Solicitar una edición nueva de un juego o un cambio en su ficha central", "El Dueño puede deshacer con un clic un cambio del Historial global"],
+    "url": "https://github.com/OrnizStudio/ParcheadorRance-Datos/releases/download/parcheador-0.4.3/ParcheadorOrnizen-0.4.3-win-x64.zip",
+    "tamano": 26148076,
+    "hash": "blake3:f289f243a4eec822e7ea88fbb87d1502ac38f39bb25ded828655841da59a46c6"
   },
   "juegos": [
     {
